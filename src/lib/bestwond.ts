@@ -299,27 +299,28 @@ export async function openBoxAndVerify(
   credentials: BestwondCredentials,
   maxRetries: number = 3
 ): Promise<{ success: boolean; message: string; doorStatus?: string; apiResponse?: BestwondResponse }> {
-  // First, check if device is online
-  const statusResult = await getDeviceStatusWithCredentials(deviceNumber, credentials);
-  if (statusResult.code !== 0) {
-    return { 
-      success: false, 
-      message: `Cannot reach device. API error: ${statusResult.msg || 'Unknown error'}` 
-    };
+  // First, try to get box list - this is more reliable than the status API
+  // Bestwond's /device/line/status API often returns "off" even when device is working
+  const boxListResult = await getBoxListWithCredentials(deviceNumber, credentials);
+  
+  if (boxListResult.code !== 0) {
+    // If we can't get box list, device might truly be offline
+    const statusResult = await getDeviceStatusWithCredentials(deviceNumber, credentials);
+    if (statusResult.code !== 0) {
+      return { 
+        success: false, 
+        message: `Cannot reach device. API error: ${statusResult.msg || 'Unknown error'}` 
+      };
+    }
+    
+    // Even if status API says offline, try to open anyway (it's unreliable)
+    console.log('Box list failed, but status check returned:', statusResult.data);
   }
   
-  const deviceData = statusResult.data;
-  const isOnline = deviceData?.status === 'on' || deviceData?.online === true;
-  
-  if (!isOnline) {
-    return { 
-      success: false, 
-      message: `Device ${deviceNumber} is OFFLINE. Please check power and network connection.` 
-    };
-  }
+  // If box list succeeds, device is definitely online
+  console.log('Device is online (box list succeeded)');
   
   // Get the lock_address for this box
-  const boxListResult = await getBoxListWithCredentials(deviceNumber, credentials);
   let lockAddress = `01${boxNo.toString(16).toLowerCase().padStart(2, '0')}`; // HEX format
   
   if (boxListResult.code === 0 && boxListResult.data) {
