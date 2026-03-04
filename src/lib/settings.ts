@@ -158,46 +158,36 @@ export async function getConfiguredDevices() {
     appSecret: string;
   }> = [];
   
-  // Primary device (from existing settings)
-  const primaryDeviceId = settings['bestwond_deviceId'] || process.env.BESTWOND_DEVICE_ID;
-  const primaryAppId = settings['bestwond_appId'] || process.env.BESTWOND_APP_ID;
-  const primaryAppSecret = settings['bestwond_appSecret'] || process.env.BESTWOND_APP_SECRET;
+  // Primary device (from existing settings - check both bestwond and device prefix)
+  const primaryDeviceId = settings['bestwond_deviceId'] || settings['deviceId'] || process.env.BESTWOND_DEVICE_ID;
+  const primaryAppId = settings['bestwond_appId'] || settings['appId'] || process.env.BESTWOND_APP_ID;
+  const primaryAppSecret = settings['bestwond_appSecret'] || settings['appSecret'] || process.env.BESTWOND_APP_SECRET;
   
   if (primaryDeviceId && primaryAppId && primaryAppSecret) {
     devices.push({
       deviceId: primaryDeviceId,
-      name: settings['device_1_name'] || 'Primary Locker',
+      name: settings['device_1_name'] || settings['1_name'] || 'Primary Locker',
       appId: primaryAppId,
       appSecret: primaryAppSecret,
     });
   }
   
-  // Second device (from device_2_* settings)
-  const device2Id = settings['device_2_id'];
-  const device2AppId = settings['device_2_appId'];
-  const device2AppSecret = settings['device_2_appSecret'];
-  
-  if (device2Id && device2AppId && device2AppSecret) {
-    devices.push({
-      deviceId: device2Id,
-      name: settings['device_2_name'] || 'Second Locker',
-      appId: device2AppId,
-      appSecret: device2AppSecret,
-    });
-  }
-  
-  // Third device (if configured)
-  const device3Id = settings['device_3_id'];
-  const device3AppId = settings['device_3_appId'];
-  const device3AppSecret = settings['device_3_appSecret'];
-  
-  if (device3Id && device3AppId && device3AppSecret) {
-    devices.push({
-      deviceId: device3Id,
-      name: settings['device_3_name'] || 'Third Locker',
-      appId: device3AppId,
-      appSecret: device3AppSecret,
-    });
+  // Check for additional devices (device_2, device_3, etc.)
+  // Settings are stored as device_2_id but categorized as device with key 2_id
+  for (let i = 2; i <= 5; i++) {
+    const devId = settings[`device_${i}_id`] || settings[`${i}_id`];
+    const devName = settings[`device_${i}_name`] || settings[`${i}_name`];
+    const devAppId = settings[`device_${i}_appId`] || settings[`${i}_appId`];
+    const devAppSecret = settings[`device_${i}_appSecret`] || settings[`${i}_appSecret`];
+    
+    if (devId && devAppId && devAppSecret) {
+      devices.push({
+        deviceId: devId,
+        name: devName || `Locker ${i}`,
+        appId: devAppId,
+        appSecret: devAppSecret,
+      });
+    }
   }
   
   return devices;
