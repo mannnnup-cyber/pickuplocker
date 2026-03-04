@@ -5869,6 +5869,18 @@ function ActivityContent() {
     )
   }
 
+  // Group occupied boxes by device
+  const occupiedByDevice = React.useMemo(() => {
+    const grouped: Record<string, { deviceName: string; boxes: typeof occupiedBoxes }> = {};
+    for (const box of occupiedBoxes) {
+      if (!grouped[box.deviceId]) {
+        grouped[box.deviceId] = { deviceName: box.deviceName, boxes: [] };
+      }
+      grouped[box.deviceId].boxes.push(box);
+    }
+    return grouped;
+  }, [occupiedBoxes]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -5888,6 +5900,30 @@ function ActivityContent() {
           Refresh
         </Button>
       </div>
+
+      {/* API Limitations Info Banner */}
+      <Card className="bg-blue-50 border-blue-200">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-blue-600 mt-0.5" />
+            <div className="text-sm text-blue-800">
+              <p className="font-medium">Data Visibility Notice</p>
+              <p className="mt-1">
+                <strong>Occupied Boxes</strong> shows ALL packages stored in lockers regardless of which app created them (Business WW, Pickup, etc).
+              </p>
+              <p className="mt-1">
+                <strong>Activity Logs</strong> only shows history for orders created through this Pickup system. 
+                Orders placed via the Business WW app won't appear in logs.
+              </p>
+              <p className="mt-2 text-xs text-blue-600">
+                Devices found: {Object.keys(occupiedByDevice).length} | 
+                Total occupied boxes: {occupiedBoxes.length} | 
+                Activity logs: {activityLogs.length}
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Order Lookup Card */}
       <Card className="bg-white border-gray-200 shadow-sm">
@@ -6052,7 +6088,11 @@ function ActivityContent() {
                 <div className="text-center py-8 text-gray-500">
                   <Clock className="h-12 w-12 mx-auto mb-2 text-gray-300" />
                   <p>No activity logs found</p>
-                  <p className="text-sm text-gray-400 mt-1">Activity will appear here when boxes are used</p>
+                  <p className="text-sm text-gray-400 mt-1">Only orders created through this Pickup system appear here</p>
+                  <p className="text-sm text-blue-500 mt-2">
+                    Note: Orders from Bestwond's Business WW app don't sync to this log.
+                    Check the "Occupied Boxes" tab to see all stored packages.
+                  </p>
                 </div>
               ) : (
                 <Table>
