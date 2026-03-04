@@ -146,3 +146,59 @@ export function clearSettingsCache() {
   settingsCache = null;
   cacheExpiry = 0;
 }
+
+// Get all configured devices (from settings for multi-device support)
+export async function getConfiguredDevices() {
+  const settings = await loadSettings();
+  
+  const devices: Array<{
+    deviceId: string;
+    name: string;
+    appId: string;
+    appSecret: string;
+  }> = [];
+  
+  // Primary device (from existing settings)
+  const primaryDeviceId = settings['bestwond_deviceId'] || process.env.BESTWOND_DEVICE_ID;
+  const primaryAppId = settings['bestwond_appId'] || process.env.BESTWOND_APP_ID;
+  const primaryAppSecret = settings['bestwond_appSecret'] || process.env.BESTWOND_APP_SECRET;
+  
+  if (primaryDeviceId && primaryAppId && primaryAppSecret) {
+    devices.push({
+      deviceId: primaryDeviceId,
+      name: settings['device_1_name'] || 'Primary Locker',
+      appId: primaryAppId,
+      appSecret: primaryAppSecret,
+    });
+  }
+  
+  // Second device (from device_2_* settings)
+  const device2Id = settings['device_2_id'];
+  const device2AppId = settings['device_2_appId'];
+  const device2AppSecret = settings['device_2_appSecret'];
+  
+  if (device2Id && device2AppId && device2AppSecret) {
+    devices.push({
+      deviceId: device2Id,
+      name: settings['device_2_name'] || 'Second Locker',
+      appId: device2AppId,
+      appSecret: device2AppSecret,
+    });
+  }
+  
+  // Third device (if configured)
+  const device3Id = settings['device_3_id'];
+  const device3AppId = settings['device_3_appId'];
+  const device3AppSecret = settings['device_3_appSecret'];
+  
+  if (device3Id && device3AppId && device3AppSecret) {
+    devices.push({
+      deviceId: device3Id,
+      name: settings['device_3_name'] || 'Third Locker',
+      appId: device3AppId,
+      appSecret: device3AppSecret,
+    });
+  }
+  
+  return devices;
+}

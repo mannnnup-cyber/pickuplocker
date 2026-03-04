@@ -6,6 +6,7 @@ import {
   type BestwondCredentials 
 } from '@/lib/bestwond';
 import { db } from '@/lib/db';
+import { getConfiguredDevices } from '@/lib/settings';
 
 // GET /api/activity - Get occupied boxes and activity logs from Bestwond lockers
 export async function GET(request: NextRequest) {
@@ -14,47 +15,67 @@ export async function GET(request: NextRequest) {
     const deviceId = searchParams.get('deviceId');
     const includeLogs = searchParams.get('logs') === 'true';
 
-    // Get devices from database
-    let devices = deviceId 
-      ? await db.device.findMany({ where: { deviceId } })
-      : await db.device.findMany();
-
     // Get global config as fallback
     const globalConfig = await getConfigAsync();
     
-    // If no devices in database, use global device ID from settings/env
-    if (devices.length === 0 && globalConfig.deviceId) {
-      console.log('No devices in database, using global device ID:', globalConfig.deviceId);
-      devices = [{
-        id: 'global',
-        deviceId: globalConfig.deviceId,
-        name: 'Default Locker',
-        status: 'ONLINE',
-        location: null,
-        totalBoxes: 24,
-        availableBoxes: 24,
-        bestwondAppId: globalConfig.appId,
-        bestwondAppSecret: globalConfig.appSecret,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }] as typeof devices;
-    }
+    // Get all configured devices from settings
+    const configuredDevices = await getConfiguredDevices();
     
-    // Also check if specific deviceId was requested that's not in DB
-    if (deviceId && !devices.find(d => d.deviceId === deviceId) && globalConfig.deviceId === deviceId) {
+    // Also get devices from database
+    let dbDevices = deviceId 
+      ? await db.device.findMany({ where: { deviceId } })
+      : await db.device.findMany();
+
+    // Build devices list with credentials
+    const devices: Array<{
+      deviceId: string;
+      name: string;
+      appId: string;
+      appSecret: string;
+    }> = [];
+
+    // Add configured devices from settings
+    for (const dev of configuredDevices) {
+      // Filter by specific deviceId if requested
+      if (deviceId && dev.deviceId !== deviceId) continue;
+      
       devices.push({
-        id: 'global',
-        deviceId: globalConfig.deviceId,
-        name: 'Default Locker',
-        status: 'ONLINE',
-        location: null,
-        totalBoxes: 24,
-        availableBoxes: 24,
-        bestwondAppId: globalConfig.appId,
-        bestwondAppSecret: globalConfig.appSecret,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      } as typeof devices[0]);
+        deviceId: dev.deviceId,
+        name: dev.name,
+        appId: dev.appId,
+        appSecret: dev.appSecret,
+      });
+    }
+
+    // Add database devices that aren't already in the list
+    for (const dev of dbDevices) {
+      if (!devices.find(d => d.deviceId === dev.deviceId)) {
+        const creds = {
+          deviceId: dev.deviceId,
+          name: dev.name || dev.deviceId,
+          appId: dev.bestwondAppId || globalConfig.appId,
+          appSecret: dev.bestwondAppSecret || globalConfig.appSecret,
+        };
+        
+        // Filter by specific deviceId if requested
+        if (deviceId && creds.deviceId !== deviceId) continue;
+        
+        if (creds.appId && creds.appSecret) {
+          devices.push(creds);
+        }
+      }
+    }
+
+    // If no devices configured, use global config as fallback
+    if (devices.length === 0 && globalConfig.deviceId && globalConfig.appId && globalConfig.appSecret) {
+      if (!deviceId || globalConfig.deviceId === deviceId) {
+        devices.push({
+          deviceId: globalConfig.deviceId,
+          name: 'Default Locker',
+          appId: globalConfig.appId,
+          appSecret: globalConfig.appSecret,
+        });
+      }
     }
 
     // Collect occupied boxes from Bestwond
@@ -80,10 +101,10 @@ export async function GET(request: NextRequest) {
     }> = [];
 
     for (const device of devices) {
-      // Build credentials - device-specific or global fallback
+      // Build credentials
       const credentials: BestwondCredentials = {
-        appId: device.bestwondAppId || globalConfig.appId,
-        appSecret: device.bestwondAppSecret || globalConfig.appSecret,
+        appId: device.appId,
+        appSecret: device.appSecret,
         baseUrl: globalConfig.baseUrl || 'https://api.bestwond.com',
       };
 
