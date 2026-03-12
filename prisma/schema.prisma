@@ -1,0 +1,541 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// For local development without DIRECT_DATABASE_URL, set it to the same as DATABASE_URL
+// Example .env:
+// DATABASE_URL="postgresql://user:password@localhost:5432/pickuplocker?schema=public"
+// DIRECT_DATABASE_URL="postgresql://user:password@localhost:5432/pickuplocker?schema=public"
+
+// User roles: ADMIN, OPERATOR, CUSTOMER
+enum UserRole {
+  ADMIN
+  OPERATOR
+  CUSTOMER
+}
+
+// Order status tracking
+enum OrderStatus {
+  PENDING      // Awaiting drop-off
+  STORED       // Successfully stored in locker
+  READY        // Ready for pickup
+  PICKED_UP    // Customer has picked up
+  ABANDONED    // Exceeded 30 days
+  CANCELLED    // Cancelled order
+}
+
+// Payment status
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+// Payment method
+enum PaymentMethod {
+  CASH
+  CARD
+  MOBILE_MONEY
+  ONLINE
+}
+
+// Box status
+enum BoxStatus {
+  AVAILABLE    // Empty and ready for use
+  OCCUPIED     // Contains a package
+  RESERVED     // Reserved for incoming package
+  MAINTENANCE  // Out of service
+  OFFLINE      // Disconnected
+}
+
+// Device status
+enum DeviceStatus {
+  ONLINE
+  OFFLINE
+  MAINTENANCE
+}
+
+// Notification types
+enum NotificationType {
+  SMS
+  EMAIL
+  WHATSAPP
+  PUSH
+}
+
+// Notification status
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  DELIVERED
+}
+
+// Subscription plan
+enum SubscriptionPlan {
+  FREE
+  BASIC      // $500 JMD/month
+  STANDARD   // $1,500 JMD/month
+  PREMIUM    // $3,000 JMD/month
+}
+
+// Courier account status
+enum CourierStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+// Main User model
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  phone         String?  @unique
+  name          String?
+  password      String?
+  image         String?
+  role          UserRole @default(CUSTOMER)
+  isActive      Boolean  @default(true)
+  emailVerified DateTime?
+  
+  // Subscription
+  subscriptionPlan SubscriptionPlan @default(FREE)
+  subscriptionStart DateTime?
+  subscriptionEnd   DateTime?
+  
+  // Timestamps
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastLoginAt   DateTime?
+  
+  // Relations
+  orders        Order[]
+  payments      Payment[]
+  notifications Notification[]
+  activities    Activity[]
+  
+  @@map("users")
+}
+
+// Device (Bestwond Locker Cabinet)
+model Device {
+  id              String       @id @default(cuid())
+  deviceId        String       @unique // Bestwond device ID (e.g., 2100012858)
+  name            String
+  description     String?
+  status          DeviceStatus @default(ONLINE)
+  location        String?
+  totalBoxes      Int          @default(0)
+  availableBoxes  Int          @default(0)
+  lastHeartbeat   DateTime?
+  ipAddress       String?
+  firmwareVersion String?
+  
+  // Bestwond API credentials (per device for multi-account support)
+  bestwondAppId     String?   // Bestwond App ID for this device
+  bestwondAppSecret String?   // Bestwond App Secret for this device
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  boxes     Box[]
+  orders    Order[]
+  
+  @@map("devices")
+}
+
+// Individual Box/Compartment
+model Box {
+  id           String    @id @default(cuid())
+  boxNumber    Int       // Box number on the device
+  deviceId     String
+  device       Device    @relation(fields: [deviceId], references: [id])
+  status       BoxStatus @default(AVAILABLE)
+  size         String?   // S, M, L, XL
+  lockAddress  String?   // Hardware lock address
+  
+  // Timestamps
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  lastUsedAt DateTime?
+  
+  // Relations
+  orders     Order[]
+  logs       BoxLog[]
+  
+  @@unique([deviceId, boxNumber])
+  @@map("boxes")
+}
+
+// Box usage log (from Bestwond API)
+model BoxLog {
+  id          String   @id @default(cuid())
+  boxId       String
+  box         Box      @relation(fields: [boxId], references: [id])
+  deviceId    String
+  
+  // Action info
+  action      String   // OPEN, CLOSE, STORE, PICKUP
+  orderNo     String?  // Order number if associated
+  
+  // Timestamps
+  occurredAt  DateTime // When the action happened
+  createdAt   DateTime @default(now())
+  
+  // Additional metadata
+  metadata    String?  // JSON for extra data
+  
+  @@index([boxId, occurredAt])
+  @@index([deviceId, occurredAt])
+  @@map("box_logs")
+}
+
+// Order/Package
+model Order {
+  id              String      @id @default(cuid())
+  orderNumber     String      @unique // Generated order number
+  trackingCode    String      @unique // 6-digit pickup code
+  
+  // Customer info
+  customerId      String
+  customer        User        @relation(fields: [customerId], references: [id])
+  customerName    String
+  customerPhone   String
+  customerEmail   String?
+  
+  // Device and Box assignment
+  deviceId        String?
+  device          Device?     @relation(fields: [deviceId], references: [id])
+  boxId           String?
+  box             Box?        @relation(fields: [boxId], references: [id])
+  boxNumber       Int?
+  
+  // Package details
+  courierId       String?     // Link to Courier account (for prepaid)
+  courier         Courier?    @relation(fields: [courierId], references: [id])
+  courierName     String?     // e.g., Knutsford, ZipMail (display name)
+  courierTracking String?     // Courier's tracking number
+  packageSize     String?     // S, M, L, XL
+  packageWeight   Float?
+  packageDescription String?
+  
+  // Status and dates
+  status          OrderStatus @default(PENDING)
+  
+  // Drop-off
+  dropOffAt       DateTime?   // When stored
+  dropOffBy       String?     // User who processed drop-off
+  
+  // Pickup
+  pickUpAt        DateTime?   // When picked up
+  pickUpBy        String?     // User who processed pickup
+  
+  // Storage fee calculation
+  storageStartAt  DateTime?   // When storage period starts
+  storageEndAt    DateTime?   // When storage period ends
+  storageDays     Int         @default(0)
+  storageFee      Float       @default(0)
+  
+  // Abandoned
+  abandonedAt     DateTime?
+  abandonedReason String?
+  
+  // Notes
+  notes           String?
+  
+  // Timestamps
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  // Relations
+  payments        Payment[]
+  notifications   Notification[]
+  activities      Activity[]
+  
+  @@map("orders")
+}
+
+// Payment record
+model Payment {
+  id              String        @id @default(cuid())
+  orderId         String
+  order           Order         @relation(fields: [orderId], references: [id])
+  userId          String
+  user            User          @relation(fields: [userId], references: [id])
+  
+  amount          Float
+  currency        String        @default("JMD")
+  status          PaymentStatus @default(PENDING)
+  method          PaymentMethod @default(CASH)
+  
+  // Payment gateway details
+  gatewayRef      String?       // Reference from payment gateway
+  gatewayResponse String?       // JSON response from gateway
+  
+  // Timestamps
+  paidAt          DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@map("payments")
+}
+
+// Notification log
+model Notification {
+  id            String            @id @default(cuid())
+  userId        String
+  user          User              @relation(fields: [userId], references: [id])
+  orderId       String?
+  order         Order?            @relation(fields: [orderId], references: [id])
+  
+  type          NotificationType  @default(SMS)
+  status        NotificationStatus @default(PENDING)
+  
+  recipient     String            // Phone or email
+  subject       String?
+  message       String
+  
+  // Template used
+  templateKey   String?           // e.g., "pickup_notification", "storage_fee"
+  
+  // Gateway response
+  gatewayRef    String?
+  errorMessage  String?
+  
+  // Delivery tracking
+  gatewayStatus String?           // Status from gateway (sent, delivered, failed)
+  deliveredAt   DateTime?
+  
+  // Cost tracking
+  cost          Float?            // Cost in JMD
+  segments      Int?              // SMS segments (160 chars each)
+  
+  // Retry management
+  retryCount    Int               @default(0)
+  maxRetries    Int               @default(3)
+  nextRetryAt   DateTime?
+  
+  sentAt        DateTime?
+  createdAt     DateTime          @default(now())
+  
+  @@map("notifications")
+}
+
+// SMS Templates
+model SmsTemplate {
+  id          String   @id @default(cuid())
+  key         String   @unique      // e.g., "pickup_notification", "storage_fee"
+  name        String                // Display name
+  description String?               // What this template is used for
+  template    String                // Message with {{variables}}
+  variables   String?               // JSON array of available variables
+  
+  isActive    Boolean  @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("sms_templates")
+}
+
+// Email Templates
+model EmailTemplate {
+  id          String   @id @default(cuid())
+  key         String   @unique      // e.g., "pickup_notification", "storage_fee"
+  name        String                // Display name
+  description String?               // What this template is used for
+  subject     String                // Email subject with {{variables}}
+  body        String                // HTML email body with {{variables}}
+  variables   String?               // JSON array of available variables
+  
+  isActive    Boolean  @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("email_templates")
+}
+
+// Activity log for audit trail
+model Activity {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  orderId     String?
+  order       Order?   @relation(fields: [orderId], references: [id])
+  
+  action      String   // e.g., "ORDER_CREATED", "BOX_OPENED", "PAYMENT_RECEIVED"
+  description String?
+  metadata    String?  // JSON for additional data
+  ipAddress   String?
+  userAgent   String?
+  
+  createdAt   DateTime @default(now())
+  
+  @@map("activities")
+}
+
+// System settings
+model Setting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  description String?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("settings")
+}
+
+// Location for multi-location support
+model Location {
+  id          String   @id @default(cuid())
+  name        String
+  address     String
+  city        String
+  phone       String?
+  email       String?
+  isActive    Boolean  @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("locations")
+}
+
+// Courier company with prepaid account
+model Courier {
+  id              String        @id @default(cuid())
+  name            String        @unique // e.g., "Knutsford Express"
+  code            String        @unique // e.g., "KF" for short codes
+  contactPerson   String?
+  phone           String?
+  email           String?
+  address         String?
+  
+  // Prepaid account
+  status          CourierStatus @default(ACTIVE)
+  balance         Float         @default(0) // Current prepaid balance in JMD
+  creditLimit     Float         @default(0) // Allowed negative balance
+  autoReload      Boolean       @default(false)
+  autoReloadAmount Float?
+  minBalance      Float?        // Trigger auto-reload when below this
+  
+  // Pricing (optional custom rates)
+  baseRate        Float?        // Custom drop-off rate (null = standard)
+  storageRate     Float?        // Custom storage rate (null = standard)
+  
+  // Stats
+  totalDropOffs   Int           @default(0)
+  totalSpent      Float         @default(0)
+  
+  // Timestamps
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  lastActivityAt  DateTime?
+  
+  // Relations
+  orders          Order[]
+  
+  @@map("couriers")
+}
+
+// SMS Marketing Campaign
+model SmsCampaign {
+  id              String   @id @default(cuid())
+  name            String
+  message         String
+  targetSegment   String   // all_customers, active_customers, etc.
+  totalRecipients Int      @default(0)
+  sentCount       Int      @default(0)
+  failedCount     Int      @default(0)
+  status          String   @default("PENDING") // PENDING, SENDING, SENT, FAILED, SCHEDULED
+  scheduledAt     DateTime?
+  sentAt          DateTime?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("sms_campaigns")
+}
+
+// Express Order (from Bestwond Express API)
+model ExpressOrder {
+  id              String   @id @default(cuid())
+  orderNo         String   @unique  // Order number from system or Bestwond
+  
+  // Device info
+  deviceId        String   // Bestwond device number
+  
+  // Box info
+  boxName         String?  // Box number assigned
+  boxSize         String   // S, M, L, XL
+  
+  // Codes
+  saveCode        String   // 6-digit code for courier to store
+  pickCode        String   // 6-digit code for customer to pick up
+  
+  // Status tracking
+  status          String   @default("CREATED") // CREATED, STORED, PICKED_UP, CANCELLED
+  
+  // Timestamps
+  saveTime        DateTime? // When courier stored
+  pickTime        DateTime? // When customer picked up
+  
+  // Customer info (optional)
+  customerName    String?
+  customerPhone   String?
+  
+  // Courier info (optional)
+  courierName     String?
+  
+  // Notes
+  notes           String?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([deviceId, status])
+  @@index([saveCode])
+  @@index([pickCode])
+  @@map("express_orders")
+}
+
+// Locker Sync Status
+model LockerSync {
+  id              String   @id @default(cuid())
+  deviceId        String   @unique
+  
+  // Sync status
+  lastSyncAt      DateTime?
+  syncStatus      String   @default("PENDING") // PENDING, SUCCESS, FAILED
+  syncError       String?
+  
+  // Synced data cache
+  deviceOnline    Boolean  @default(false)
+  totalBoxes      Int      @default(0)
+  availableBoxes  Int      @default(0)
+  usedBoxes       Int      @default(0)
+  
+  // Sync counts
+  boxesUpdated    Int      @default(0)
+  ordersSynced    Int      @default(0)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("locker_syncs")
+}
