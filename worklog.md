@@ -8,7 +8,64 @@ A Next.js 15 web application for managing smart pickup lockers. The system integ
 
 ---
 
-## Session Summary (Mar 3, 2026) - Latest
+## Session Summary (Mar 12, 2026) - Latest
+
+### Kiosk Interface Implementation Complete
+
+Built a comprehensive **tablet-optimized public kiosk interface** at `/` for use on tablets mounted at the locker.
+
+#### User Flows Implemented
+
+**DROP-OFF Options:**
+| Flow | Process |
+|------|---------|
+| **Has Code** | Enter 6-digit save_code → Enter recipient phone → Locker opens |
+| **Buy Code** | Select box size → Pay via DimePay QR → Get save_code → Locker opens |
+| **Courier** | Enter courier PIN → Select box → Enter recipient phone → Drop-off (deducts from prepaid balance) |
+
+**PICKUP Flow:**
+1. Enter 6-digit pick_code
+2. If within 3 days: Locker opens immediately
+3. If overdue: Show storage fee → Pay via DimePay QR → Locker opens
+
+#### New API Endpoints
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/kiosk/order` | POST | Create new drop-off orders |
+| `/api/kiosk/use-code` | POST | Handle save_code (drop-off) and pick_code (pickup) |
+| `/api/kiosk/payment` | POST | Create DimePay payments with QR codes |
+| `/api/kiosk/payment` | GET | Poll for payment status |
+
+#### Box Pricing (JMD)
+| Size | Price | Description |
+|------|-------|-------------|
+| S | $150 | Small items (phones, letters) |
+| M | $200 | Medium items (shoes, books) |
+| L | $300 | Large packages |
+| XL | $400 | Extra large/bulky items |
+
+#### Key Features
+- ✅ Auto-timeout (60 seconds) with warning banner
+- ✅ Touch-friendly numeric keypad
+- ✅ DimePay QR code payments
+- ✅ SMS notifications via TextBee
+- ✅ Storage fee calculation (3 days free, then $100-200/day tiered)
+- ✅ Courier prepaid account integration
+
+#### Files Created/Modified
+- `/src/app/page.tsx` - Complete kiosk interface (1100+ lines)
+- `/src/app/api/kiosk/order/route.ts` - Order creation API
+- `/src/app/api/kiosk/use-code/route.ts` - Code handling API
+- `/src/app/api/kiosk/payment/route.ts` - Payment processing API
+
+#### GitHub Push
+- **Commit**: af4c9c6 - "Add complete kiosk interface for Pickup Smart Locker"
+- **Branch**: master → origin/master
+- **Repository**: https://github.com/mannnnup-cyber/pickuplocker
+
+---
+
+## Session Summary (Mar 3, 2026)
 
 ### Issues Fixed
 1. **Open Box Error (16001601)**
