@@ -221,6 +221,83 @@ DIMEPAY_MERCHANT_ID=""
 
 ---
 
+---
+
+## Task ID: kiosk-interface-001 - Kiosk Interface Implementation
+
+### Work Task
+Build a comprehensive tablet-optimized Pickup Smart Locker Kiosk Interface with complete drop-off and pickup flows.
+
+### Work Summary
+Implemented a complete public kiosk page at `/src/app/page.tsx` with:
+
+#### Features Built
+1. **Home Screen**
+   - Large touch-friendly DROP-OFF and PICKUP buttons
+   - Clean, tablet-optimized UI with large fonts and touch targets
+   - "Staff Login" link at bottom for admin access
+   - Yellow (#FFD439) and Black (#111111) brand colors
+   - Montserrat font for headings
+
+2. **Drop-off Flow**
+   - Three options when user taps DROP-OFF:
+     - **"I have a Drop-off Code"** - Enter existing save_code
+     - **"I need to buy a Drop-off Code"** - Purchase via DimePay QR
+     - **"I'm a Courier"** - Enter courier PIN/code
+   - Touch-friendly numeric keypad for code entry
+   - DimePay QR code payment integration
+   - Auto-timeout (60 seconds) with warning banner
+
+3. **Pickup Flow**
+   - Enter 6-digit pick_code
+   - Storage fee calculation for overdue packages (>3 days)
+   - DimePay QR payment for storage fees
+   - Door opens on successful pickup
+
+4. **Auto-timeout Feature**
+   - Returns to home after 60 seconds of inactivity
+   - 10-second warning before timeout
+   - Touch/click resets activity timer
+
+5. **Touch-friendly Numeric Keypad**
+   - Large buttons (min 44px touch targets)
+   - Clear and backspace buttons
+   - Visual feedback for key presses
+
+#### API Routes Created
+1. **`/api/kiosk/order/route.ts`** - Order creation
+   - Creates orders via Bestwond Express API
+   - Supports courier drop-off with balance deduction
+   - Box size pricing: S=$150, M=$200, L=$300, XL=$400 JMD
+
+2. **`/api/kiosk/use-code/route.ts`** - Code usage
+   - Handles save_code for drop-off
+   - Handles pick_code for pickup
+   - Opens locker boxes via Bestwond API
+   - Calculates and processes storage fees
+
+3. **`/api/kiosk/payment/route.ts`** - Payment handling
+   - Creates DimePay payment requests
+   - Generates QR codes for scanning
+   - Polls for payment confirmation
+   - Supports both drop-off credit and storage fee payments
+
+### Files Created
+- `/src/app/page.tsx` - Complete kiosk interface (complete rewrite)
+- `/src/app/api/kiosk/order/route.ts` - Order creation API
+- `/src/app/api/kiosk/use-code/route.ts` - Code usage API
+- `/src/app/api/kiosk/payment/route.ts` - Payment handling API
+
+### Design Decisions
+- Used client-side React state management for all views
+- Implemented auto-timeout with useEffect hooks
+- Touch events reset activity timer
+- QR codes generated and displayed in-line
+- All interactions use large touch-friendly buttons
+- Brand colors consistently applied
+
+---
+
 ## Next Steps
 1. Add API credentials for production use:
    - Bestwond: https://www.bestwond.com/
@@ -229,5 +306,6 @@ DIMEPAY_MERCHANT_ID=""
 2. Set up production database (PostgreSQL recommended)
 3. Configure domain and SSL
 4. Deploy to Vercel or preferred hosting
+5. Test kiosk interface on actual tablet hardware
 
 ---
