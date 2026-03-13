@@ -61,6 +61,7 @@ interface PaymentResult {
   boxSize?: string
   saveCode?: string
   error?: string
+  isDemoMode?: boolean
 }
 
 // Box sizes with prices
@@ -703,18 +704,53 @@ export default function KioskPage() {
               </div>
             )}
 
-            {paymentResult?.qrCodeDataUrl && (
+            {paymentResult?.success && (
               <div className="mt-6 text-center">
-                <p className="text-lg font-bold mb-4">Scan to Pay JMD ${paymentResult.amount}</p>
-                <img 
-                  src={paymentResult.qrCodeDataUrl} 
-                  alt="Payment QR Code" 
-                  className="mx-auto w-64 h-64 rounded-lg"
-                />
-                <p className="text-sm text-gray-500 mt-4">
-                  Waiting for payment confirmation...
+                {/* Demo mode indicator */}
+                {paymentResult.isDemoMode && (
+                  <div className="bg-orange-100 text-orange-800 px-4 py-2 rounded-lg mb-4 font-bold uppercase text-sm">
+                    🎮 DEMO MODE - For Testing Only
+                  </div>
+                )}
+                
+                <p className="text-lg font-bold mb-2">Amount: JMD ${paymentResult.amount}</p>
+                <p className="text-sm text-gray-500 mb-4">
+                  Payment ID: {paymentResult.paymentId}
                 </p>
-                <Loader2 className="h-6 w-6 animate-spin mx-auto mt-2 text-[#FFD439]" />
+                
+                {paymentResult.isDemoMode ? (
+                  <div className="space-y-4">
+                    <p className="text-sm text-gray-600">
+                      Click below to simulate a successful payment
+                    </p>
+                    <button
+                      onClick={() => {
+                        // Immediately complete the payment
+                        setCode(paymentResult.saveCode || "");
+                        setView("dropoff-code");
+                        setPaymentResult(null);
+                      }}
+                      className="w-full h-16 bg-green-500 rounded-xl text-xl font-bold text-white uppercase hover:bg-green-600 active:scale-95 transition-all"
+                    >
+                      ✓ SIMULATE PAYMENT SUCCESS
+                    </button>
+                    <p className="text-xs text-gray-400">
+                      In production, this would show a real DimePay QR code
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <img 
+                      src={paymentResult.qrCodeDataUrl} 
+                      alt="Payment QR Code" 
+                      className="mx-auto w-64 h-64 rounded-lg"
+                    />
+                    <p className="text-sm text-gray-500 mt-4">
+                      Scan with DimePay app to complete payment
+                    </p>
+                    <Loader2 className="h-6 w-6 animate-spin mx-auto mt-2 text-[#FFD439]" />
+                  </>
+                )}
               </div>
             )}
 
