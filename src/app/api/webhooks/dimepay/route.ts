@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { verifyWebhookSignature } from '@/lib/dimepay';
 import { openBoxWithCredentials, getCredentialsForDevice } from '@/lib/bestwond';
 import { sendPickupConfirmation } from '@/lib/textbee';
+import { getDimepayConfig } from '@/lib/settings';
 
 /**
  * DimePay Webhook Handler
@@ -18,8 +19,11 @@ export async function POST(request: NextRequest) {
     const payload = await request.text();
     const signature = request.headers.get('x-dimepay-signature') || '';
     
+    // Load DimePay config from database for signature verification
+    const dimepayConfig = await getDimepayConfig();
+    
     // Verify webhook signature
-    if (!verifyWebhookSignature(payload, signature)) {
+    if (!verifyWebhookSignature(payload, signature, dimepayConfig)) {
       console.error('Invalid webhook signature');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }

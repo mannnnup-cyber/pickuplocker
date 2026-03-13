@@ -13,15 +13,20 @@ import QRCode from 'qrcode';
  * - Fee pass-through to customers
  */
 
-const DIMEPAY_BASE_URL = process.env.DIMEPAY_BASE_URL || 'https://api.dimepay.io';
-const DIMEPAY_API_KEY = process.env.DIMEPAY_API_KEY || '';
-const DIMEPAY_MERCHANT_ID = process.env.DIMEPAY_MERCHANT_ID || '';
-
-// DimePay fee structure (typical for Jamaica)
-const DIMEPAY_FEE_PERCENTAGE = 0.025; // 2.5% fee
-const DIMEPAY_FEE_FIXED = 30; // $30 JMD fixed fee
+// Default URLs - can be overridden by database settings
+const DEFAULT_BASE_URL = 'https://api.dimepay.io';
 
 // Types
+export interface DimePayConfig {
+  apiKey: string;
+  merchantId: string;
+  baseUrl: string;
+  passFeeToCustomer?: boolean;
+  passFeeToCourier?: boolean;
+  feePercentage?: number;
+  fixedFee?: number;
+}
+
 export interface DimePayResponse<T = unknown> {
   success: boolean;
   data?: T;
@@ -91,12 +96,15 @@ export interface StorageFeePaymentRequest {
 /**
  * Calculate DimePay fee
  */
-export function calculateDimePayFee(amount: number): {
+export function calculateDimePayFee(amount: number, config?: { feePercentage?: number; fixedFee?: number }): {
   fee: number;
   totalWithFee: number;
 } {
-  const percentageFee = amount * DIMEPAY_FEE_PERCENTAGE;
-  const fee = Math.round(percentageFee + DIMEPAY_FEE_FIXED);
+  const feePercentage = config?.feePercentage ?? 2.5;
+  const fixedFee = config?.fixedFee ?? 30;
+  
+  const percentageFee = amount * (feePercentage / 100);
+  const fee = Math.round(percentageFee + fixedFee);
   const totalWithFee = amount + fee;
   
   return { fee, totalWithFee };
@@ -126,26 +134,39 @@ export async function generateQRCode(data: string): Promise<string> {
  * Create a payment request
  */
 export async function createPayment(
-  data: PaymentRequest
+  data: PaymentRequest,
+  config?: DimePayConfig
 ): Promise<DimePayResponse<PaymentResult>> {
   try {
+    // Use provided config or fall back to defaults
+    const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
+    const merchantId = config?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '';
+    const baseUrl = config?.baseUrl || process.env.DIMEPAY_BASE_URL || DEFAULT_BASE_URL;
+    
+    if (!apiKey || !merchantId) {
+      return {
+        success: false,
+        error: 'DimePay not configured. Please set API Key and Merchant ID in Settings.',
+      };
+    }
+    
     let finalAmount = data.amount;
     let originalAmount = data.amount;
     let feeAmount = 0;
 
     // If passFeeToCustomer is true, add the fee to the amount
     if (data.passFeeToCustomer) {
-      const feeCalc = calculateDimePayFee(data.amount / 100); // Convert from cents
+      const feeCalc = calculateDimePayFee(data.amount / 100, config); // Convert from cents
       finalAmount = (feeCalc.totalWithFee) * 100; // Convert back to cents
       feeAmount = feeCalc.fee * 100;
     }
 
-    const response = await fetch(`${DIMEPAY_BASE_URL}/payments`, {
+    const response = await fetch(`${baseUrl}/payments`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DIMEPAY_API_KEY}`,
-        'X-Merchant-ID': DIMEPAY_MERCHANT_ID,
+        'Authorization': `Bearer ${apiKey}`,
+        'X-Merchant-ID': merchantId,
       },
       body: JSON.stringify({
         amount: finalAmount,
@@ -172,7 +193,7 @@ export async function createPayment(
     if (!response.ok) {
       return {
         success: false,
-        error: result.message || 'Failed to create payment',
+        error: result.message || result.error || `API Error: ${response.status}`,
       };
     }
 
@@ -215,7 +236,8 @@ export async function createPayment(
  * Create storage fee payment with QR code
  */
 export async function createStorageFeePayment(
-  data: StorageFeePaymentRequest
+  data: StorageFeePaymentRequest,
+  config?: DimePayConfig
 ): Promise<DimePayResponse<PaymentResult>> {
   const baseUrl = process.env.NEXTAUTH_URL || 'https://pickuplocker.vercel.app';
   
@@ -236,14 +258,15 @@ export async function createStorageFeePayment(
       trackingCode: data.trackingCode,
       customerName: data.customerName,
     },
-  });
+  }, config);
 }
 
 /**
  * Create courier top-up payment
  */
 export async function createCourierTopupPayment(
-  data: CourierTopupRequest
+  data: CourierTopupRequest,
+  config?: DimePayConfig
 ): Promise<DimePayResponse<PaymentResult>> {
   const baseUrl = process.env.NEXTAUTH_URL || 'https://pickuplocker.vercel.app';
   
@@ -262,21 +285,26 @@ export async function createCourierTopupPayment(
       courierId: data.courierId,
       courierName: data.courierName,
     },
-  });
+  }, config);
 }
 
 /**
  * Get payment status
  */
 export async function getPaymentStatus(
-  paymentId: string
+  paymentId: string,
+  config?: DimePayConfig
 ): Promise<DimePayResponse<PaymentResult>> {
   try {
-    const response = await fetch(`${DIMEPAY_BASE_URL}/payments/${paymentId}`, {
+    const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
+    const merchantId = config?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '';
+    const baseUrl = config?.baseUrl || process.env.DIMEPAY_BASE_URL || DEFAULT_BASE_URL;
+    
+    const response = await fetch(`${baseUrl}/payments/${paymentId}`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${DIMEPAY_API_KEY}`,
-        'X-Merchant-ID': DIMEPAY_MERCHANT_ID,
+        'Authorization': `Bearer ${apiKey}`,
+        'X-Merchant-ID': merchantId,
       },
     });
 
@@ -314,15 +342,20 @@ export async function getPaymentStatus(
  * Process refund
  */
 export async function processRefund(
-  data: RefundRequest
+  data: RefundRequest,
+  config?: DimePayConfig
 ): Promise<DimePayResponse<RefundResult>> {
   try {
-    const response = await fetch(`${DIMEPAY_BASE_URL}/payments/${data.paymentId}/refund`, {
+    const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
+    const merchantId = config?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '';
+    const baseUrl = config?.baseUrl || process.env.DIMEPAY_BASE_URL || DEFAULT_BASE_URL;
+    
+    const response = await fetch(`${baseUrl}/payments/${data.paymentId}/refund`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DIMEPAY_API_KEY}`,
-        'X-Merchant-ID': DIMEPAY_MERCHANT_ID,
+        'Authorization': `Bearer ${apiKey}`,
+        'X-Merchant-ID': merchantId,
       },
       body: JSON.stringify({
         amount: data.amount,
@@ -361,10 +394,12 @@ export async function processRefund(
  */
 export function verifyWebhookSignature(
   payload: string,
-  signature: string
+  signature: string,
+  config?: DimePayConfig
 ): boolean {
+  const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
   const expectedSignature = crypto
-    .createHmac('sha256', DIMEPAY_API_KEY)
+    .createHmac('sha256', apiKey)
     .update(payload)
     .digest('hex');
   return signature === expectedSignature;
@@ -379,8 +414,12 @@ export async function listPayments(filters?: {
   endDate?: string;
   limit?: number;
   offset?: number;
-}): Promise<DimePayResponse<PaymentResult[]>> {
+}, config?: DimePayConfig): Promise<DimePayResponse<PaymentResult[]>> {
   try {
+    const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
+    const merchantId = config?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '';
+    const baseUrl = config?.baseUrl || process.env.DIMEPAY_BASE_URL || DEFAULT_BASE_URL;
+    
     const params = new URLSearchParams();
     if (filters?.status) params.append('status', filters.status);
     if (filters?.startDate) params.append('start_date', filters.startDate);
@@ -388,11 +427,11 @@ export async function listPayments(filters?: {
     if (filters?.limit) params.append('limit', String(filters.limit));
     if (filters?.offset) params.append('offset', String(filters.offset));
 
-    const response = await fetch(`${DIMEPAY_BASE_URL}/payments?${params.toString()}`, {
+    const response = await fetch(`${baseUrl}/payments?${params.toString()}`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${DIMEPAY_API_KEY}`,
-        'X-Merchant-ID': DIMEPAY_MERCHANT_ID,
+        'Authorization': `Bearer ${apiKey}`,
+        'X-Merchant-ID': merchantId,
       },
     });
 

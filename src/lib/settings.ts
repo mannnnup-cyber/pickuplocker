@@ -83,6 +83,10 @@ export async function getDimepayConfig() {
     merchantId: settings['dimepay_merchantId'] || process.env.DIMEPAY_MERCHANT_ID || '',
     baseUrl: settings['dimepay_baseUrl'] || process.env.DIMEPAY_BASE_URL || 'https://api.dimepay.io',
     enabled: settings['dimepay_enabled'] !== 'false',
+    passFeeToCustomer: settings['dimepay_passFeeToCustomer'] !== 'false',
+    passFeeToCourier: settings['dimepay_passFeeToCourier'] === 'true',
+    feePercentage: parseFloat(settings['dimepay_feePercentage'] || '2.5'),
+    fixedFee: parseFloat(settings['dimepay_fixedFee'] || '30'),
   };
 }
 

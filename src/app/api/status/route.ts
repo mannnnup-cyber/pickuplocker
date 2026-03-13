@@ -264,12 +264,61 @@ export async function GET() {
   // 4. DimePay Payment Gateway Status
   try {
     const dimepayConfig = await getDimepayConfig();
-    const dimepayConfigured = dimepayConfig.apiKey && dimepayConfig.merchantId;
-
+    const dimepayStart = Date.now();
+    
+    if (dimepayConfig.apiKey && dimepayConfig.merchantId) {
+      // Try to actually test the connection by listing payments (validates API access)
+      let apiTestPassed = false;
+      let testMessage = 'Payment gateway configured';
+      
+      try {
+        // Make a minimal API call to verify credentials
+        const testResponse = await fetch(`${dimepayConfig.baseUrl}/payments?limit=1`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${dimepayConfig.apiKey}`,
+            'X-Merchant-ID': dimepayConfig.merchantId,
+          },
+        });
+        
+        if (testResponse.ok) {
+          apiTestPassed = true;
+          testMessage = 'API connection verified';
+        } else if (testResponse.status === 401) {
+            testMessage = 'Invalid API credentials (401)';
+          } else if (testResponse.status === 403) {
+            testMessage = 'Access forbidden - check merchant ID';
+          } else {
+            testMessage = `API returned status ${testResponse.status}`;
+          }
+        } catch (fetchError) {
+          testMessage = `Connection failed: ${fetchError instanceof Error ? fetchError.message : 'Network error'}`;
+        }
+        
+        const dimepayLatency = Date.now() - dimepayStart;
+        
+        results.push({
+          name: 'DimePay',
+          status: apiTestPassed ? 'online' : 'warning',
+          message: testMessage,
+          latency: dimepayLatency,
+          details: {
+            merchant_id: dimepayConfig.merchantId,
+            api_key_set: !!dimepayConfig.apiKey,
+            base_url: dimepayConfig.baseUrl,
+            fee_percentage: dimepayConfig.feePercentage,
+            fixed_fee: dimepayConfig.fixedFee,
+            pass_fee_to_customer: dimepayConfig.passFeeToCustomer,
+            pass_fee_to_courier: dimepayConfig.passFeeToCourier,
+            source: 'database'
+          }
+        });
+      });
+    } } else {
     results.push({
       name: 'DimePay',
-      status: dimepayConfigured ? 'online' : 'warning',
-      message: dimepayConfigured ? 'Payment gateway configured' : 'Not configured',
+      status: 'warning',
+      message: 'Not configured',
       details: {
         merchant_id: dimepayConfig.merchantId || 'Not set',
         api_key_set: !!dimepayConfig.apiKey,

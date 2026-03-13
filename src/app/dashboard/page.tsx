@@ -3489,7 +3489,7 @@ interface SettingsData {
   bestwond: { appId: string; appSecret: string; deviceId: string; baseUrl: string; enabled: string };
   textbee: { apiKey: string; deviceId: string; enabled: string; senderName: string };
   email: { enabled: string; host: string; port: string; secure: string; user: string; password: string; fromEmail: string; fromName: string };
-  dimepay: { apiKey: string; merchantId: string; baseUrl: string; enabled: string };
+  dimepay: { apiKey: string; merchantId: string; baseUrl: string; enabled: string; passFeeToCustomer: string; passFeeToCourier: string; feePercentage: string; fixedFee: string };
   notifications: { smsEnabled: string; emailEnabled: string; whatsappEnabled: string; pickupReminder: string; abandonedWarning: string };
 }
 
@@ -4192,53 +4192,135 @@ function SettingsContent() {
                 </Button>
               </div>
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="grid gap-2">
-                <Label className="text-[#111111] uppercase text-sm">API Key</Label>
-                <div className="flex gap-2">
+
+            {/* API Credentials Section */}
+            <div className="border-b border-gray-200 pb-4">
+              <h4 className="font-medium text-[#111111] mb-3 uppercase text-sm">API Credentials</h4>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label className="text-[#111111] uppercase text-xs">API Key</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type={showSecrets.dimepay_apiKey ? 'text' : 'password'}
+                      value={settings.dimepay.apiKey}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        dimepay: { ...settings.dimepay, apiKey: e.target.value }
+                      })}
+                      className="border-gray-200"
+                      placeholder="Enter API key"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => toggleShowSecret('dimepay_apiKey')}
+                      className="px-2"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-[#111111] uppercase text-xs">Merchant ID</Label>
                   <Input
-                    type={showSecrets.dimepay_apiKey ? 'text' : 'password'}
-                    value={settings.dimepay.apiKey}
+                    value={settings.dimepay.merchantId}
                     onChange={(e) => setSettings({
                       ...settings,
-                      dimepay: { ...settings.dimepay, apiKey: e.target.value }
+                      dimepay: { ...settings.dimepay, merchantId: e.target.value }
                     })}
                     className="border-gray-200"
-                    placeholder="Enter API key"
+                    placeholder="Enter merchant ID"
                   />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => toggleShowSecret('dimepay_apiKey')}
-                    className="px-2"
-                  >
-                    <Eye className="h-4 w-4" />
-                  </Button>
+                </div>
+                <div className="grid gap-2 md:col-span-2">
+                  <Label className="text-[#111111] uppercase text-xs">Base URL</Label>
+                  <Input
+                    value={settings.dimepay.baseUrl}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      dimepay: { ...settings.dimepay, baseUrl: e.target.value }
+                    })}
+                    className="border-gray-200"
+                    placeholder="https://api.dimepay.io"
+                  />
                 </div>
               </div>
-              <div className="grid gap-2">
-                <Label className="text-[#111111] uppercase text-sm">Merchant ID</Label>
-                <Input
-                  value={settings.dimepay.merchantId}
-                  onChange={(e) => setSettings({
-                    ...settings,
-                    dimepay: { ...settings.dimepay, merchantId: e.target.value }
-                  })}
-                  className="border-gray-200"
-                  placeholder="Enter merchant ID"
-                />
+            </div>
+
+            {/* Fee Settings Section */}
+            <div className="border-b border-gray-200 pb-4">
+              <h4 className="font-medium text-[#111111] mb-3 uppercase text-sm">Fee Settings</h4>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-2">
+                  <Label className="text-[#111111] uppercase text-xs">Fee Percentage (%)</Label>
+                  <Input
+                    type="number"
+                    step="0.1"
+                    value={settings.dimepay.feePercentage}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      dimepay: { ...settings.dimepay, feePercentage: e.target.value }
+                    })}
+                    className="border-gray-200"
+                    placeholder="2.5"
+                  />
+                  <p className="text-xs text-gray-500">Percentage fee charged by DimePay (default: 2.5%)</p>
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-[#111111] uppercase text-xs">Fixed Fee (JMD)</Label>
+                  <Input
+                    type="number"
+                    value={settings.dimepay.fixedFee}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      dimepay: { ...settings.dimepay, fixedFee: e.target.value }
+                    })}
+                    className="border-gray-200"
+                    placeholder="30"
+                  />
+                  <p className="text-xs text-gray-500">Fixed fee per transaction (default: $30 JMD)</p>
+                </div>
               </div>
-              <div className="grid gap-2">
-                <Label className="text-[#111111] uppercase text-sm">Base URL</Label>
-                <Input
-                  value={settings.dimepay.baseUrl}
-                  onChange={(e) => setSettings({
-                    ...settings,
-                    dimepay: { ...settings.dimepay, baseUrl: e.target.value }
-                  })}
-                  className="border-gray-200"
-                  placeholder="https://api.dimepay.io"
-                />
+            </div>
+
+            {/* Fee Pass-through Settings */}
+            <div>
+              <h4 className="font-medium text-[#111111] mb-3 uppercase text-sm">Fee Pass-through</h4>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-[#111111] text-sm">Pass Fee to Customer</p>
+                    <p className="text-xs text-gray-500">Add DimePay fee to storage fee payments</p>
+                  </div>
+                  <Button
+                    variant={settings.dimepay.passFeeToCustomer === 'true' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setSettings({
+                      ...settings,
+                      dimepay: { ...settings.dimepay, passFeeToCustomer: settings.dimepay.passFeeToCustomer === 'true' ? 'false' : 'true' }
+                    })}
+                    className={settings.dimepay.passFeeToCustomer === 'true' ? 'bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90' : 'border-gray-300'}
+                  >
+                    {settings.dimepay.passFeeToCustomer === 'true' ? 'ON' : 'OFF'}
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-[#111111] text-sm">Pass Fee to Courier</p>
+                    <p className="text-xs text-gray-500">Add DimePay fee to courier top-up payments</p>
+                  </div>
+                  <Button
+                    variant={settings.dimepay.passFeeToCourier === 'true' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setSettings({
+                      ...settings,
+                      dimepay: { ...settings.dimepay, passFeeToCourier: settings.dimepay.passFeeToCourier === 'true' ? 'false' : 'true' }
+                    })}
+                    className={settings.dimepay.passFeeToCourier === 'true' ? 'bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90' : 'border-gray-300'}
+                  >
+                    {settings.dimepay.passFeeToCourier === 'true' ? 'ON' : 'OFF'}
+                  </Button>
+                </div>
               </div>
             </div>
           </CardContent>

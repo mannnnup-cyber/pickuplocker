@@ -5,8 +5,10 @@ import {
   createCourierTopupPayment,
   getPaymentStatus, 
   listPayments,
-  calculateDimePayFee 
+  calculateDimePayFee,
+  DimePayConfig
 } from '@/lib/dimepay';
+import { getDimepayConfig } from '@/lib/settings';
 import { db } from '@/lib/db';
 
 // Mock payments for fallback
@@ -18,6 +20,26 @@ const mockPayments = [
 // POST /api/payments - Create payment
 export async function POST(request: NextRequest) {
   try {
+    // Load DimePay config from database
+    const dimepayConfig = await getDimepayConfig();
+    const config: DimePayConfig = {
+      apiKey: dimepayConfig.apiKey,
+      merchantId: dimepayConfig.merchantId,
+      baseUrl: dimepayConfig.baseUrl,
+      passFeeToCustomer: dimepayConfig.passFeeToCustomer,
+      passFeeToCourier: dimepayConfig.passFeeToCourier,
+      feePercentage: dimepayConfig.feePercentage,
+      fixedFee: dimepayConfig.fixedFee,
+    };
+    
+    // Check if DimePay is configured
+    if (!config.apiKey || !config.merchantId) {
+      return NextResponse.json({
+        success: false,
+        error: 'DimePay not configured. Please set API Key and Merchant ID in Settings.',
+      }, { status: 400 });
+    }
+    
     const body = await request.json();
     const { 
       action, 
@@ -45,15 +67,15 @@ export async function POST(request: NextRequest) {
         }, { status: 400 });
       }
 
-      const feeCalc = calculateDimePayFee(amount);
+      const feeCalc = calculateDimePayFee(amount, config);
       return NextResponse.json({
         success: true,
         data: {
           originalAmount: amount,
           fee: feeCalc.fee,
           totalWithFee: feeCalc.totalWithFee,
-          feePercentage: '2.5%',
-          fixedFee: 30,
+          feePercentage: `${config.feePercentage || 2.5}%`,
+          fixedFee: config.fixedFee || 30,
         },
       });
     }
@@ -88,8 +110,8 @@ export async function POST(request: NextRequest) {
         customerPhone: order.customerPhone,
         customerEmail: order.customerEmail || undefined,
         amount: amount,
-        passFeeToCustomer: passFeeToCustomer ?? true, // Default to passing fee to customer
-      });
+        passFeeToCustomer: passFeeToCustomer ?? config.passFeeToCustomer, // Use setting default
+      }, config);
 
       if (result.success && result.data) {
         // Create pending payment record in database
@@ -141,8 +163,8 @@ export async function POST(request: NextRequest) {
         amount: amount,
         customerEmail: customerEmail || courier.email || undefined,
         customerPhone: customerPhone || courier.phone || undefined,
-        passFeeToCourier: passFeeToCustomer ?? false, // Default to merchant absorbing fee
-      });
+        passFeeToCourier: passFeeToCustomer ?? config.passFeeToCourier, // Use setting default
+      }, config);
 
       return NextResponse.json(result);
     }
@@ -166,7 +188,7 @@ export async function POST(request: NextRequest) {
         redirectUrl: `${process.env.NEXTAUTH_URL || 'https://pickuplocker.vercel.app'}/dashboard?payment=success`,
         webhookUrl: `${process.env.NEXTAUTH_URL || 'https://pickuplocker.vercel.app'}/api/webhooks/dimepay`,
         passFeeToCustomer,
-      });
+      }, config);
 
       return NextResponse.json(result);
     }
@@ -181,7 +203,7 @@ export async function POST(request: NextRequest) {
         }, { status: 400 });
       }
 
-      const result = await getPaymentStatus(paymentId);
+      const result = await getPaymentStatus(paymentId, config);
       return NextResponse.json(result);
     }
 
