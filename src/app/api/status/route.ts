@@ -285,46 +285,46 @@ export async function GET() {
           apiTestPassed = true;
           testMessage = 'API connection verified';
         } else if (testResponse.status === 401) {
-            testMessage = 'Invalid API credentials (401)';
-          } else if (testResponse.status === 403) {
-            testMessage = 'Access forbidden - check merchant ID';
-          } else {
-            testMessage = `API returned status ${testResponse.status}`;
-          }
-        } catch (fetchError) {
-          testMessage = `Connection failed: ${fetchError instanceof Error ? fetchError.message : 'Network error'}`;
+          testMessage = 'Invalid API credentials (401)';
+        } else if (testResponse.status === 403) {
+          testMessage = 'Access forbidden - check merchant ID';
+        } else {
+          testMessage = `API returned status ${testResponse.status}`;
         }
-        
-        const dimepayLatency = Date.now() - dimepayStart;
-        
-        results.push({
-          name: 'DimePay',
-          status: apiTestPassed ? 'online' : 'warning',
-          message: testMessage,
-          latency: dimepayLatency,
-          details: {
-            merchant_id: dimepayConfig.merchantId,
-            api_key_set: !!dimepayConfig.apiKey,
-            base_url: dimepayConfig.baseUrl,
-            fee_percentage: dimepayConfig.feePercentage,
-            fixed_fee: dimepayConfig.fixedFee,
-            pass_fee_to_customer: dimepayConfig.passFeeToCustomer,
-            pass_fee_to_courier: dimepayConfig.passFeeToCourier,
-            source: 'database'
-          }
-        });
-      });
-    } } else {
-    results.push({
-      name: 'DimePay',
-      status: 'warning',
-      message: 'Not configured',
-      details: {
-        merchant_id: dimepayConfig.merchantId || 'Not set',
-        api_key_set: !!dimepayConfig.apiKey,
-        source: 'database'
+      } catch (fetchError) {
+        testMessage = `Connection failed: ${fetchError instanceof Error ? fetchError.message : 'Network error'}`;
       }
-    });
+      
+      const dimepayLatency = Date.now() - dimepayStart;
+      
+      results.push({
+        name: 'DimePay',
+        status: apiTestPassed ? 'online' : 'warning',
+        message: testMessage,
+        latency: dimepayLatency,
+        details: {
+          merchant_id: dimepayConfig.merchantId,
+          api_key_set: !!dimepayConfig.apiKey,
+          base_url: dimepayConfig.baseUrl,
+          fee_percentage: dimepayConfig.feePercentage,
+          fixed_fee: dimepayConfig.fixedFee,
+          pass_fee_to_customer: dimepayConfig.passFeeToCustomer,
+          pass_fee_to_courier: dimepayConfig.passFeeToCourier,
+          source: 'database'
+        }
+      });
+    } else {
+      results.push({
+        name: 'DimePay',
+        status: 'warning',
+        message: 'Not configured',
+        details: {
+          merchant_id: dimepayConfig.merchantId || 'Not set',
+          api_key_set: !!dimepayConfig.apiKey,
+          source: 'database'
+        }
+      });
+    }
   } catch (error) {
     results.push({
       name: 'DimePay',
