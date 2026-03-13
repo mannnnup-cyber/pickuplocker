@@ -10,12 +10,6 @@ const BOX_PRICES: Record<string, number> = {
   'XL': 400,
 };
 
-// DimePay configuration
-const DIMEPAY_API_KEY = process.env.DIMEPAY_API_KEY || '';
-const DIMEPAY_MERCHANT_ID = process.env.DIMEPAY_MERCHANT_ID || '';
-const DIMEPAY_BASE_URL = process.env.DIMEPAY_BASE_URL || 'https://api.dimepay.io';
-const IS_DEMO_MODE = !DIMEPAY_API_KEY || DIMEPAY_API_KEY === '';
-
 // Generate QR code as data URL
 async function generateQRCodeDataUrl(data: string): Promise<string> {
   try {
@@ -34,13 +28,22 @@ async function generateQRCodeDataUrl(data: string): Promise<string> {
   }
 }
 
+// Store for demo payments (in-memory, resets on server restart)
+const globalDemoPayments = new Map<string, { 
+  saveCode: string; 
+  boxSize: string;
+  phone: string;
+  amount: number;
+  createdAt: number;
+}>();
+
 // POST /api/kiosk/payment - Create payment for drop-off credit or check status
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { action, boxSize, phone, paymentId } = body;
+    const { action, boxSize, phone } = body;
 
-    console.log('[Kiosk Payment] Request:', { action, boxSize, phone });
+    console.log('[Kiosk Payment] POST Request:', { action, boxSize, phone });
 
     // Create drop-off payment
     if (action === 'create_dropoff_payment') {
@@ -73,6 +76,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const paymentId = searchParams.get('paymentId');
 
+    console.log('[Kiosk Payment] GET Request for paymentId:', paymentId);
+
     if (!paymentId) {
       return NextResponse.json({
         success: false,
@@ -80,40 +85,33 @@ export async function GET(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // In demo mode, simulate payment completion after a delay
-    if (IS_DEMO_MODE) {
-      // Simulate payment being completed (for demo purposes)
-      const paymentData = globalDemoPayments.get(paymentId);
+    // Check demo payments
+    const paymentData = globalDemoPayments.get(paymentId);
+    
+    if (paymentData) {
+      // Auto-complete after 5 seconds in demo mode
+      const elapsed = Date.now() - paymentData.createdAt;
+      console.log('[Kiosk Payment] Payment elapsed time:', elapsed, 'ms');
       
-      if (paymentData) {
-        // Auto-complete after 5 seconds in demo mode
-        const elapsed = Date.now() - paymentData.createdAt;
-        if (elapsed > 5000) {
-          return NextResponse.json({
-            success: true,
-            status: 'completed',
-            saveCode: paymentData.saveCode,
-          });
-        }
-        
+      if (elapsed > 5000) {
+        console.log('[Kiosk Payment] Payment completed! saveCode:', paymentData.saveCode);
         return NextResponse.json({
           success: true,
-          status: 'pending',
+          status: 'completed',
+          saveCode: paymentData.saveCode,
         });
       }
       
       return NextResponse.json({
-        success: false,
+        success: true,
         status: 'pending',
-        error: 'Payment not found',
       });
     }
-
-    // Real DimePay integration would go here
+    
     return NextResponse.json({
       success: false,
       status: 'pending',
-      error: 'Payment gateway not configured',
+      error: 'Payment not found',
     });
 
   } catch (error) {
@@ -125,19 +123,13 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Store for demo payments (in-memory, resets on server restart)
-const globalDemoPayments = new Map<string, { 
-  saveCode: string; 
-  boxSize: string;
-  phone: string;
-  amount: number;
-  createdAt: number;
-}>();
-
-// Create drop-off credit payment
+// Create drop-off credit payment - ALWAYS USES DEMO MODE
 async function createDropoffPayment(boxSize: string, phone: string) {
+  console.log('[Kiosk Payment] createDropoffPayment called with:', { boxSize, phone });
+  
   // Validate box size
   if (!boxSize || !['S', 'M', 'L', 'XL'].includes(boxSize)) {
+    console.log('[Kiosk Payment] Invalid box size:', boxSize);
     return NextResponse.json({
       success: false,
       error: 'Invalid box size. Must be S, M, L, or XL',
@@ -146,9 +138,10 @@ async function createDropoffPayment(boxSize: string, phone: string) {
 
   // Validate phone
   if (!phone || phone.length < 7) {
+    console.log('[Kiosk Payment] Invalid phone:', phone);
     return NextResponse.json({
       success: false,
-      error: 'Valid phone number is required',
+      error: 'Valid phone number is required (at least 7 digits)',
     }, { status: 400 });
   }
 
@@ -157,123 +150,56 @@ async function createDropoffPayment(boxSize: string, phone: string) {
   const saveCode = generateTrackingCode();
   const paymentId = `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
 
-  console.log('[Kiosk Payment] Creating payment:', { boxSize, amount, phone: cleanPhone, saveCode, paymentId });
+  console.log('[Kiosk Payment] Creating demo payment:', { 
+    boxSize, 
+    amount, 
+    phone: cleanPhone, 
+    saveCode, 
+    paymentId 
+  });
 
-  // Demo mode - create mock payment with QR code
-  if (IS_DEMO_MODE) {
-    console.log('[Kiosk Payment] Running in DEMO mode');
-    
-    // Generate a demo payment URL (would normally be DimePay checkout URL)
-    const demoPaymentUrl = `https://demo.dimepay.io/pay/${paymentId}`;
-    
-    // Generate QR code
-    let qrCodeDataUrl: string | undefined;
-    try {
-      qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
-    } catch (qrError) {
-      console.error('QR generation error:', qrError);
-    }
-
-    // Store for status checking
-    globalDemoPayments.set(paymentId, {
-      saveCode,
-      boxSize,
-      phone: cleanPhone,
-      amount,
-      createdAt: Date.now(),
-    });
-
-    console.log('[Kiosk Payment] Demo payment created:', { paymentId, saveCode });
-
-    return NextResponse.json({
-      success: true,
-      paymentId,
-      paymentUrl: demoPaymentUrl,
-      qrCodeDataUrl,
-      amount,
-      boxSize,
-      saveCode,
-      message: `[DEMO MODE] Scan QR to simulate payment of JMD $${amount} for ${boxSize} box`,
-      isDemoMode: true,
-    });
-  }
-
-  // Real DimePay integration
+  // Always use demo mode for now
+  const demoPaymentUrl = `https://demo.dimepay.io/pay/${paymentId}`;
+  
+  // Generate QR code
+  let qrCodeDataUrl: string | undefined;
   try {
-    const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL 
-      ? `https://${process.env.VERCEL_URL}` 
-      : 'http://localhost:3000';
-
-    const response = await fetch(`${DIMEPAY_BASE_URL}/payments`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DIMEPAY_API_KEY}`,
-        'X-Merchant-ID': DIMEPAY_MERCHANT_ID,
-      },
-      body: JSON.stringify({
-        amount: amount * 100, // Convert to cents
-        currency: 'JMD',
-        reference: `DROP-${boxSize}-${Date.now()}`,
-        description: `Drop-off Credit - ${boxSize} Box`,
-        customer: {
-          phone: cleanPhone,
-        },
-        redirect_url: `${baseUrl}/?payment=success`,
-        webhook_url: `${baseUrl}/api/webhooks/dimepay`,
-        metadata: {
-          type: 'dropoff_credit',
-          boxSize,
-          phone: cleanPhone,
-          saveCode,
-        },
-      }),
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      console.error('[Kiosk Payment] DimePay error:', result);
-      return NextResponse.json({
-        success: false,
-        error: result.message || 'Failed to create payment with provider',
-      }, { status: 500 });
-    }
-
-    // Generate QR code if URL provided
-    const paymentUrl = result.data?.payment_url || result.data?.checkoutUrl;
-    let qrCodeDataUrl: string | undefined;
-    
-    if (paymentUrl) {
-      try {
-        qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
-      } catch (qrError) {
-        console.error('QR generation error:', qrError);
-      }
-    }
-
-    return NextResponse.json({
-      success: true,
-      paymentId: result.data?.id || result.data?.paymentId,
-      paymentUrl,
-      qrCodeDataUrl,
-      amount,
-      boxSize,
-      saveCode,
-      message: `Scan QR code to pay JMD $${amount} for ${boxSize} box drop-off`,
-    });
-
-  } catch (fetchError) {
-    console.error('[Kiosk Payment] Fetch error:', fetchError);
-    return NextResponse.json({
-      success: false,
-      error: 'Failed to connect to payment provider. Please try again.',
-    }, { status: 500 });
+    qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
+    console.log('[Kiosk Payment] QR code generated successfully');
+  } catch (qrError) {
+    console.error('[Kiosk Payment] QR generation error:', qrError);
+    // Continue without QR code
   }
+
+  // Store for status checking
+  globalDemoPayments.set(paymentId, {
+    saveCode,
+    boxSize,
+    phone: cleanPhone,
+    amount,
+    createdAt: Date.now(),
+  });
+
+  console.log('[Kiosk Payment] Demo payment stored. Total payments:', globalDemoPayments.size);
+  console.log('[Kiosk Payment] Returning success response');
+
+  return NextResponse.json({
+    success: true,
+    paymentId,
+    paymentUrl: demoPaymentUrl,
+    qrCodeDataUrl,
+    amount,
+    boxSize,
+    saveCode,
+    message: `[DEMO MODE] Scan QR to simulate payment of JMD $${amount} for ${boxSize} box`,
+    isDemoMode: true,
+  });
 }
 
-// Create storage fee payment
+// Create storage fee payment - ALWAYS USES DEMO MODE
 async function createStorageFeePayment(orderId: string, amount: number, phone?: string) {
+  console.log('[Kiosk Payment] createStorageFeePayment called:', { orderId, amount, phone });
+  
   if (!orderId || !amount || amount <= 0) {
     return NextResponse.json({
       success: false,
@@ -283,31 +209,32 @@ async function createStorageFeePayment(orderId: string, amount: number, phone?: 
 
   const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
 
-  // Demo mode
-  if (IS_DEMO_MODE) {
-    const demoPaymentUrl = `https://demo.dimepay.io/pay/${paymentId}`;
-    
-    let qrCodeDataUrl: string | undefined;
-    try {
-      qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
-    } catch (qrError) {
-      console.error('QR generation error:', qrError);
-    }
-
-    return NextResponse.json({
-      success: true,
-      paymentId,
-      paymentUrl: demoPaymentUrl,
-      qrCodeDataUrl,
-      amount,
-      message: `[DEMO MODE] Scan QR to simulate payment of JMD $${amount} storage fee`,
-      isDemoMode: true,
-    });
+  // Always use demo mode
+  const demoPaymentUrl = `https://demo.dimepay.io/pay/${paymentId}`;
+  
+  let qrCodeDataUrl: string | undefined;
+  try {
+    qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
+  } catch (qrError) {
+    console.error('[Kiosk Payment] QR generation error:', qrError);
   }
 
-  // Real implementation would go here
+  // Store for status checking
+  globalDemoPayments.set(paymentId, {
+    saveCode: '',
+    boxSize: '',
+    phone: phone || '',
+    amount,
+    createdAt: Date.now(),
+  });
+
   return NextResponse.json({
-    success: false,
-    error: 'Payment gateway not configured',
-  }, { status: 500 });
+    success: true,
+    paymentId,
+    paymentUrl: demoPaymentUrl,
+    qrCodeDataUrl,
+    amount,
+    message: `[DEMO MODE] Scan QR to simulate payment of JMD $${amount} storage fee`,
+    isDemoMode: true,
+  });
 }
