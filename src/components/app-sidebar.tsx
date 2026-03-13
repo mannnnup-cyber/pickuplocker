@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import {
   Box,
   Settings,
@@ -40,6 +41,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/hooks/useAuth"
 
 const navItems = [
   { title: "Dashboard", tab: "dashboard", icon: LayoutDashboard },
@@ -61,6 +63,18 @@ interface AppSidebarProps {
 }
 
 function AppSidebar({ activeTab, onNavigate }: AppSidebarProps) {
+  const { user, logout } = useAuth()
+  const router = useRouter()
+
+  const handleLogout = async () => {
+    await logout()
+    router.push("/login")
+  }
+
+  const userInitials = user?.name?.split(" ").map(n => n[0]).join("").toUpperCase() || "AD"
+  const userName = user?.name || "Admin User"
+  const userRole = user?.role || "ADMIN"
+
   return (
     <Sidebar className="bg-white border-r border-gray-200">
       <SidebarHeader className="border-b border-gray-200 px-6 py-4">
@@ -106,11 +120,11 @@ function AppSidebar({ activeTab, onNavigate }: AppSidebarProps) {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton className="h-12 text-gray-600 hover:bg-gray-100">
                   <Avatar className="h-8 w-8 bg-[#FFD439]">
-                    <AvatarFallback className="text-[#111111] font-bold">AD</AvatarFallback>
+                    <AvatarFallback className="text-[#111111] font-bold">{userInitials}</AvatarFallback>
                   </Avatar>
                   <div className="flex flex-col items-start">
-                    <span className="text-sm font-medium text-[#111111]">Admin User</span>
-                    <span className="text-xs text-gray-500">admin@pickup.com</span>
+                    <span className="text-sm font-medium text-[#111111]">{userName}</span>
+                    <span className="text-xs text-gray-500">{userRole}</span>
                   </div>
                   <ChevronUp className="ml-auto h-4 w-4" />
                 </SidebarMenuButton>
@@ -121,7 +135,7 @@ function AppSidebar({ activeTab, onNavigate }: AppSidebarProps) {
                   Account Settings
                 </DropdownMenuItem>
                 <DropdownMenuSeparator className="bg-gray-200" />
-                <DropdownMenuItem className="text-red-600 hover:bg-gray-100">
+                <DropdownMenuItem className="text-red-600 hover:bg-gray-100 cursor-pointer" onClick={handleLogout}>
                   <LogOut className="mr-2 h-4 w-4" />
                   Sign Out
                 </DropdownMenuItem>

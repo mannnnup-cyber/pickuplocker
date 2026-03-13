@@ -540,7 +540,7 @@ export default function KioskPage() {
             <Clock className="h-5 w-5" />
             <span>Available 24/7</span>
           </div>
-          <Link href="/dashboard" className="text-gray-500 text-sm underline">
+          <Link href="/login" className="text-gray-500 text-sm underline">
             Staff Login
           </Link>
         </div>

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Montserrat, Roboto } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
+import { AuthProvider } from "@/hooks/useAuth";
 
 const montserrat = Montserrat({
   variable: "--font-montserrat",
@@ -48,7 +49,9 @@ export default function RootLayout({
         className={`${montserrat.variable} ${roboto.variable} antialiased bg-background text-foreground`}
         style={{ fontFamily: "'Roboto', sans-serif" }}
       >
-        {children}
+        <AuthProvider>
+          {children}
+        </AuthProvider>
         <Toaster />
       </body>
     </html>

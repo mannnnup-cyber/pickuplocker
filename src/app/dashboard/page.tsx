@@ -76,6 +76,8 @@ import {
 import { Label } from "@/components/ui/label"
 import { AppLayout } from "@/components/app-sidebar"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/storage"
+import { AuthGuard } from "@/components/auth-guard"
+import { useAuth } from "@/hooks/useAuth"
 
 // Types
 interface Device {
@@ -6710,17 +6712,19 @@ function PageContent() {
 // Main page component with Suspense boundary
 export default function Page() {
   return (
-    <Suspense fallback={
-      <div className="flex h-screen items-center justify-center bg-gray-100">
-        <div className="text-center">
-          <div className="h-16 w-16 rounded-full bg-[#FFD439] flex items-center justify-center mx-auto mb-4 animate-pulse">
-            <Package className="h-8 w-8 text-[#111111]" />
+    <AuthGuard>
+      <Suspense fallback={
+        <div className="flex h-screen items-center justify-center bg-gray-100">
+          <div className="text-center">
+            <div className="h-16 w-16 rounded-full bg-[#FFD439] flex items-center justify-center mx-auto mb-4 animate-pulse">
+              <Package className="h-8 w-8 text-[#111111]" />
+            </div>
+            <p className="text-[#111111] font-bold uppercase">Loading...</p>
           </div>
-          <p className="text-[#111111] font-bold uppercase">Loading...</p>
         </div>
-      </div>
-    }>
-      <PageContent />
-    </Suspense>
+      }>
+        <PageContent />
+      </Suspense>
+    </AuthGuard>
   )
 }
