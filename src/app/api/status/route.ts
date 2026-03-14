@@ -283,6 +283,18 @@ export async function GET() {
       };
       
       try {
+        // First try a simple HEAD request to check connectivity
+        try {
+          const headTest = await fetch(dimepayConfig.baseUrl, {
+            method: 'HEAD',
+            signal: AbortSignal.timeout(10000)
+          });
+          testDetails['base_url_reachable'] = true;
+        } catch (headError) {
+          testDetails['base_url_reachable'] = false;
+          testDetails['connection_error'] = headError instanceof Error ? headError.message : 'Unknown';
+        }
+        
         // Try to hit a health/status endpoint or the payments endpoint
         const testResponse = await fetch(`${dimepayConfig.baseUrl}/payments?limit=1`, {
           method: 'GET',
@@ -290,6 +302,7 @@ export async function GET() {
             'Authorization': `Bearer ${dimepayConfig.apiKey}`,
             'X-Merchant-ID': dimepayConfig.merchantId,
           },
+          signal: AbortSignal.timeout(15000)
         });
         
         if (testResponse.ok) {
@@ -313,19 +326,21 @@ export async function GET() {
           testMessage = 'API endpoint not found - verify Base URL';
           testDetails['troubleshooting'] = [
             'Production URL: https://api.dimepay.app/dapi/v1',
-            'Sandbox URL: https://sandbox.api.dimepay.com',
+            'Sandbox URL: https://sandbox.api.dimepay.app/dapi/v1',
             'Make sure the Base URL is correct for your environment'
           ];
         } else {
           testMessage = `API returned status ${testResponse.status}`;
         }
       } catch (fetchError) {
-        testMessage = `Connection failed: ${fetchError instanceof Error ? fetchError.message : 'Network error'}`;
+        const errorMsg = fetchError instanceof Error ? fetchError.message : 'Network error';
+        testMessage = `Connection failed: ${errorMsg}`;
         testDetails['troubleshooting'] = [
           'Check if the Base URL is correct and accessible',
           'Verify network connectivity',
           'Production: https://api.dimepay.app/dapi/v1',
-          'Sandbox: https://sandbox.api.dimepay.com'
+          'Sandbox: https://sandbox.api.dimepay.app/dapi/v1',
+          'Try using /api/dimepay/test for detailed diagnostics'
         ];
       }
       
