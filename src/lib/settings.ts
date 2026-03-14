@@ -80,7 +80,7 @@ export async function getDimepayConfig() {
   
   const sandboxMode = settings['dimepay_sandboxMode'] === 'true';
   const productionUrl = settings['dimepay_baseUrl'] || 'https://api.dimepay.app/dapi/v1';
-  const sandboxUrl = settings['dimepay_sandboxBaseUrl'] || 'https://sandbox.api.dimepay.com';
+  const sandboxUrl = settings['dimepay_sandboxBaseUrl'] || 'https://sandbox.api.dimepay.app/dapi/v1';
   
   return {
     apiKey: settings['dimepay_apiKey'] || process.env.DIMEPAY_API_KEY || '',

@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
         merchantId: groupedSettings.dimepay?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '',
         baseUrl: groupedSettings.dimepay?.baseUrl || process.env.DIMEPAY_BASE_URL || 'https://api.dimepay.app/dapi/v1',
         sandboxMode: groupedSettings.dimepay?.sandboxMode || 'false',
-        sandboxBaseUrl: groupedSettings.dimepay?.sandboxBaseUrl || 'https://sandbox.api.dimepay.com',
+        sandboxBaseUrl: groupedSettings.dimepay?.sandboxBaseUrl || 'https://sandbox.api.dimepay.app/dapi/v1',
         enabled: groupedSettings.dimepay?.enabled || 'true',
         // Fee pass-through settings
         passFeeToCustomer: groupedSettings.dimepay?.passFeeToCustomer || 'true', // Pass fee to customers for storage fees
