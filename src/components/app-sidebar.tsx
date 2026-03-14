@@ -71,6 +71,10 @@ function AppSidebar({ activeTab, onNavigate }: AppSidebarProps) {
     router.push("/login")
   }
 
+  const handleAccountSettings = () => {
+    onNavigate("settings")
+  }
+
   const userInitials = user?.name?.split(" ").map(n => n[0]).join("").toUpperCase() || "AD"
   const userName = user?.name || "Admin User"
   const userRole = user?.role || "ADMIN"
@@ -130,7 +134,13 @@ function AppSidebar({ activeTab, onNavigate }: AppSidebarProps) {
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="top" className="w-[--radix-popper-anchor-width] bg-white border-gray-200">
-                <DropdownMenuItem className="text-gray-600 hover:bg-gray-100">
+                <DropdownMenuItem 
+                  className="text-gray-600 hover:bg-gray-100 cursor-pointer"
+                  onSelect={(e) => {
+                    e.preventDefault()
+                    handleAccountSettings()
+                  }}
+                >
                   <Settings className="mr-2 h-4 w-4" />
                   Account Settings
                 </DropdownMenuItem>
