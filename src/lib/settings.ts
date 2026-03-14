@@ -78,10 +78,16 @@ export async function getTextbeeConfig() {
 export async function getDimepayConfig() {
   const settings = await loadSettings();
   
+  const sandboxMode = settings['dimepay_sandboxMode'] === 'true';
+  const productionUrl = settings['dimepay_baseUrl'] || 'https://api.dimepay.app/dapi/v1';
+  const sandboxUrl = settings['dimepay_sandboxBaseUrl'] || 'https://sandbox.api.dimepay.com';
+  
   return {
     apiKey: settings['dimepay_apiKey'] || process.env.DIMEPAY_API_KEY || '',
     merchantId: settings['dimepay_merchantId'] || process.env.DIMEPAY_MERCHANT_ID || '',
-    baseUrl: settings['dimepay_baseUrl'] || process.env.DIMEPAY_BASE_URL || 'https://api.dimepay.io',
+    baseUrl: sandboxMode ? sandboxUrl : productionUrl,
+    sandboxMode,
+    sandboxBaseUrl: sandboxUrl,
     enabled: settings['dimepay_enabled'] !== 'false',
     passFeeToCustomer: settings['dimepay_passFeeToCustomer'] !== 'false',
     passFeeToCourier: settings['dimepay_passFeeToCourier'] === 'true',

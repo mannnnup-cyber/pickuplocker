@@ -267,12 +267,23 @@ export async function GET() {
     const dimepayStart = Date.now();
     
     if (dimepayConfig.apiKey && dimepayConfig.merchantId) {
-      // Try to actually test the connection by listing payments (validates API access)
+      // Test connection by trying to verify the API endpoint
       let apiTestPassed = false;
       let testMessage = 'Payment gateway configured';
+      let testDetails: Record<string, unknown> = {
+        merchant_id: dimepayConfig.merchantId,
+        api_key_set: !!dimepayConfig.apiKey,
+        base_url: dimepayConfig.baseUrl,
+        sandbox_mode: dimepayConfig.sandboxMode,
+        fee_percentage: dimepayConfig.feePercentage,
+        fixed_fee: dimepayConfig.fixedFee,
+        pass_fee_to_customer: dimepayConfig.passFeeToCustomer,
+        pass_fee_to_courier: dimepayConfig.passFeeToCourier,
+        source: 'database'
+      };
       
       try {
-        // Make a minimal API call to verify credentials
+        // Try to hit a health/status endpoint or the payments endpoint
         const testResponse = await fetch(`${dimepayConfig.baseUrl}/payments?limit=1`, {
           method: 'GET',
           headers: {
@@ -286,13 +297,36 @@ export async function GET() {
           testMessage = 'API connection verified';
         } else if (testResponse.status === 401) {
           testMessage = 'Invalid API credentials (401)';
+          testDetails['troubleshooting'] = [
+            'Verify your API Key is correct',
+            'Check if API key has expired',
+            'Ensure API key has the right permissions'
+          ];
         } else if (testResponse.status === 403) {
           testMessage = 'Access forbidden - check merchant ID';
+          testDetails['troubleshooting'] = [
+            'Verify Merchant ID matches your DimePay account',
+            'Check if your account is active'
+          ];
+        } else if (testResponse.status === 404) {
+          // 404 might mean the endpoint doesn't exist, but credentials could still be valid
+          testMessage = 'API endpoint not found - verify Base URL';
+          testDetails['troubleshooting'] = [
+            'Production URL: https://api.dimepay.app/dapi/v1',
+            'Sandbox URL: https://sandbox.api.dimepay.com',
+            'Make sure the Base URL is correct for your environment'
+          ];
         } else {
           testMessage = `API returned status ${testResponse.status}`;
         }
       } catch (fetchError) {
         testMessage = `Connection failed: ${fetchError instanceof Error ? fetchError.message : 'Network error'}`;
+        testDetails['troubleshooting'] = [
+          'Check if the Base URL is correct and accessible',
+          'Verify network connectivity',
+          'Production: https://api.dimepay.app/dapi/v1',
+          'Sandbox: https://sandbox.api.dimepay.com'
+        ];
       }
       
       const dimepayLatency = Date.now() - dimepayStart;
@@ -302,16 +336,7 @@ export async function GET() {
         status: apiTestPassed ? 'online' : 'warning',
         message: testMessage,
         latency: dimepayLatency,
-        details: {
-          merchant_id: dimepayConfig.merchantId,
-          api_key_set: !!dimepayConfig.apiKey,
-          base_url: dimepayConfig.baseUrl,
-          fee_percentage: dimepayConfig.feePercentage,
-          fixed_fee: dimepayConfig.fixedFee,
-          pass_fee_to_customer: dimepayConfig.passFeeToCustomer,
-          pass_fee_to_courier: dimepayConfig.passFeeToCourier,
-          source: 'database'
-        }
+        details: testDetails
       });
     } else {
       results.push({
@@ -321,7 +346,14 @@ export async function GET() {
         details: {
           merchant_id: dimepayConfig.merchantId || 'Not set',
           api_key_set: !!dimepayConfig.apiKey,
-          source: 'database'
+          sandbox_mode: dimepayConfig.sandboxMode,
+          source: 'database',
+          setup_guide: [
+            '1. Get API Key from DimePay dashboard',
+            '2. Get Merchant ID from your DimePay account',
+            '3. Choose Production or Sandbox mode',
+            '4. Save settings and test connection'
+          ]
         }
       });
     }

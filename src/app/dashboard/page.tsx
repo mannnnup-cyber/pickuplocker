@@ -3489,7 +3489,7 @@ interface SettingsData {
   bestwond: { appId: string; appSecret: string; deviceId: string; baseUrl: string; enabled: string };
   textbee: { apiKey: string; deviceId: string; enabled: string; senderName: string };
   email: { enabled: string; host: string; port: string; secure: string; user: string; password: string; fromEmail: string; fromName: string };
-  dimepay: { apiKey: string; merchantId: string; baseUrl: string; enabled: string; passFeeToCustomer: string; passFeeToCourier: string; feePercentage: string; fixedFee: string };
+  dimepay: { apiKey: string; merchantId: string; baseUrl: string; sandboxMode: string; sandboxBaseUrl: string; enabled: string; passFeeToCustomer: string; passFeeToCourier: string; feePercentage: string; fixedFee: string };
   notifications: { smsEnabled: string; emailEnabled: string; whatsappEnabled: string; pickupReminder: string; abandonedWarning: string };
 }
 
@@ -4232,8 +4232,43 @@ function SettingsContent() {
                     placeholder="Enter merchant ID"
                   />
                 </div>
-                <div className="grid gap-2 md:col-span-2">
-                  <Label className="text-[#111111] uppercase text-xs">Base URL</Label>
+              </div>
+            </div>
+
+            {/* Environment Mode Section */}
+            <div className="border-b border-gray-200 pb-4">
+              <h4 className="font-medium text-[#111111] mb-3 uppercase text-sm">Environment Mode</h4>
+              <div className="grid gap-4">
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-[#111111]">Sandbox Mode</p>
+                    <p className="text-xs text-gray-500">Use sandbox for testing (no real charges)</p>
+                  </div>
+                  <Button
+                    variant={settings.dimepay.sandboxMode === 'true' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => {
+                      const newSandboxMode = settings.dimepay.sandboxMode === 'true' ? 'false' : 'true';
+                      setSettings({
+                        ...settings,
+                        dimepay: { 
+                          ...settings.dimepay, 
+                          sandboxMode: newSandboxMode,
+                          baseUrl: newSandboxMode === 'true' 
+                            ? (settings.dimepay.sandboxBaseUrl || 'https://sandbox.api.dimepay.com')
+                            : 'https://api.dimepay.app/dapi/v1'
+                        }
+                      });
+                    }}
+                    className={settings.dimepay.sandboxMode === 'true' ? 'bg-yellow-500 text-black hover:bg-yellow-600' : 'border-gray-300'}
+                  >
+                    {settings.dimepay.sandboxMode === 'true' ? 'SANDBOX' : 'PRODUCTION'}
+                  </Button>
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-[#111111] uppercase text-xs">
+                    Base URL {settings.dimepay.sandboxMode === 'true' && '(Sandbox)'}
+                  </Label>
                   <Input
                     value={settings.dimepay.baseUrl}
                     onChange={(e) => setSettings({
@@ -4241,8 +4276,15 @@ function SettingsContent() {
                       dimepay: { ...settings.dimepay, baseUrl: e.target.value }
                     })}
                     className="border-gray-200"
-                    placeholder="https://api.dimepay.io"
+                    placeholder={settings.dimepay.sandboxMode === 'true' 
+                      ? "https://sandbox.api.dimepay.com" 
+                      : "https://api.dimepay.app/dapi/v1"}
                   />
+                  <p className="text-xs text-gray-500">
+                    {settings.dimepay.sandboxMode === 'true' 
+                      ? 'Sandbox URL for testing (no real transactions)' 
+                      : 'Production URL for live transactions'}
+                  </p>
                 </div>
               </div>
             </div>

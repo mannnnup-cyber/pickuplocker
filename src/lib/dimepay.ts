@@ -14,7 +14,10 @@ import QRCode from 'qrcode';
  */
 
 // Default URLs - can be overridden by database settings
-const DEFAULT_BASE_URL = 'https://api.dimepay.io';
+// Production: https://api.dimepay.app/dapi/v1
+// Sandbox: https://sandbox.api.dimepay.com
+const DEFAULT_BASE_URL = 'https://api.dimepay.app/dapi/v1';
+const SANDBOX_BASE_URL = 'https://sandbox.api.dimepay.com';
 
 // Types
 export interface DimePayConfig {
