@@ -4255,7 +4255,7 @@ function SettingsContent() {
                           ...settings.dimepay, 
                           sandboxMode: newSandboxMode,
                           baseUrl: newSandboxMode === 'true' 
-                            ? (settings.dimepay.sandboxBaseUrl || 'https://sandbox.api.dimepay.com')
+                            ? (settings.dimepay.sandboxBaseUrl || 'https://sandbox.api.dimepay.app/dapi/v1')
                             : 'https://api.dimepay.app/dapi/v1'
                         }
                       });
@@ -4277,7 +4277,7 @@ function SettingsContent() {
                     })}
                     className="border-gray-200"
                     placeholder={settings.dimepay.sandboxMode === 'true' 
-                      ? "https://sandbox.api.dimepay.com" 
+                      ? "https://sandbox.api.dimepay.app/dapi/v1" 
                       : "https://api.dimepay.app/dapi/v1"}
                   />
                   <p className="text-xs text-gray-500">
@@ -4373,7 +4373,17 @@ function SettingsContent() {
               </span>
             )}
             <Button
-              onClick={() => handleSave('dimepay', settings.dimepay)}
+              onClick={() => {
+                // When saving, ensure sandboxBaseUrl is synced with baseUrl when in sandbox mode
+                const dimepaySettings = {
+                  ...settings.dimepay,
+                  // If sandbox mode is on, also save the baseUrl to sandboxBaseUrl
+                  ...(settings.dimepay.sandboxMode === 'true' ? {
+                    sandboxBaseUrl: settings.dimepay.baseUrl
+                  } : {})
+                };
+                handleSave('dimepay', dimepaySettings);
+              }}
               disabled={saving === 'dimepay'}
               className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
             >
