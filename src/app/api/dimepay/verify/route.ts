@@ -5,10 +5,8 @@ export async function GET() {
   try {
     const config = await getDimepayConfig();
 
-    // Check if credentials are set based on mode
-    const hasCredentials = config.sandboxMode 
-      ? !!(config.sandboxClientId && config.sandboxSecretKey)
-      : !!(config.liveClientId && config.liveSecretKey);
+    // Check if ANY credentials are set
+    const hasCredentials = config.hasApiCredentials || config.hasClientCredentials;
 
     if (!hasCredentials) {
       return NextResponse.json({
@@ -16,11 +14,13 @@ export async function GET() {
         error: 'DimePay not configured',
         details: {
           mode: config.sandboxMode ? 'sandbox' : 'live',
-          sandboxClientIdSet: !!config.sandboxClientId,
-          sandboxSecretKeySet: !!config.sandboxSecretKey,
-          liveClientIdSet: !!config.liveClientId,
-          liveSecretKeySet: !!config.liveSecretKey,
-          message: `Please set ${config.sandboxMode ? 'Sandbox' : 'Live'} credentials in Settings`
+          // API Key format
+          hasApiKey: !!config.apiKey,
+          hasMerchantId: !!config.merchantId,
+          // Client ID format
+          hasClientId: !!config.clientId,
+          hasSecretKey: !!config.secretKey,
+          message: 'Please set either API Key + Merchant ID OR Client ID + Secret Key in Settings'
         }
       });
     }
@@ -30,9 +30,17 @@ export async function GET() {
         baseUrl: config.baseUrl,
         sandboxMode: config.sandboxMode,
         mode: config.sandboxMode ? 'sandbox' : 'live',
-        clientIdPrefix: (config.sandboxMode ? config.sandboxClientId : config.liveClientId)?.substring(0, 10) + '...' || 'N/A',
-        hasClientId: !!(config.sandboxMode ? config.sandboxClientId : config.liveClientId),
-        hasSecretKey: !!(config.sandboxMode ? config.sandboxSecretKey : config.liveSecretKey),
+        useApiFormat: config.useApiFormat,
+        // Show which credentials are being used
+        credentials: config.useApiFormat ? {
+          type: 'API Key + Merchant ID',
+          apiKeyPrefix: config.apiKey?.substring(0, 8) + '...' || 'N/A',
+          merchantId: config.merchantId
+        } : {
+          type: 'Client ID + Secret Key',
+          clientIdPrefix: config.clientId?.substring(0, 10) + '...' || 'N/A',
+          hasSecretKey: !!config.secretKey
+        }
       },
       tests: []
     };
@@ -42,7 +50,7 @@ export async function GET() {
       const dnsStart = Date.now();
       const dnsTest = await fetch(config.baseUrl, {
         method: 'HEAD',
-        signal: AbortSignal.timeout(10000) // 10 second timeout
+        signal: AbortSignal.timeout(10000)
       });
       const dnsLatency = Date.now() - dnsStart;
 
@@ -68,34 +76,45 @@ export async function GET() {
       });
     }
 
-    // Validate Client ID prefix
-    const clientId = config.sandboxMode ? config.sandboxClientId : config.liveClientId;
-    if (config.sandboxMode && clientId && !clientId.startsWith('ck_test_')) {
-      results.tests.push({
-        name: 'Credential Validation',
-        success: false,
-        message: 'Warning: Sandbox mode is on but Client ID does not start with ck_test_'
-      });
-    } else if (!config.sandboxMode && clientId && !clientId.startsWith('ck_live_')) {
-      results.tests.push({
-        name: 'Credential Validation',
-        success: false,
-        message: 'Warning: Live mode is on but Client ID does not start with ck_live_'
-      });
+    // Test 2: Validate credentials format
+    if (config.useApiFormat) {
+      // Validate API Key format
+      if (config.apiKey && !config.apiKey.startsWith('sk_')) {
+        results.tests.push({
+          name: 'Credential Validation',
+          success: false,
+          message: 'API Key should start with sk_ prefix'
+        });
+      } else {
+        results.tests.push({
+          name: 'Credential Validation',
+          success: true,
+          message: 'API Key has correct format (sk_ prefix)'
+        });
+      }
     } else {
-      results.tests.push({
-        name: 'Credential Validation',
-        success: true,
-        message: `Client ID has correct prefix (${config.sandboxMode ? 'ck_test_' : 'ck_live_'})`
-      });
+      // Validate Client ID format
+      const expectedPrefix = config.sandboxMode ? 'ck_test_' : 'ck_live_';
+      if (config.clientId && !config.clientId.startsWith(expectedPrefix)) {
+        results.tests.push({
+          name: 'Credential Validation',
+          success: false,
+          message: `Client ID should start with ${expectedPrefix} for ${config.sandboxMode ? 'sandbox' : 'live'} mode`
+        });
+      } else if (config.clientId) {
+        results.tests.push({
+          name: 'Credential Validation',
+          success: true,
+          message: `Client ID has correct prefix (${expectedPrefix})`
+        });
+      }
     }
 
-    // DimePay uses SDK-based integration, not direct API calls
-    // The actual payment flow uses initPayment() from @dimepay/web-sdk
+    // DimePay uses SDK-based integration for payments
     results.tests.push({
-      name: 'Integration Method',
+      name: 'Integration Info',
       success: true,
-      message: 'DimePay uses SDK-based integration (initPayment). Configure webhook URL: https://your-domain.com/api/webhooks/dimepay'
+      message: 'DimePay uses SDK-based integration. Configure webhook: https://your-domain.com/api/webhooks/dimepay'
     });
 
     const allTestsPassed = results.tests.every((t: {success: boolean}) => t.success);
@@ -103,8 +122,7 @@ export async function GET() {
     return NextResponse.json({
       success: allTestsPassed,
       message: allTestsPassed ? 'DimePay configuration looks good!' : 'DimePay configuration has issues',
-      results,
-      note: 'DimePay uses client-side SDK for payments. Make sure your domain is authorized in DimePay dashboard.'
+      results
     });
 
   } catch (error) {

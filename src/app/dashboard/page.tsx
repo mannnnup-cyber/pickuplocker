@@ -3489,7 +3489,23 @@ interface SettingsData {
   bestwond: { appId: string; appSecret: string; deviceId: string; baseUrl: string; enabled: string };
   textbee: { apiKey: string; deviceId: string; enabled: string; senderName: string };
   email: { enabled: string; host: string; port: string; secure: string; user: string; password: string; fromEmail: string; fromName: string };
-  dimepay: { sandbox_clientId: string; sandbox_secretKey: string; live_clientId: string; live_secretKey: string; sandboxMode: string; enabled: string; passFeeToCustomer: string; passFeeToCourier: string; feePercentage: string; fixedFee: string };
+  dimepay: { 
+    // API Key format (alternative)
+    apiKey: string; 
+    merchantId: string; 
+    // Client ID format (preferred)
+    sandbox_clientId: string; 
+    sandbox_secretKey: string; 
+    live_clientId: string; 
+    live_secretKey: string; 
+    // Common settings
+    sandboxMode: string; 
+    enabled: string; 
+    passFeeToCustomer: string; 
+    passFeeToCourier: string; 
+    feePercentage: string; 
+    fixedFee: string 
+  };
   notifications: { smsEnabled: string; emailEnabled: string; whatsappEnabled: string; pickupReminder: string; abandonedWarning: string };
 }
 
@@ -4197,18 +4213,61 @@ function SettingsContent() {
             <div className="border-b border-gray-200 pb-4">
               <h4 className="font-medium text-[#111111] mb-3 uppercase text-sm">API Credentials</h4>
               <p className="text-xs text-gray-500 mb-3">
-                DimePay uses the same URL for both environments. Environment is determined by Client ID prefix (ck_test_ = sandbox, ck_live_ = production).
+                DimePay supports two credential formats. Use whichever your account provides.
               </p>
               
-              {/* Sandbox Credentials */}
+              {/* Option 1: API Key Format */}
+              <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                <h5 className="font-medium text-[#111111] mb-2 text-sm">Option 1: API Key + Merchant ID</h5>
+                <p className="text-xs text-gray-500 mb-2">API Key should start with sk_</p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid gap-1">
+                    <Label className="text-[#111111] uppercase text-xs">API Key</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        type={showSecrets.dimepay_apiKey ? 'text' : 'password'}
+                        value={settings.dimepay.apiKey || ''}
+                        onChange={(e) => setSettings({
+                          ...settings,
+                          dimepay: { ...settings.dimepay, apiKey: e.target.value }
+                        })}
+                        className="border-gray-200 flex-1"
+                        placeholder="sk_..."
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => toggleShowSecret('dimepay_apiKey')}
+                        className="px-2"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="grid gap-1">
+                    <Label className="text-[#111111] uppercase text-xs">Merchant ID</Label>
+                    <Input
+                      value={settings.dimepay.merchantId || ''}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        dimepay: { ...settings.dimepay, merchantId: e.target.value }
+                      })}
+                      className="border-gray-200"
+                      placeholder="Enter merchant ID"
+                    />
+                  </div>
+                </div>
+              </div>
+              
+              {/* Option 2: Client ID Format */}
               <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <h5 className="font-medium text-[#111111] mb-2 text-sm">Sandbox Credentials (Testing)</h5>
+                <h5 className="font-medium text-[#111111] mb-2 text-sm">Option 2: Client ID + Secret Key (Sandbox)</h5>
                 <p className="text-xs text-gray-500 mb-2">Client ID should start with ck_test_</p>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="grid gap-1">
                     <Label className="text-[#111111] uppercase text-xs">Sandbox Client ID</Label>
                     <Input
-                      value={settings.dimepay.sandbox_clientId}
+                      value={settings.dimepay.sandbox_clientId || ''}
                       onChange={(e) => setSettings({
                         ...settings,
                         dimepay: { ...settings.dimepay, sandbox_clientId: e.target.value }
@@ -4222,7 +4281,7 @@ function SettingsContent() {
                     <div className="flex gap-2">
                       <Input
                         type={showSecrets.dimepay_sandbox_secretKey ? 'text' : 'password'}
-                        value={settings.dimepay.sandbox_secretKey}
+                        value={settings.dimepay.sandbox_secretKey || ''}
                         onChange={(e) => setSettings({
                           ...settings,
                           dimepay: { ...settings.dimepay, sandbox_secretKey: e.target.value }
@@ -4245,13 +4304,13 @@ function SettingsContent() {
               
               {/* Live Credentials */}
               <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
-                <h5 className="font-medium text-[#111111] mb-2 text-sm">Live Credentials (Production)</h5>
+                <h5 className="font-medium text-[#111111] mb-2 text-sm">Option 2: Client ID + Secret Key (Live)</h5>
                 <p className="text-xs text-gray-500 mb-2">Client ID should start with ck_live_</p>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="grid gap-1">
                     <Label className="text-[#111111] uppercase text-xs">Live Client ID</Label>
                     <Input
-                      value={settings.dimepay.live_clientId}
+                      value={settings.dimepay.live_clientId || ''}
                       onChange={(e) => setSettings({
                         ...settings,
                         dimepay: { ...settings.dimepay, live_clientId: e.target.value }
@@ -4265,7 +4324,7 @@ function SettingsContent() {
                     <div className="flex gap-2">
                       <Input
                         type={showSecrets.dimepay_live_secretKey ? 'text' : 'password'}
-                        value={settings.dimepay.live_secretKey}
+                        value={settings.dimepay.live_secretKey || ''}
                         onChange={(e) => setSettings({
                           ...settings,
                           dimepay: { ...settings.dimepay, live_secretKey: e.target.value }

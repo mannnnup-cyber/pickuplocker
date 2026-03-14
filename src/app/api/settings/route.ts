@@ -51,6 +51,9 @@ export async function GET(request: NextRequest) {
         senderName: groupedSettings.textbee?.senderName || 'PickupJA',
       },
       dimepay: {
+        // API Key format (alternative - sk_ prefix)
+        apiKey: groupedSettings.dimepay?.apiKey || process.env.DIMEPAY_API_KEY || '',
+        merchantId: groupedSettings.dimepay?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '',
         // Sandbox credentials (ck_test_... prefix)
         sandbox_clientId: groupedSettings.dimepay?.sandbox_clientId || process.env.DIMEPAY_SANDBOX_CLIENT_ID || '',
         sandbox_secretKey: groupedSettings.dimepay?.sandbox_secretKey || process.env.DIMEPAY_SANDBOX_SECRET_KEY || '',
@@ -58,12 +61,12 @@ export async function GET(request: NextRequest) {
         live_clientId: groupedSettings.dimepay?.live_clientId || process.env.DIMEPAY_LIVE_CLIENT_ID || '',
         live_secretKey: groupedSettings.dimepay?.live_secretKey || process.env.DIMEPAY_LIVE_SECRET_KEY || '',
         // Mode toggle
-        sandboxMode: groupedSettings.dimepay?.sandboxMode || 'true',
+        sandboxMode: groupedSettings.dimepay?.sandboxMode || groupedSettings.dimepay?.testMode || 'true',
         enabled: groupedSettings.dimepay?.enabled || 'true',
         // Fee pass-through settings
         passFeeToCustomer: groupedSettings.dimepay?.passFeeToCustomer || 'true', // Pass fee to customers for storage fees
         passFeeToCourier: groupedSettings.dimepay?.passFeeToCourier || 'false', // Merchant absorbs fee for courier top-ups
-        feePercentage: groupedSettings.dimepay?.feePercentage || '2.5',
+        feePercentage: groupedSettings.dimepay?.feePercentage || groupedSettings.dimepay?.feePercent || '2.5',
         fixedFee: groupedSettings.dimepay?.fixedFee || '30',
       },
       notifications: {

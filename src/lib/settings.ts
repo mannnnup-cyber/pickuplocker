@@ -78,33 +78,54 @@ export async function getTextbeeConfig() {
 export async function getDimepayConfig() {
   const settings = await loadSettings();
   
-  const sandboxMode = settings['dimepay_sandboxMode'] === 'true';
-  // DimePay uses the SAME base URL for both sandbox and production
-  // Environment is determined by Client ID prefix (ck_test_ vs ck_live_)
+  const sandboxMode = settings['dimepay_sandboxMode'] === 'true' || settings['dimepay_testMode'] === 'true';
+  
+  // DimePay uses the same base URL for both sandbox and production
   const baseUrl = 'https://api.dimepay.com';
   
-  // Get credentials based on mode
-  const sandboxClientId = settings['dimepay_sandbox_clientId'] || process.env.DIMEPAY_SANDBOX_CLIENT_ID || '';
-  const sandboxSecretKey = settings['dimepay_sandbox_secretKey'] || process.env.DIMEPAY_SANDBOX_SECRET_KEY || '';
-  const liveClientId = settings['dimepay_live_clientId'] || process.env.DIMEPAY_LIVE_CLIENT_ID || '';
-  const liveSecretKey = settings['dimepay_live_secretKey'] || process.env.DIMEPAY_LIVE_SECRET_KEY || '';
+  // Support BOTH credential formats:
+  // Format 1: Client ID + Secret Key (ck_test_/ck_live_ prefix) - for SDK integration
+  // Format 2: API Key + Merchant ID (sk_ prefix) - for direct API integration
+  
+  const sandboxClientId = settings['dimepay_sandbox_clientId'] || '';
+  const sandboxSecretKey = settings['dimepay_sandbox_secretKey'] || '';
+  const liveClientId = settings['dimepay_live_clientId'] || '';
+  const liveSecretKey = settings['dimepay_live_secretKey'] || '';
+  
+  // Old format credentials (API Key + Merchant ID)
+  const apiKey = settings['dimepay_apiKey'] || process.env.DIMEPAY_API_KEY || '';
+  const merchantId = settings['dimepay_merchantId'] || process.env.DIMEPAY_MERCHANT_ID || '';
+  
+  // Determine which format to use
+  const hasClientCredentials = sandboxMode 
+    ? !!(sandboxClientId && sandboxSecretKey)
+    : !!(liveClientId && liveSecretKey);
+  const hasApiCredentials = !!(apiKey && merchantId);
+  
+  // Use API key format if those credentials exist, otherwise use client ID format
+  const useApiFormat = hasApiCredentials;
   
   const clientId = sandboxMode ? sandboxClientId : liveClientId;
   const secretKey = sandboxMode ? sandboxSecretKey : liveSecretKey;
   
   return {
+    // Client ID format (for SDK integration)
     clientId,
     secretKey,
+    // API Key format (for direct API integration)
+    apiKey,
+    merchantId,
+    // Which format is being used
+    useApiFormat,
+    hasClientCredentials,
+    hasApiCredentials,
+    // Common settings
     baseUrl,
     sandboxMode,
-    sandboxClientId,
-    sandboxSecretKey,
-    liveClientId,
-    liveSecretKey,
     enabled: settings['dimepay_enabled'] !== 'false',
     passFeeToCustomer: settings['dimepay_passFeeToCustomer'] !== 'false',
     passFeeToCourier: settings['dimepay_passFeeToCourier'] === 'true',
-    feePercentage: parseFloat(settings['dimepay_feePercentage'] || '2.5'),
+    feePercentage: parseFloat(settings['dimepay_feePercentage'] || settings['dimepay_feePercent'] || '2.5'),
     fixedFee: parseFloat(settings['dimepay_fixedFee'] || '30'),
   };
 }
