@@ -2,51 +2,57 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { clearSettingsCache } from '@/lib/settings';
 
-// POST - Fix DimePay URLs to correct values
+// POST - Migrate old DimePay settings to new format
 export async function POST() {
   try {
-    const correctUrls = {
-      dimepay_baseUrl: 'https://api.dimepay.app/dapi/v1',
-      dimepay_sandboxBaseUrl: 'https://sandbox.api.dimepay.app/dapi/v1',
-    };
+    // Get old settings
+    const oldSettings = await db.setting.findMany({
+      where: {
+        key: {
+          in: ['dimepay_apiKey', 'dimepay_merchantId', 'dimepay_baseUrl', 'dimepay_sandboxBaseUrl']
+        }
+      }
+    });
 
-    const updates = [];
-    for (const [key, value] of Object.entries(correctUrls)) {
-      updates.push(
-        db.setting.upsert({
-          where: { key },
-          update: { value },
-          create: { key, value }
-        })
-      );
+    const oldValues: Record<string, string> = {};
+    for (const setting of oldSettings) {
+      oldValues[setting.key] = setting.value;
     }
 
-    await Promise.all(updates);
+    // Delete old settings that are no longer used
+    await db.setting.deleteMany({
+      where: {
+        key: {
+          in: ['dimepay_apiKey', 'dimepay_merchantId', 'dimepay_baseUrl', 'dimepay_sandboxBaseUrl']
+        }
+      }
+    });
 
-    // Clear cache so new values are picked up
+    // Clear cache
     clearSettingsCache();
 
     return NextResponse.json({
       success: true,
-      message: 'DimePay URLs have been corrected',
-      updated: correctUrls
+      message: 'Old DimePay settings cleaned up. Please configure new Client ID and Secret Key in Settings.',
+      removedSettings: Object.keys(oldValues),
+      note: 'DimePay now uses Client ID (ck_test_/ck_live_) and Secret Key instead of API Key and Merchant ID.'
     });
   } catch (error) {
-    console.error('Failed to fix DimePay URLs:', error);
+    console.error('Failed to migrate DimePay settings:', error);
     return NextResponse.json({
       success: false,
-      error: 'Failed to update settings'
+      error: 'Failed to migrate settings'
     }, { status: 500 });
   }
 }
 
-// GET - Show current DimePay URL settings
+// GET - Show current DimePay settings status
 export async function GET() {
   try {
     const settings = await db.setting.findMany({
       where: {
         key: {
-          in: ['dimepay_baseUrl', 'dimepay_sandboxBaseUrl', 'dimepay_sandboxMode', 'dimepay_apiKey', 'dimepay_merchantId']
+          startsWith: 'dimepay_'
         }
       }
     });
@@ -54,8 +60,10 @@ export async function GET() {
     const result: Record<string, string> = {};
     for (const setting of settings) {
       // Mask sensitive values
-      if (setting.key.includes('apiKey')) {
-        result[setting.key] = setting.value.substring(0, 8) + '...' + setting.value.substring(setting.value.length - 4);
+      if (setting.key.includes('secretKey')) {
+        result[setting.key] = '***' + setting.value.substring(setting.value.length - 4);
+      } else if (setting.key.includes('clientId')) {
+        result[setting.key] = setting.value.substring(0, 15) + '...';
       } else {
         result[setting.key] = setting.value;
       }
@@ -64,10 +72,14 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       currentSettings: result,
-      correctUrls: {
-        dimepay_baseUrl: 'https://api.dimepay.app/dapi/v1',
-        dimepay_sandboxBaseUrl: 'https://sandbox.api.dimepay.app/dapi/v1',
-      }
+      correctFormat: {
+        sandbox_clientId: 'Should start with ck_test_',
+        sandbox_secretKey: 'Your sandbox secret key',
+        live_clientId: 'Should start with ck_live_',
+        live_secretKey: 'Your live secret key',
+        sandboxMode: 'true for testing, false for production'
+      },
+      apiUrl: 'https://api.dimepay.com (same for both environments)'
     });
   } catch (error) {
     console.error('Failed to get DimePay settings:', error);

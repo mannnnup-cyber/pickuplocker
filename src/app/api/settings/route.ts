@@ -51,11 +51,14 @@ export async function GET(request: NextRequest) {
         senderName: groupedSettings.textbee?.senderName || 'PickupJA',
       },
       dimepay: {
-        apiKey: groupedSettings.dimepay?.apiKey || process.env.DIMEPAY_API_KEY || '',
-        merchantId: groupedSettings.dimepay?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '',
-        baseUrl: groupedSettings.dimepay?.baseUrl || process.env.DIMEPAY_BASE_URL || 'https://api.dimepay.app/dapi/v1',
-        sandboxMode: groupedSettings.dimepay?.sandboxMode || 'false',
-        sandboxBaseUrl: groupedSettings.dimepay?.sandboxBaseUrl || 'https://sandbox.api.dimepay.app/dapi/v1',
+        // Sandbox credentials (ck_test_... prefix)
+        sandbox_clientId: groupedSettings.dimepay?.sandbox_clientId || process.env.DIMEPAY_SANDBOX_CLIENT_ID || '',
+        sandbox_secretKey: groupedSettings.dimepay?.sandbox_secretKey || process.env.DIMEPAY_SANDBOX_SECRET_KEY || '',
+        // Live credentials (ck_live_... prefix)
+        live_clientId: groupedSettings.dimepay?.live_clientId || process.env.DIMEPAY_LIVE_CLIENT_ID || '',
+        live_secretKey: groupedSettings.dimepay?.live_secretKey || process.env.DIMEPAY_LIVE_SECRET_KEY || '',
+        // Mode toggle
+        sandboxMode: groupedSettings.dimepay?.sandboxMode || 'true',
         enabled: groupedSettings.dimepay?.enabled || 'true',
         // Fee pass-through settings
         passFeeToCustomer: groupedSettings.dimepay?.passFeeToCustomer || 'true', // Pass fee to customers for storage fees

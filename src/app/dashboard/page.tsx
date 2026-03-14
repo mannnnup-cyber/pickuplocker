@@ -3489,7 +3489,7 @@ interface SettingsData {
   bestwond: { appId: string; appSecret: string; deviceId: string; baseUrl: string; enabled: string };
   textbee: { apiKey: string; deviceId: string; enabled: string; senderName: string };
   email: { enabled: string; host: string; port: string; secure: string; user: string; password: string; fromEmail: string; fromName: string };
-  dimepay: { apiKey: string; merchantId: string; baseUrl: string; sandboxMode: string; sandboxBaseUrl: string; enabled: string; passFeeToCustomer: string; passFeeToCourier: string; feePercentage: string; fixedFee: string };
+  dimepay: { sandbox_clientId: string; sandbox_secretKey: string; live_clientId: string; live_secretKey: string; sandboxMode: string; enabled: string; passFeeToCustomer: string; passFeeToCourier: string; feePercentage: string; fixedFee: string };
   notifications: { smsEnabled: string; emailEnabled: string; whatsappEnabled: string; pickupReminder: string; abandonedWarning: string };
 }
 
@@ -4196,41 +4196,93 @@ function SettingsContent() {
             {/* API Credentials Section */}
             <div className="border-b border-gray-200 pb-4">
               <h4 className="font-medium text-[#111111] mb-3 uppercase text-sm">API Credentials</h4>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label className="text-[#111111] uppercase text-xs">API Key</Label>
-                  <div className="flex gap-2">
+              <p className="text-xs text-gray-500 mb-3">
+                DimePay uses the same URL for both environments. Environment is determined by Client ID prefix (ck_test_ = sandbox, ck_live_ = production).
+              </p>
+              
+              {/* Sandbox Credentials */}
+              <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <h5 className="font-medium text-[#111111] mb-2 text-sm">Sandbox Credentials (Testing)</h5>
+                <p className="text-xs text-gray-500 mb-2">Client ID should start with ck_test_</p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid gap-1">
+                    <Label className="text-[#111111] uppercase text-xs">Sandbox Client ID</Label>
                     <Input
-                      type={showSecrets.dimepay_apiKey ? 'text' : 'password'}
-                      value={settings.dimepay.apiKey}
+                      value={settings.dimepay.sandbox_clientId}
                       onChange={(e) => setSettings({
                         ...settings,
-                        dimepay: { ...settings.dimepay, apiKey: e.target.value }
+                        dimepay: { ...settings.dimepay, sandbox_clientId: e.target.value }
                       })}
                       className="border-gray-200"
-                      placeholder="Enter API key"
+                      placeholder="ck_test_..."
                     />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => toggleShowSecret('dimepay_apiKey')}
-                      className="px-2"
-                    >
-                      <Eye className="h-4 w-4" />
-                    </Button>
+                  </div>
+                  <div className="grid gap-1">
+                    <Label className="text-[#111111] uppercase text-xs">Sandbox Secret Key</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        type={showSecrets.dimepay_sandbox_secretKey ? 'text' : 'password'}
+                        value={settings.dimepay.sandbox_secretKey}
+                        onChange={(e) => setSettings({
+                          ...settings,
+                          dimepay: { ...settings.dimepay, sandbox_secretKey: e.target.value }
+                        })}
+                        className="border-gray-200 flex-1"
+                        placeholder="Enter secret key"
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => toggleShowSecret('dimepay_sandbox_secretKey')}
+                        className="px-2"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                 </div>
-                <div className="grid gap-2">
-                  <Label className="text-[#111111] uppercase text-xs">Merchant ID</Label>
-                  <Input
-                    value={settings.dimepay.merchantId}
-                    onChange={(e) => setSettings({
-                      ...settings,
-                      dimepay: { ...settings.dimepay, merchantId: e.target.value }
-                    })}
-                    className="border-gray-200"
-                    placeholder="Enter merchant ID"
-                  />
+              </div>
+              
+              {/* Live Credentials */}
+              <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                <h5 className="font-medium text-[#111111] mb-2 text-sm">Live Credentials (Production)</h5>
+                <p className="text-xs text-gray-500 mb-2">Client ID should start with ck_live_</p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid gap-1">
+                    <Label className="text-[#111111] uppercase text-xs">Live Client ID</Label>
+                    <Input
+                      value={settings.dimepay.live_clientId}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        dimepay: { ...settings.dimepay, live_clientId: e.target.value }
+                      })}
+                      className="border-gray-200"
+                      placeholder="ck_live_..."
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <Label className="text-[#111111] uppercase text-xs">Live Secret Key</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        type={showSecrets.dimepay_live_secretKey ? 'text' : 'password'}
+                        value={settings.dimepay.live_secretKey}
+                        onChange={(e) => setSettings({
+                          ...settings,
+                          dimepay: { ...settings.dimepay, live_secretKey: e.target.value }
+                        })}
+                        className="border-gray-200 flex-1"
+                        placeholder="Enter secret key"
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => toggleShowSecret('dimepay_live_secretKey')}
+                        className="px-2"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -4241,8 +4293,12 @@ function SettingsContent() {
               <div className="grid gap-4">
                 <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                   <div>
-                    <p className="font-medium text-[#111111]">Sandbox Mode</p>
-                    <p className="text-xs text-gray-500">Use sandbox for testing (no real charges)</p>
+                    <p className="font-medium text-[#111111]">Current Mode</p>
+                    <p className="text-xs text-gray-500">
+                      {settings.dimepay.sandboxMode === 'true' 
+                        ? 'Using Sandbox credentials (ck_test_) - No real charges' 
+                        : 'Using Live credentials (ck_live_) - Real transactions'}
+                    </p>
                   </div>
                   <Button
                     variant={settings.dimepay.sandboxMode === 'true' ? 'default' : 'outline'}
@@ -4253,37 +4309,19 @@ function SettingsContent() {
                         ...settings,
                         dimepay: { 
                           ...settings.dimepay, 
-                          sandboxMode: newSandboxMode,
-                          baseUrl: newSandboxMode === 'true' 
-                            ? (settings.dimepay.sandboxBaseUrl || 'https://sandbox.api.dimepay.app/dapi/v1')
-                            : 'https://api.dimepay.app/dapi/v1'
+                          sandboxMode: newSandboxMode
                         }
                       });
                     }}
-                    className={settings.dimepay.sandboxMode === 'true' ? 'bg-yellow-500 text-black hover:bg-yellow-600' : 'border-gray-300'}
+                    className={settings.dimepay.sandboxMode === 'true' ? 'bg-yellow-500 text-black hover:bg-yellow-600' : 'bg-green-500 text-white hover:bg-green-600'}
                   >
-                    {settings.dimepay.sandboxMode === 'true' ? 'SANDBOX' : 'PRODUCTION'}
+                    {settings.dimepay.sandboxMode === 'true' ? 'SANDBOX' : 'LIVE'}
                   </Button>
                 </div>
-                <div className="grid gap-2">
-                  <Label className="text-[#111111] uppercase text-xs">
-                    Base URL {settings.dimepay.sandboxMode === 'true' && '(Sandbox)'}
-                  </Label>
-                  <Input
-                    value={settings.dimepay.baseUrl}
-                    onChange={(e) => setSettings({
-                      ...settings,
-                      dimepay: { ...settings.dimepay, baseUrl: e.target.value }
-                    })}
-                    className="border-gray-200"
-                    placeholder={settings.dimepay.sandboxMode === 'true' 
-                      ? "https://sandbox.api.dimepay.app/dapi/v1" 
-                      : "https://api.dimepay.app/dapi/v1"}
-                  />
-                  <p className="text-xs text-gray-500">
-                    {settings.dimepay.sandboxMode === 'true' 
-                      ? 'Sandbox URL for testing (no real transactions)' 
-                      : 'Production URL for live transactions'}
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <p className="text-xs text-blue-800">
+                    <strong>Note:</strong> DimePay uses the same base URL (https://api.dimepay.com) for both environments. 
+                    The environment is determined by which credentials are used based on the mode setting above.
                   </p>
                 </div>
               </div>
@@ -4373,17 +4411,7 @@ function SettingsContent() {
               </span>
             )}
             <Button
-              onClick={() => {
-                // When saving, ensure sandboxBaseUrl is synced with baseUrl when in sandbox mode
-                const dimepaySettings = {
-                  ...settings.dimepay,
-                  // If sandbox mode is on, also save the baseUrl to sandboxBaseUrl
-                  ...(settings.dimepay.sandboxMode === 'true' ? {
-                    sandboxBaseUrl: settings.dimepay.baseUrl
-                  } : {})
-                };
-                handleSave('dimepay', dimepaySettings);
-              }}
+              onClick={() => handleSave('dimepay', settings.dimepay)}
               disabled={saving === 'dimepay'}
               className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
             >

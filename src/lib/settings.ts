@@ -79,15 +79,28 @@ export async function getDimepayConfig() {
   const settings = await loadSettings();
   
   const sandboxMode = settings['dimepay_sandboxMode'] === 'true';
-  const productionUrl = settings['dimepay_baseUrl'] || 'https://api.dimepay.app/dapi/v1';
-  const sandboxUrl = settings['dimepay_sandboxBaseUrl'] || 'https://sandbox.api.dimepay.app/dapi/v1';
+  // DimePay uses the SAME base URL for both sandbox and production
+  // Environment is determined by Client ID prefix (ck_test_ vs ck_live_)
+  const baseUrl = 'https://api.dimepay.com';
+  
+  // Get credentials based on mode
+  const sandboxClientId = settings['dimepay_sandbox_clientId'] || process.env.DIMEPAY_SANDBOX_CLIENT_ID || '';
+  const sandboxSecretKey = settings['dimepay_sandbox_secretKey'] || process.env.DIMEPAY_SANDBOX_SECRET_KEY || '';
+  const liveClientId = settings['dimepay_live_clientId'] || process.env.DIMEPAY_LIVE_CLIENT_ID || '';
+  const liveSecretKey = settings['dimepay_live_secretKey'] || process.env.DIMEPAY_LIVE_SECRET_KEY || '';
+  
+  const clientId = sandboxMode ? sandboxClientId : liveClientId;
+  const secretKey = sandboxMode ? sandboxSecretKey : liveSecretKey;
   
   return {
-    apiKey: settings['dimepay_apiKey'] || process.env.DIMEPAY_API_KEY || '',
-    merchantId: settings['dimepay_merchantId'] || process.env.DIMEPAY_MERCHANT_ID || '',
-    baseUrl: sandboxMode ? sandboxUrl : productionUrl,
+    clientId,
+    secretKey,
+    baseUrl,
     sandboxMode,
-    sandboxBaseUrl: sandboxUrl,
+    sandboxClientId,
+    sandboxSecretKey,
+    liveClientId,
+    liveSecretKey,
     enabled: settings['dimepay_enabled'] !== 'false',
     passFeeToCustomer: settings['dimepay_passFeeToCustomer'] !== 'false',
     passFeeToCourier: settings['dimepay_passFeeToCourier'] === 'true',
