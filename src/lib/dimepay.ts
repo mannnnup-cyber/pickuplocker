@@ -4,26 +4,31 @@ import QRCode from 'qrcode';
 /**
  * DimePay Payment Gateway Client
  * 
- * Integration with DimePay for processing payments
- * Supports card payments, mobile money, and online transfers
- * Features:
- * - Storage fee collection
- * - QR code payment generation
- * - Courier prepaid account top-up
- * - Fee pass-through to customers
+ * Supports SDK/Web Widget integration with Client ID + Secret Key
+ * Used for embedded payment widget with JWT authentication
  */
 
-// Default URLs - can be overridden by database settings
-// Production: https://api.dimepay.app/dapi/v1
-// Sandbox: https://sandbox.api.dimepay.app/dapi/v1
-const DEFAULT_BASE_URL = 'https://api.dimepay.app/dapi/v1';
-const SANDBOX_BASE_URL = 'https://sandbox.api.dimepay.app/dapi/v1';
+// DimePay uses same URL for both sandbox and live
+const DIMEPAY_BASE_URL = 'https://api.dimepay.com';
 
 // Types
+export interface DimePaySDKConfig {
+  clientId: string;
+  secretKey: string;
+  sandboxMode?: boolean;
+  baseUrl?: string;
+  passFeeToCustomer?: boolean;
+  passFeeToCourier?: boolean;
+  feePercentage?: number;
+  fixedFee?: number;
+}
+
 export interface DimePayConfig {
-  apiKey: string;
-  merchantId: string;
-  baseUrl: string;
+  apiKey?: string;
+  merchantId?: string;
+  clientId?: string;
+  secretKey?: string;
+  baseUrl?: string;
   passFeeToCustomer?: boolean;
   passFeeToCourier?: boolean;
   feePercentage?: number;
@@ -47,53 +52,39 @@ export interface PaymentRequest {
   redirectUrl?: string;
   webhookUrl?: string;
   metadata?: Record<string, unknown>;
-  passFeeToCustomer?: boolean; // If true, add DimePay fee to the amount
+  passFeeToCustomer?: boolean;
 }
 
 export interface PaymentResult {
   paymentId: string;
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'refunded';
   amount: number;
-  originalAmount?: number; // Before fee was added
-  feeAmount?: number; // Fee charged
+  originalAmount?: number;
+  feeAmount?: number;
   currency: string;
   paymentUrl?: string;
-  qrCodeDataUrl?: string; // Base64 QR code image
+  qrCodeDataUrl?: string;
   paymentMethod?: string;
   createdAt: string;
   completedAt?: string;
 }
 
-export interface RefundRequest {
-  paymentId: string;
-  amount?: number; // Partial refund if specified
-  reason: string;
-}
-
-export interface RefundResult {
-  refundId: string;
-  status: 'pending' | 'completed' | 'failed';
+export interface SDKPaymentData {
   amount: number;
-}
-
-export interface CourierTopupRequest {
-  courierId: string;
-  courierName: string;
-  amount: number;
+  currency: string;
+  reference: string;
+  description?: string;
   customerEmail?: string;
   customerPhone?: string;
-  passFeeToCourier?: boolean;
+  metadata?: Record<string, unknown>;
 }
 
-export interface StorageFeePaymentRequest {
-  orderId: string;
-  orderNumber: string;
-  trackingCode: string;
-  customerName: string;
-  customerPhone: string;
-  customerEmail?: string;
-  amount: number;
-  passFeeToCustomer?: boolean;
+export interface SDKInitConfig {
+  clientId: string;
+  data: string; // JWT token
+  test: boolean;
+  onSuccess: string; // callback URL
+  onClose: string; // callback URL
 }
 
 /**
@@ -134,24 +125,92 @@ export async function generateQRCode(data: string): Promise<string> {
 }
 
 /**
- * Create a payment request
+ * Create JWT token for DimePay SDK
+ * This token is passed to the initPayment() function
  */
-export async function createPayment(
+export function createSDKJWT(
+  config: DimePaySDKConfig,
+  paymentData: SDKPaymentData
+): string {
+  const header = {
+    alg: 'HS256',
+    typ: 'JWT'
+  };
+
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: config.clientId,
+    iat: now,
+    exp: now + 3600, // 1 hour expiry
+    amount: paymentData.amount,
+    currency: paymentData.currency || 'JMD',
+    reference: paymentData.reference,
+    description: paymentData.description,
+    customer_email: paymentData.customerEmail,
+    customer_phone: paymentData.customerPhone,
+    metadata: paymentData.metadata,
+  };
+
+  // Base64URL encode
+  const base64UrlEncode = (obj: object) => {
+    return Buffer.from(JSON.stringify(obj))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  };
+
+  const encodedHeader = base64UrlEncode(header);
+  const encodedPayload = base64UrlEncode(payload);
+  
+  // Create signature
+  const signature = crypto
+    .createHmac('sha256', config.secretKey)
+    .update(`${encodedHeader}.${encodedPayload}`)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+
+  return `${encodedHeader}.${encodedPayload}.${signature}`;
+}
+
+/**
+ * Get SDK initialization config for frontend
+ * Returns everything needed to call initPayment()
+ */
+export function getSDKInitConfig(
+  config: DimePaySDKConfig,
+  paymentData: SDKPaymentData,
+  callbacks: { onSuccess: string; onClose: string }
+): SDKInitConfig {
+  const jwt = createSDKJWT(config, paymentData);
+  
+  return {
+    clientId: config.clientId,
+    data: jwt,
+    test: config.sandboxMode || false,
+    onSuccess: callbacks.onSuccess,
+    onClose: callbacks.onClose,
+  };
+}
+
+/**
+ * Create a payment request using SDK format
+ */
+export async function createSDKPayment(
   data: PaymentRequest,
-  config?: DimePayConfig
-): Promise<DimePayResponse<PaymentResult>> {
+  config: DimePaySDKConfig
+): Promise<DimePayResponse<PaymentResult & { sdkConfig: SDKInitConfig }>> {
   try {
-    // Use provided config or fall back to defaults
-    const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
-    const merchantId = config?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '';
-    const baseUrl = config?.baseUrl || process.env.DIMEPAY_BASE_URL || DEFAULT_BASE_URL;
-    
-    if (!apiKey || !merchantId) {
+    if (!config.clientId || !config.secretKey) {
       return {
         success: false,
-        error: 'DimePay not configured. Please set API Key and Merchant ID in Settings.',
+        error: 'DimePay not configured. Please set Client ID and Secret Key in Settings.',
       };
     }
+
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
     
     let finalAmount = data.amount;
     let originalAmount = data.amount;
@@ -159,75 +218,49 @@ export async function createPayment(
 
     // If passFeeToCustomer is true, add the fee to the amount
     if (data.passFeeToCustomer) {
-      const feeCalc = calculateDimePayFee(data.amount / 100, config); // Convert from cents
-      finalAmount = (feeCalc.totalWithFee) * 100; // Convert back to cents
+      const feeCalc = calculateDimePayFee(data.amount / 100, config);
+      finalAmount = feeCalc.totalWithFee * 100;
       feeAmount = feeCalc.fee * 100;
     }
 
-    const response = await fetch(`${baseUrl}/payments`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'X-Merchant-ID': merchantId,
-      },
-      body: JSON.stringify({
+    // Create SDK config
+    const sdkConfig = getSDKInitConfig(
+      config,
+      {
         amount: finalAmount,
         currency: data.currency || 'JMD',
         reference: data.orderId,
         description: data.description,
-        customer: {
-          email: data.customerEmail,
-          phone: data.customerPhone,
-        },
-        redirect_url: data.redirectUrl,
-        webhook_url: data.webhookUrl,
+        customerEmail: data.customerEmail,
+        customerPhone: data.customerPhone,
         metadata: {
           ...data.metadata,
           originalAmount: originalAmount,
           feeAmount: feeAmount,
           feePassedToCustomer: data.passFeeToCustomer || false,
         },
-      }),
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      return {
-        success: false,
-        error: result.message || result.error || `API Error: ${response.status}`,
-      };
-    }
-
-    // Generate QR code for the payment URL
-    const paymentUrl = result.data?.payment_url || result.data?.checkoutUrl;
-    let qrCodeDataUrl: string | undefined;
-    
-    if (paymentUrl) {
-      try {
-        qrCodeDataUrl = await generateQRCode(paymentUrl);
-      } catch (qrError) {
-        console.error('Failed to generate QR code:', qrError);
+      },
+      {
+        onSuccess: data.redirectUrl || `${baseUrl}/payment/success`,
+        onClose: `${baseUrl}/payment/cancelled`,
       }
-    }
+    );
 
     return {
       success: true,
       data: {
-        paymentId: result.data?.id || result.data?.paymentId,
+        paymentId: data.orderId, // Use order ID as reference
         status: 'pending',
-        amount: finalAmount / 100, // Convert from cents
+        amount: finalAmount / 100,
         originalAmount: originalAmount / 100,
         feeAmount: feeAmount / 100,
         currency: data.currency || 'JMD',
-        paymentUrl: paymentUrl,
-        qrCodeDataUrl: qrCodeDataUrl,
         createdAt: new Date().toISOString(),
+        sdkConfig: sdkConfig,
       },
     };
   } catch (error) {
-    console.error('DimePay Create Payment Error:', error);
+    console.error('DimePay Create SDK Payment Error:', error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -236,23 +269,31 @@ export async function createPayment(
 }
 
 /**
- * Create storage fee payment with QR code
+ * Create storage fee payment with SDK
  */
 export async function createStorageFeePayment(
-  data: StorageFeePaymentRequest,
-  config?: DimePayConfig
-): Promise<DimePayResponse<PaymentResult>> {
-  const baseUrl = process.env.NEXTAUTH_URL || 'https://pickuplocker.vercel.app';
+  data: {
+    orderId: string;
+    orderNumber: string;
+    trackingCode: string;
+    customerName: string;
+    customerPhone: string;
+    customerEmail?: string;
+    amount: number;
+    passFeeToCustomer?: boolean;
+  },
+  config: DimePaySDKConfig
+): Promise<DimePayResponse<PaymentResult & { sdkConfig: SDKInitConfig }>> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
   
-  return createPayment({
-    amount: Math.round(data.amount * 100), // Convert to cents
+  return createSDKPayment({
+    amount: Math.round(data.amount * 100),
     currency: 'JMD',
     orderId: data.orderNumber,
     description: `Storage Fee - Order ${data.orderNumber}`,
     customerEmail: data.customerEmail,
     customerPhone: data.customerPhone,
-    redirectUrl: `${baseUrl}/dashboard?payment=success&order=${data.orderNumber}`,
-    webhookUrl: `${baseUrl}/api/webhooks/dimepay`,
+    redirectUrl: `${baseUrl}/payment/success?order=${data.orderNumber}`,
     passFeeToCustomer: data.passFeeToCustomer,
     metadata: {
       type: 'storage_fee',
@@ -265,23 +306,29 @@ export async function createStorageFeePayment(
 }
 
 /**
- * Create courier top-up payment
+ * Create courier top-up payment with SDK
  */
 export async function createCourierTopupPayment(
-  data: CourierTopupRequest,
-  config?: DimePayConfig
-): Promise<DimePayResponse<PaymentResult>> {
-  const baseUrl = process.env.NEXTAUTH_URL || 'https://pickuplocker.vercel.app';
+  data: {
+    courierId: string;
+    courierName: string;
+    amount: number;
+    customerEmail?: string;
+    customerPhone?: string;
+    passFeeToCourier?: boolean;
+  },
+  config: DimePaySDKConfig
+): Promise<DimePayResponse<PaymentResult & { sdkConfig: SDKInitConfig }>> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
   
-  return createPayment({
-    amount: Math.round(data.amount * 100), // Convert to cents
+  return createSDKPayment({
+    amount: Math.round(data.amount * 100),
     currency: 'JMD',
     orderId: `TOPUP-${data.courierId}-${Date.now()}`,
     description: `Account Top-up - ${data.courierName}`,
     customerEmail: data.customerEmail,
     customerPhone: data.customerPhone,
-    redirectUrl: `${baseUrl}/dashboard?payment=success&courier=${data.courierId}`,
-    webhookUrl: `${baseUrl}/api/webhooks/dimepay`,
+    redirectUrl: `${baseUrl}/payment/success?courier=${data.courierId}`,
     passFeeToCustomer: data.passFeeToCourier,
     metadata: {
       type: 'courier_topup',
@@ -292,183 +339,28 @@ export async function createCourierTopupPayment(
 }
 
 /**
- * Get payment status
- */
-export async function getPaymentStatus(
-  paymentId: string,
-  config?: DimePayConfig
-): Promise<DimePayResponse<PaymentResult>> {
-  try {
-    const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
-    const merchantId = config?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '';
-    const baseUrl = config?.baseUrl || process.env.DIMEPAY_BASE_URL || DEFAULT_BASE_URL;
-    
-    const response = await fetch(`${baseUrl}/payments/${paymentId}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'X-Merchant-ID': merchantId,
-      },
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      return {
-        success: false,
-        error: result.message || 'Failed to get payment status',
-      };
-    }
-
-    return {
-      success: true,
-      data: {
-        paymentId: result.data?.id,
-        status: result.data?.status,
-        amount: result.data?.amount,
-        currency: result.data?.currency,
-        paymentMethod: result.data?.payment_method,
-        createdAt: result.data?.created_at,
-        completedAt: result.data?.completed_at,
-      },
-    };
-  } catch (error) {
-    console.error('DimePay Get Payment Status Error:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
-  }
-}
-
-/**
- * Process refund
- */
-export async function processRefund(
-  data: RefundRequest,
-  config?: DimePayConfig
-): Promise<DimePayResponse<RefundResult>> {
-  try {
-    const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
-    const merchantId = config?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '';
-    const baseUrl = config?.baseUrl || process.env.DIMEPAY_BASE_URL || DEFAULT_BASE_URL;
-    
-    const response = await fetch(`${baseUrl}/payments/${data.paymentId}/refund`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'X-Merchant-ID': merchantId,
-      },
-      body: JSON.stringify({
-        amount: data.amount,
-        reason: data.reason,
-      }),
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      return {
-        success: false,
-        error: result.message || 'Failed to process refund',
-      };
-    }
-
-    return {
-      success: true,
-      data: {
-        refundId: result.data?.id,
-        status: result.data?.status || 'pending',
-        amount: data.amount || 0,
-      },
-    };
-  } catch (error) {
-    console.error('DimePay Refund Error:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
-  }
-}
-
-/**
  * Verify webhook signature
  */
 export function verifyWebhookSignature(
   payload: string,
   signature: string,
-  config?: DimePayConfig
+  secretKey: string
 ): boolean {
-  const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
   const expectedSignature = crypto
-    .createHmac('sha256', apiKey)
+    .createHmac('sha256', secretKey)
     .update(payload)
     .digest('hex');
   return signature === expectedSignature;
 }
 
-/**
- * List payments with filtering
- */
-export async function listPayments(filters?: {
-  status?: string;
-  startDate?: string;
-  endDate?: string;
-  limit?: number;
-  offset?: number;
-}, config?: DimePayConfig): Promise<DimePayResponse<PaymentResult[]>> {
-  try {
-    const apiKey = config?.apiKey || process.env.DIMEPAY_API_KEY || '';
-    const merchantId = config?.merchantId || process.env.DIMEPAY_MERCHANT_ID || '';
-    const baseUrl = config?.baseUrl || process.env.DIMEPAY_BASE_URL || DEFAULT_BASE_URL;
-    
-    const params = new URLSearchParams();
-    if (filters?.status) params.append('status', filters.status);
-    if (filters?.startDate) params.append('start_date', filters.startDate);
-    if (filters?.endDate) params.append('end_date', filters.endDate);
-    if (filters?.limit) params.append('limit', String(filters.limit));
-    if (filters?.offset) params.append('offset', String(filters.offset));
-
-    const response = await fetch(`${baseUrl}/payments?${params.toString()}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'X-Merchant-ID': merchantId,
-      },
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      return {
-        success: false,
-        error: result.message || 'Failed to list payments',
-      };
-    }
-
-    return {
-      success: true,
-      data: result.data?.payments || result.data || [],
-    };
-  } catch (error) {
-    console.error('DimePay List Payments Error:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
-  }
-}
-
 // Export default client
 const DimePayClient = {
-  createPayment,
+  createSDKPayment,
   createStorageFeePayment,
   createCourierTopupPayment,
-  getPaymentStatus,
-  processRefund,
+  createSDKJWT,
+  getSDKInitConfig,
   verifyWebhookSignature,
-  listPayments,
   calculateDimePayFee,
   generateQRCode,
 };
