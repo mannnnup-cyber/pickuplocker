@@ -45,6 +45,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* DimePay SDK */}
+        <script src="https://cdn.dimepay.io/sdk/v1/dimepay.js" async></script>
+      </head>
       <body
         className={`${montserrat.variable} ${roboto.variable} antialiased bg-background text-foreground`}
         style={{ fontFamily: "'Roboto', sans-serif" }}

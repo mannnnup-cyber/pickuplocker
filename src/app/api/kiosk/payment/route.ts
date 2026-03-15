@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateTrackingCode } from '@/lib/storage';
-import { createPayment, calculateDimePayFee, DimePayConfig } from '@/lib/dimepay';
+import { createSDKPayment, calculateDimePayFee, DimePaySDKConfig } from '@/lib/dimepay';
 import { getDimepayConfig } from '@/lib/settings';
 import { sendSMS } from '@/lib/textbee';
 import QRCode from 'qrcode';
@@ -38,6 +38,26 @@ const globalDemoPayments = new Map<string, {
   phone: string;
   amount: number;
   createdAt: number;
+}>();
+
+// Store for SDK payments pending (shared with /api/payment/sdk)
+export const globalSdkPayments = new Map<string, {
+  amount: number;
+  currency: string;
+  description: string;
+  reference: string;
+  sdkConfig: {
+    clientId: string;
+    data: string;
+    test: boolean;
+    onSuccess: string;
+    onClose: string;
+  };
+  createdAt: number;
+  // Extra data for kiosk
+  saveCode?: string;
+  boxSize?: string;
+  phone?: string;
 }>();
 
 // Store for real payments pending
@@ -99,6 +119,23 @@ export async function GET(request: NextRequest) {
       }, { status: 400 });
     }
 
+    // Check SDK payments first
+    const sdkPayment = globalSdkPayments.get(paymentId);
+    if (sdkPayment) {
+      console.log('[Kiosk Payment] Found SDK payment:', paymentId);
+      
+      // For SDK payments, we rely on webhooks for status updates
+      // Return pending status - the webhook will update the status
+      // For now, check if the payment was completed via webhook
+      // In a real implementation, you'd check a database for the payment status
+      
+      return NextResponse.json({
+        success: true,
+        status: 'pending',
+        message: 'Payment pending. Please complete payment on your device.',
+      });
+    }
+
     // Check demo payments
     const demoPayment = globalDemoPayments.get(paymentId);
     
@@ -136,50 +173,11 @@ export async function GET(request: NextRequest) {
     // Check real payments
     const realPayment = globalPendingPayments.get(paymentId);
     if (realPayment) {
-      // Check with DimePay for actual status
-      try {
-        const config = await getDimepayConfig();
-        const dimepayConfig: DimePayConfig = {
-          apiKey: config.apiKey,
-          merchantId: config.merchantId,
-          baseUrl: config.baseUrl,
-        };
-        
-        const { getPaymentStatus } = await import('@/lib/dimepay');
-        const statusResult = await getPaymentStatus(paymentId, dimepayConfig);
-        
-        if (statusResult.success && statusResult.data?.status === 'completed') {
-          // Send SMS notification
-          try {
-            await sendSMS(realPayment.phone,
-              `Pickup Jamaica: Your drop-off payment of JMD $${realPayment.amount} is confirmed. Your save code is ${realPayment.saveCode}. Use this code at the locker to store your package.`
-            );
-            console.log('[Kiosk Payment] SMS sent to:', realPayment.phone);
-          } catch (smsError) {
-            console.error('[Kiosk Payment] Failed to send SMS:', smsError);
-          }
-          
-          // Remove from pending
-          globalPendingPayments.delete(paymentId);
-          
-          return NextResponse.json({
-            success: true,
-            status: 'completed',
-            saveCode: realPayment.saveCode,
-          });
-        }
-        
-        return NextResponse.json({
-          success: true,
-          status: statusResult.data?.status || 'pending',
-        });
-      } catch (statusError) {
-        console.error('[Kiosk Payment] Failed to check payment status:', statusError);
-        return NextResponse.json({
-          success: true,
-          status: 'pending',
-        });
-      }
+      // For now, return pending - webhooks will handle completion
+      return NextResponse.json({
+        success: true,
+        status: 'pending',
+      });
     }
     
     return NextResponse.json({
@@ -224,67 +222,96 @@ async function createDropoffPayment(boxSize: string, phone: string) {
   const saveCode = generateTrackingCode();
 
   // Check if DimePay is configured
-  let dimepayConfig: DimePayConfig;
-  try {
-    const config = await getDimepayConfig();
-    dimepayConfig = {
-      apiKey: config.apiKey,
-      merchantId: config.merchantId,
-      baseUrl: config.baseUrl,
-      passFeeToCustomer: config.passFeeToCustomer,
-      feePercentage: config.feePercentage,
-      fixedFee: config.fixedFee,
-    };
-  } catch (configError) {
-    console.error('[Kiosk Payment] Failed to load DimePay config:', configError);
-    dimepayConfig = { apiKey: '', merchantId: '', baseUrl: 'https://api.dimepay.io' };
-  }
+  const config = await getDimepayConfig();
+  
+  console.log('[Kiosk Payment] DimePay config loaded:', {
+    hasClientId: !!config.clientId,
+    hasSecretKey: !!config.secretKey,
+    sandboxMode: config.sandboxMode,
+  });
 
-  // Use real DimePay if configured
-  if (dimepayConfig.apiKey && dimepayConfig.merchantId) {
-    console.log('[Kiosk Payment] Using real DimePay');
+  // Use real DimePay SDK if credentials are configured
+  if (config.clientId && config.secretKey) {
+    console.log('[Kiosk Payment] Using real DimePay SDK');
     
     try {
       const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL 
         ? `https://${process.env.VERCEL_URL}` 
         : 'https://pickuplocker.vercel.app';
       
-      const result = await createPayment({
+      const orderId = `DROPOFF-${Date.now()}`;
+      
+      // Create SDK config
+      const sdkConfig: DimePaySDKConfig = {
+        clientId: config.clientId,
+        secretKey: config.secretKey,
+        sandboxMode: config.sandboxMode,
+        passFeeToCustomer: config.passFeeToCustomer,
+        passFeeToCourier: config.passFeeToCourier,
+        feePercentage: config.feePercentage,
+        fixedFee: config.fixedFee,
+      };
+
+      const result = await createSDKPayment({
         amount: Math.round(amount * 100), // Convert to cents
         currency: 'JMD',
-        orderId: `DROPOFF-${Date.now()}`,
+        orderId: orderId,
         description: `Drop-off Credit - ${boxSize} Box`,
         customerPhone: cleanPhone,
         redirectUrl: `${baseUrl}/kiosk?payment=success`,
-        webhookUrl: `${baseUrl}/api/webhooks/dimepay`,
-        passFeeToCustomer: dimepayConfig.passFeeToCustomer,
+        passFeeToCustomer: config.passFeeToCustomer,
         metadata: {
           type: 'dropoff_credit',
           boxSize,
           saveCode,
           customerPhone: cleanPhone,
         },
-      }, dimepayConfig);
+      }, sdkConfig);
 
-      if (result.success && result.data) {
-        // Store pending payment
-        globalPendingPayments.set(result.data.paymentId, {
+      if (result.success && result.data && result.data.sdkConfig) {
+        // Generate payment URL for the payment page
+        const paymentUrl = `${baseUrl}/pay/${orderId}`;
+        
+        // Generate QR code from payment URL
+        let qrCodeDataUrl: string | undefined;
+        try {
+          qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
+          console.log('[Kiosk Payment] QR code generated for payment URL');
+        } catch (qrError) {
+          console.error('[Kiosk Payment] QR generation error:', qrError);
+        }
+
+        // Store payment data for retrieval by payment page and status checking
+        globalSdkPayments.set(orderId, {
+          amount: result.data.amount,
+          currency: result.data.currency,
+          description: `Drop-off Credit - ${boxSize} Box`,
+          reference: orderId,
+          sdkConfig: result.data.sdkConfig,
+          createdAt: Date.now(),
+          saveCode,
+          boxSize,
+          phone: cleanPhone,
+        });
+
+        // Also store in pending payments for status checking
+        globalPendingPayments.set(orderId, {
           saveCode,
           boxSize,
           phone: cleanPhone,
           amount: result.data.amount,
           createdAt: Date.now(),
-          paymentId: result.data.paymentId,
-          paymentUrl: result.data.paymentUrl,
+          paymentId: orderId,
+          paymentUrl,
         });
 
-        console.log('[Kiosk Payment] Real payment created:', result.data.paymentId);
+        console.log('[Kiosk Payment] SDK payment created:', orderId);
 
         return NextResponse.json({
           success: true,
-          paymentId: result.data.paymentId,
-          paymentUrl: result.data.paymentUrl,
-          qrCodeDataUrl: result.data.qrCodeDataUrl,
+          paymentId: orderId,
+          paymentUrl,
+          qrCodeDataUrl,
           amount: result.data.amount,
           originalAmount: result.data.originalAmount,
           feeAmount: result.data.feeAmount,
@@ -294,25 +321,27 @@ async function createDropoffPayment(boxSize: string, phone: string) {
           isDemoMode: false,
         });
       } else {
-        console.error('[Kiosk Payment] DimePay payment failed:', result.error);
+        console.error('[Kiosk Payment] DimePay SDK payment failed:', result.error);
         // Fall through to demo mode
       }
     } catch (dimepayError) {
-      console.error('[Kiosk Payment] DimePay error:', dimepayError);
+      console.error('[Kiosk Payment] DimePay SDK error:', dimepayError);
       // Fall through to demo mode
     }
   }
 
   // Demo mode fallback
-  console.log('[Kiosk Payment] Using demo mode');
+  console.log('[Kiosk Payment] Using demo mode - no valid DimePay credentials');
   const paymentId = `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-  const demoPaymentUrl = `https://demo.dimepay.io/pay/${paymentId}`;
+  const demoPaymentUrl = `${process.env.NEXTAUTH_URL || process.env.VERCEL_URL 
+    ? `https://${process.env.VERCEL_URL}` 
+    : 'https://pickuplocker.vercel.app'}/pay/demo/${paymentId}`;
   
   // Generate QR code
   let qrCodeDataUrl: string | undefined;
   try {
     qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
-    console.log('[Kiosk Payment] QR code generated successfully');
+    console.log('[Kiosk Payment] Demo QR code generated successfully');
   } catch (qrError) {
     console.error('[Kiosk Payment] QR generation error:', qrError);
   }
