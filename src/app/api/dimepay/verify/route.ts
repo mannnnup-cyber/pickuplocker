@@ -82,20 +82,20 @@ export async function GET() {
 
     // Test 2: Validate credentials format
     if (hasSdkCredentials) {
-      const expectedPrefix = config.sandboxMode ? 'ck_test_' : 'ck_live_';
-      const hasValidPrefix = config.clientId?.startsWith(expectedPrefix);
+      // DimePay Client IDs start with 'ck_' (not ck_test_ or ck_live_)
+      const hasValidPrefix = config.clientId?.startsWith('ck_');
       
       if (!hasValidPrefix) {
         results.tests.push({
           name: 'Credential Validation',
           success: false,
-          message: `Client ID should start with ${expectedPrefix} for ${config.sandboxMode ? 'sandbox' : 'live'} mode. Current prefix: ${config.clientId?.substring(0, 10)}...`
+          message: `Client ID should start with ck_ prefix. Current prefix: ${config.clientId?.substring(0, 10)}...`
         });
       } else {
         results.tests.push({
           name: 'Credential Validation',
           success: true,
-          message: `Client ID has correct prefix (${expectedPrefix})`
+          message: `Client ID has correct format (ck_ prefix) - ${config.sandboxMode ? 'Sandbox' : 'Live'} mode`
         });
       }
     } else {
