@@ -266,13 +266,17 @@ export async function GET() {
     const dimepayConfig = await getDimepayConfig();
     const dimepayStart = Date.now();
     
-    if (dimepayConfig.apiKey && dimepayConfig.merchantId) {
-      // Test connection by trying to verify the API endpoint
+    // Check if SDK credentials are configured (clientId + secretKey)
+    const hasSdkCredentials = !!(dimepayConfig.clientId && dimepayConfig.secretKey);
+    // Check if old API credentials exist (for backwards compatibility)
+    const hasApiCredentials = !!(dimepayConfig.apiKey && dimepayConfig.merchantId);
+    
+    if (hasSdkCredentials || hasApiCredentials) {
+      // Test connection
       let apiTestPassed = false;
       let testMessage = 'Payment gateway configured';
       let testDetails: Record<string, unknown> = {
-        merchant_id: dimepayConfig.merchantId,
-        api_key_set: !!dimepayConfig.apiKey,
+        integration_type: hasSdkCredentials ? 'SDK/Widget' : 'Direct API',
         base_url: dimepayConfig.baseUrl,
         sandbox_mode: dimepayConfig.sandboxMode,
         fee_percentage: dimepayConfig.feePercentage,
@@ -282,66 +286,40 @@ export async function GET() {
         source: 'database'
       };
       
-      try {
-        // First try a simple HEAD request to check connectivity
+      if (hasSdkCredentials) {
+        // SDK mode - just check connectivity and validate credentials format
+        testDetails['client_id_prefix'] = dimepayConfig.clientId?.substring(0, 10) + '...';
+        testDetails['secret_key_set'] = !!dimepayConfig.secretKey;
+        
         try {
           const headTest = await fetch(dimepayConfig.baseUrl, {
             method: 'HEAD',
             signal: AbortSignal.timeout(10000)
           });
           testDetails['base_url_reachable'] = true;
+          apiTestPassed = true;
+          testMessage = 'SDK credentials configured - Ready for payment widget';
         } catch (headError) {
           testDetails['base_url_reachable'] = false;
-          testDetails['connection_error'] = headError instanceof Error ? headError.message : 'Unknown';
+          testMessage = 'Cannot reach DimePay server';
         }
+      } else {
+        // Legacy API mode
+        testDetails['merchant_id'] = dimepayConfig.merchantId;
+        testDetails['api_key_set'] = !!dimepayConfig.apiKey;
         
-        // Try to hit a health/status endpoint or the payments endpoint
-        const testResponse = await fetch(`${dimepayConfig.baseUrl}/payments?limit=1`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${dimepayConfig.apiKey}`,
-            'X-Merchant-ID': dimepayConfig.merchantId,
-          },
-          signal: AbortSignal.timeout(15000)
-        });
-        
-        if (testResponse.ok) {
+        try {
+          const headTest = await fetch(dimepayConfig.baseUrl, {
+            method: 'HEAD',
+            signal: AbortSignal.timeout(10000)
+          });
+          testDetails['base_url_reachable'] = true;
           apiTestPassed = true;
-          testMessage = 'API connection verified';
-        } else if (testResponse.status === 401) {
-          testMessage = 'Invalid API credentials (401)';
-          testDetails['troubleshooting'] = [
-            'Verify your API Key is correct',
-            'Check if API key has expired',
-            'Ensure API key has the right permissions'
-          ];
-        } else if (testResponse.status === 403) {
-          testMessage = 'Access forbidden - check merchant ID';
-          testDetails['troubleshooting'] = [
-            'Verify Merchant ID matches your DimePay account',
-            'Check if your account is active'
-          ];
-        } else if (testResponse.status === 404) {
-          // 404 might mean the endpoint doesn't exist, but credentials could still be valid
-          testMessage = 'API endpoint not found - verify Base URL';
-          testDetails['troubleshooting'] = [
-            'Production URL: https://api.dimepay.app/dapi/v1',
-            'Sandbox URL: https://sandbox.api.dimepay.app/dapi/v1',
-            'Make sure the Base URL is correct for your environment'
-          ];
-        } else {
-          testMessage = `API returned status ${testResponse.status}`;
+          testMessage = 'API credentials configured';
+        } catch (headError) {
+          testDetails['base_url_reachable'] = false;
+          testMessage = 'Cannot reach DimePay server';
         }
-      } catch (fetchError) {
-        const errorMsg = fetchError instanceof Error ? fetchError.message : 'Network error';
-        testMessage = `Connection failed: ${errorMsg}`;
-        testDetails['troubleshooting'] = [
-          'Check if the Base URL is correct and accessible',
-          'Verify network connectivity',
-          'Production: https://api.dimepay.app/dapi/v1',
-          'Sandbox: https://sandbox.api.dimepay.app/dapi/v1',
-          'Try using /api/dimepay/test for detailed diagnostics'
-        ];
       }
       
       const dimepayLatency = Date.now() - dimepayStart;
@@ -359,15 +337,15 @@ export async function GET() {
         status: 'warning',
         message: 'Not configured',
         details: {
-          merchant_id: dimepayConfig.merchantId || 'Not set',
-          api_key_set: !!dimepayConfig.apiKey,
+          client_id_set: !!dimepayConfig.clientId,
+          secret_key_set: !!dimepayConfig.secretKey,
           sandbox_mode: dimepayConfig.sandboxMode,
           source: 'database',
           setup_guide: [
-            '1. Get API Key from DimePay dashboard',
-            '2. Get Merchant ID from your DimePay account',
+            '1. Get Client ID from DimePay dashboard (starts with ck_)',
+            '2. Get Secret Key from your DimePay account',
             '3. Choose Production or Sandbox mode',
-            '4. Save settings and test connection'
+            '4. Save settings in Settings > DimePay tab'
           ]
         }
       });

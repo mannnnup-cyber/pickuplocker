@@ -1935,6 +1935,7 @@ function DevicesContent() {
 function OrdersContent() {
   const [orders, setOrders] = React.useState<Order[]>([])
   const [devices, setDevices] = React.useState<Device[]>([])
+  const [couriers, setCouriers] = React.useState<{id: string; name: string; code: string}[]>([])
   const [loading, setLoading] = React.useState(true)
   const [searchTerm, setSearchTerm] = React.useState("")
   const [statusFilter, setStatusFilter] = React.useState("all")
@@ -1965,20 +1966,25 @@ function OrdersContent() {
   const fetchData = React.useCallback(async () => {
     setLoading(true)
     try {
-      const [ordersRes, devicesRes] = await Promise.all([
+      const [ordersRes, devicesRes, couriersRes] = await Promise.all([
         fetch(`/api/orders?status=${statusFilter !== 'all' ? statusFilter : ''}&search=${searchTerm}`),
-        fetch('/api/devices')
+        fetch('/api/devices'),
+        fetch('/api/couriers')
       ])
       const ordersData = await ordersRes.json()
       const devicesData = await devicesRes.json()
+      const couriersData = await couriersRes.json()
       if (ordersData.success && ordersData.data.length > 0) setOrders(ordersData.data)
       else setOrders(mockOrders)
       if (devicesData.success && devicesData.data.length > 0) setDevices(devicesData.data)
       else setDevices(mockDevices)
+      if (couriersData.success && couriersData.data.length > 0) setCouriers(couriersData.data)
+      else setCouriers([])
     } catch (error) {
       console.error('Failed to fetch:', error)
       setOrders(mockOrders)
       setDevices(mockDevices)
+      setCouriers([])
     } finally {
       setLoading(false)
     }
@@ -2368,12 +2374,23 @@ function OrdersContent() {
             </div>
             <div className="grid gap-2">
               <Label className="text-[#111111] uppercase text-sm">Courier (Optional)</Label>
-              <Select value={dropoffForm.courierName} onValueChange={(v) => setDropoffForm({...dropoffForm, courierName: v})}>
+              <Select value={dropoffForm.courierId} onValueChange={(v) => {
+                const courier = couriers.find(c => c.id === v);
+                setDropoffForm({...dropoffForm, courierId: v, courierName: courier?.name || ''})
+              }}>
                 <SelectTrigger className="border-gray-200"><SelectValue placeholder="Select courier" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Knutsford Express">Knutsford Express</SelectItem>
-                  <SelectItem value="ZipMail">ZipMail</SelectItem>
-                  <SelectItem value="Other">Other</SelectItem>
+                  {couriers.length > 0 ? (
+                    couriers.map(courier => (
+                      <SelectItem key={courier.id} value={courier.id}>{courier.name}</SelectItem>
+                    ))
+                  ) : (
+                    <>
+                      <SelectItem value="Knutsford Express">Knutsford Express</SelectItem>
+                      <SelectItem value="ZipMail">ZipMail</SelectItem>
+                      <SelectItem value="Other">Other</SelectItem>
+                    </>
+                  )}
                 </SelectContent>
               </Select>
             </div>
