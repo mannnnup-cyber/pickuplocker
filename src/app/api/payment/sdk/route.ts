@@ -127,11 +127,8 @@ export async function POST(request: NextRequest) {
       createdAt: Date.now(),
     });
 
-    // Generate payment URL
-    const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL 
-      ? `https://${process.env.VERCEL_URL}` 
-      : 'https://pickuplocker.vercel.app';
-    const paymentUrl = `${baseUrl}/pay/${paymentReference}`;
+    // Always use production URL for payment links
+    const paymentUrl = `https://pickuplocker.vercel.app/pay/${paymentReference}`;
 
     return NextResponse.json({
       success: true,

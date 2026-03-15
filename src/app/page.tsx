@@ -97,6 +97,7 @@ export default function KioskPage() {
   // Auto-timeout
   const [lastActivity, setLastActivity] = useState(Date.now())
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false)
+  const [secondsRemaining, setSecondsRemaining] = useState(10)
 
   // Reset all state
   const resetState = useCallback(() => {
@@ -111,12 +112,14 @@ export default function KioskPage() {
     setOrderResult(null)
     setPaymentResult(null)
     setShowTimeoutWarning(false)
+    setSecondsRemaining(10)
   }, [])
 
   // Update last activity time
   const updateActivity = useCallback(() => {
     setLastActivity(Date.now())
     setShowTimeoutWarning(false)
+    setSecondsRemaining(10)
   }, [])
 
   // Auto-timeout effect
@@ -127,6 +130,7 @@ export default function KioskPage() {
       
       if (remaining <= 10000 && remaining > 0 && !showTimeoutWarning) {
         setShowTimeoutWarning(true)
+        setSecondsRemaining(Math.ceil(remaining / 1000))
       }
       
       if (elapsed >= AUTO_TIMEOUT_MS && view !== "home") {
@@ -137,6 +141,22 @@ export default function KioskPage() {
     const interval = setInterval(checkTimeout, 1000)
     return () => clearInterval(interval)
   }, [lastActivity, view, showTimeoutWarning, resetState])
+
+  // Countdown effect when warning is shown
+  useEffect(() => {
+    if (!showTimeoutWarning) return
+    
+    const countdownInterval = setInterval(() => {
+      setSecondsRemaining(prev => {
+        if (prev <= 1) {
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+    
+    return () => clearInterval(countdownInterval)
+  }, [showTimeoutWarning])
 
   // Handle screen touch/click to reset timeout
   useEffect(() => {
@@ -1106,16 +1126,15 @@ export default function KioskPage() {
   // Timeout warning banner
   const renderTimeoutWarning = () => {
     if (!showTimeoutWarning) return null
-    const remaining = Math.ceil((AUTO_TIMEOUT_MS - (Date.now() - lastActivity)) / 1000)
     
     return (
-      <div className="fixed top-0 left-0 right-0 bg-orange-500 text-white p-4 text-center z-50">
+      <div className="fixed top-0 left-0 right-0 bg-orange-500 text-white p-4 text-center z-50 animate-pulse">
         <p className="text-lg font-bold">
-          Session will reset in {remaining} seconds due to inactivity
+          Session will reset in <span className="text-2xl">{secondsRemaining}</span> seconds due to inactivity
         </p>
         <button
           onClick={updateActivity}
-          className="mt-2 bg-white text-orange-500 px-4 py-2 rounded-lg font-bold"
+          className="mt-2 bg-white text-orange-500 px-4 py-2 rounded-lg font-bold hover:bg-orange-100 transition-colors"
         >
           Continue Session
         </button>

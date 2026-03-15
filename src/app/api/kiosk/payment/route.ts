@@ -235,9 +235,9 @@ async function createDropoffPayment(boxSize: string, phone: string) {
     console.log('[Kiosk Payment] Using real DimePay SDK');
     
     try {
-      const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL 
-        ? `https://${process.env.VERCEL_URL}` 
-        : 'https://pickuplocker.vercel.app';
+      // Always use production URL for QR codes (users scan with their phones)
+      // Preview URLs are only for testing, not for end users
+      const baseUrl = 'https://pickuplocker.vercel.app';
       
       const orderId = `DROPOFF-${Date.now()}`;
       
@@ -333,9 +333,8 @@ async function createDropoffPayment(boxSize: string, phone: string) {
   // Demo mode fallback
   console.log('[Kiosk Payment] Using demo mode - no valid DimePay credentials');
   const paymentId = `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-  const demoPaymentUrl = `${process.env.NEXTAUTH_URL || process.env.VERCEL_URL 
-    ? `https://${process.env.VERCEL_URL}` 
-    : 'https://pickuplocker.vercel.app'}/pay/demo/${paymentId}`;
+  // Always use production URL for QR codes
+  const demoPaymentUrl = `https://pickuplocker.vercel.app/pay/demo/${paymentId}`;
   
   // Generate QR code
   let qrCodeDataUrl: string | undefined;
