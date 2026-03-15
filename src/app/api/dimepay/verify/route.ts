@@ -37,9 +37,9 @@ export async function GET() {
           type: 'Client ID + Secret Key (SDK)',
           clientIdPrefix: config.clientId?.substring(0, 15) + '...',
           hasSecretKey: !!config.secretKey,
-          validPrefix: config.sandboxMode 
-            ? config.clientId?.startsWith('ck_test_')
-            : config.clientId?.startsWith('ck_live_')
+          validPrefix: config.clientId?.startsWith('ck_') 
+            
+            
         } : {
           type: 'API Key + Merchant ID (Direct)',
           apiKeyPrefix: config.apiKey?.substring(0, 8) + '...',
