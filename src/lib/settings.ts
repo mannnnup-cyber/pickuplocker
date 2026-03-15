@@ -81,7 +81,7 @@ export async function getDimepayConfig() {
   const sandboxMode = settings['dimepay_sandboxMode'] === 'true' || settings['dimepay_testMode'] === 'true';
   
   // DimePay uses the same base URL for both sandbox and production
-  const baseUrl = 'https://api.dimepay.com';
+  const baseUrl = 'https://api.dimepay.app';
   
   // Support BOTH credential formats:
   // Format 1: Client ID + Secret Key (ck_test_/ck_live_ prefix) - for SDK integration

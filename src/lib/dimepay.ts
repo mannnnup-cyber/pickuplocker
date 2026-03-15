@@ -9,7 +9,7 @@ import QRCode from 'qrcode';
  */
 
 // DimePay uses same URL for both sandbox and live
-const DIMEPAY_BASE_URL = 'https://api.dimepay.com';
+const DIMEPAY_BASE_URL = 'https://api.dimepay.app';
 
 // Types
 export interface DimePaySDKConfig {
