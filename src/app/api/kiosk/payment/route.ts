@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateTrackingCode } from '@/lib/storage';
-import { createSDKPayment, calculateDimePayFee, DimePaySDKConfig } from '@/lib/dimepay';
+import { createSDKPayment, DimePaySDKConfig } from '@/lib/dimepay';
 import { getDimepayConfig } from '@/lib/settings';
 import { sendSMS } from '@/lib/textbee';
+import { db } from '@/lib/db';
 import QRCode from 'qrcode';
 
 // Box sizes and their prices for drop-off credits (JMD)
@@ -30,46 +31,6 @@ async function generateQRCodeDataUrl(data: string): Promise<string> {
     throw error;
   }
 }
-
-// Store for demo payments (in-memory, resets on server restart)
-const globalDemoPayments = new Map<string, { 
-  saveCode: string; 
-  boxSize: string;
-  phone: string;
-  amount: number;
-  createdAt: number;
-}>();
-
-// Store for SDK payments pending (shared with /api/payment/sdk)
-export const globalSdkPayments = new Map<string, {
-  amount: number;
-  currency: string;
-  description: string;
-  reference: string;
-  sdkConfig: {
-    clientId: string;
-    data: string;
-    test: boolean;
-    onSuccess: string;
-    onClose: string;
-  };
-  createdAt: number;
-  // Extra data for kiosk
-  saveCode?: string;
-  boxSize?: string;
-  phone?: string;
-}>();
-
-// Store for real payments pending
-const globalPendingPayments = new Map<string, {
-  saveCode: string;
-  boxSize: string;
-  phone: string;
-  amount: number;
-  createdAt: number;
-  paymentId: string;
-  paymentUrl?: string;
-}>();
 
 // POST /api/kiosk/payment - Create payment for drop-off credit or check status
 export async function POST(request: NextRequest) {
@@ -119,16 +80,23 @@ export async function GET(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // Check SDK payments first
-    const sdkPayment = globalSdkPayments.get(paymentId);
-    if (sdkPayment) {
-      console.log('[Kiosk Payment] Found SDK payment:', paymentId);
-      
-      // For SDK payments, we rely on webhooks for status updates
-      // Return pending status - the webhook will update the status
-      // For now, check if the payment was completed via webhook
-      // In a real implementation, you'd check a database for the payment status
-      
+    // Get payment session from database
+    const sessionSetting = await db.setting.findUnique({
+      where: { key: `sdk_payment_${paymentId}` }
+    });
+
+    if (sessionSetting) {
+      const paymentData = JSON.parse(sessionSetting.value);
+      console.log('[Kiosk Payment] Found SDK payment in database:', paymentId, 'status:', paymentData.status);
+
+      if (paymentData.status === 'COMPLETED') {
+        return NextResponse.json({
+          success: true,
+          status: 'completed',
+          saveCode: paymentData.metadata?.saveCode,
+        });
+      }
+
       return NextResponse.json({
         success: true,
         status: 'pending',
@@ -136,50 +104,49 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Check demo payments
-    const demoPayment = globalDemoPayments.get(paymentId);
-    
-    if (demoPayment) {
-      // Auto-complete after 5 seconds in demo mode
-      const elapsed = Date.now() - demoPayment.createdAt;
+    // Check for demo payments (also stored in database now)
+    const demoSetting = await db.setting.findUnique({
+      where: { key: `demo_payment_${paymentId}` }
+    });
+
+    if (demoSetting) {
+      const demoData = JSON.parse(demoSetting.value);
+      const elapsed = Date.now() - demoData.createdAt;
       console.log('[Kiosk Payment] Demo payment elapsed time:', elapsed, 'ms');
-      
+
+      // Auto-complete after 5 seconds in demo mode
       if (elapsed > 5000) {
-        console.log('[Kiosk Payment] Demo payment completed! saveCode:', demoPayment.saveCode);
-        
-        // Send SMS notification for demo payment completion
+        console.log('[Kiosk Payment] Demo payment completed! saveCode:', demoData.saveCode);
+
+        // Send SMS notification
         try {
-          await sendSMS(demoPayment.phone, 
-            `Pickup Jamaica: Your drop-off payment of JMD $${demoPayment.amount} is confirmed. Your save code is ${demoPayment.saveCode}. Use this code at the locker to store your package.`
+          await sendSMS(demoData.phone,
+            `Pickup Jamaica: Your drop-off payment of JMD $${demoData.amount} is confirmed. Your save code is ${demoData.saveCode}. Use this code at the locker to store your package.`
           );
-          console.log('[Kiosk Payment] SMS sent to:', demoPayment.phone);
+          console.log('[Kiosk Payment] SMS sent to:', demoData.phone);
         } catch (smsError) {
           console.error('[Kiosk Payment] Failed to send SMS:', smsError);
         }
-        
+
+        // Update status in database
+        await db.setting.update({
+          where: { key: `demo_payment_${paymentId}` },
+          data: { value: JSON.stringify({ ...demoData, status: 'COMPLETED' }) }
+        }).catch(() => {});
+
         return NextResponse.json({
           success: true,
           status: 'completed',
-          saveCode: demoPayment.saveCode,
+          saveCode: demoData.saveCode,
         });
       }
-      
+
       return NextResponse.json({
         success: true,
         status: 'pending',
       });
     }
-    
-    // Check real payments
-    const realPayment = globalPendingPayments.get(paymentId);
-    if (realPayment) {
-      // For now, return pending - webhooks will handle completion
-      return NextResponse.json({
-        success: true,
-        status: 'pending',
-      });
-    }
-    
+
     return NextResponse.json({
       success: false,
       status: 'pending',
@@ -198,7 +165,7 @@ export async function GET(request: NextRequest) {
 // Create drop-off credit payment - Uses real DimePay if configured, otherwise demo mode
 async function createDropoffPayment(boxSize: string, phone: string) {
   console.log('[Kiosk Payment] createDropoffPayment called with:', { boxSize, phone });
-  
+
   // Validate box size
   if (!boxSize || !['S', 'M', 'L', 'XL'].includes(boxSize)) {
     console.log('[Kiosk Payment] Invalid box size:', boxSize);
@@ -223,7 +190,7 @@ async function createDropoffPayment(boxSize: string, phone: string) {
 
   // Check if DimePay is configured
   const config = await getDimepayConfig();
-  
+
   console.log('[Kiosk Payment] DimePay config loaded:', {
     hasClientId: !!config.clientId,
     hasSecretKey: !!config.secretKey,
@@ -233,14 +200,12 @@ async function createDropoffPayment(boxSize: string, phone: string) {
   // Use real DimePay SDK if credentials are configured
   if (config.clientId && config.secretKey) {
     console.log('[Kiosk Payment] Using real DimePay SDK');
-    
+
     try {
       // Always use production URL for QR codes (users scan with their phones)
-      // Preview URLs are only for testing, not for end users
       const baseUrl = 'https://pickuplocker.vercel.app';
-      
       const orderId = `DROPOFF-${Date.now()}`;
-      
+
       // Create SDK config
       const sdkConfig: DimePaySDKConfig = {
         clientId: config.clientId,
@@ -271,7 +236,7 @@ async function createDropoffPayment(boxSize: string, phone: string) {
       if (result.success && result.data && result.data.sdkConfig) {
         // Generate payment URL for the payment page
         const paymentUrl = `${baseUrl}/pay/${orderId}`;
-        
+
         // Generate QR code from payment URL
         let qrCodeDataUrl: string | undefined;
         try {
@@ -281,31 +246,38 @@ async function createDropoffPayment(boxSize: string, phone: string) {
           console.error('[Kiosk Payment] QR generation error:', qrError);
         }
 
-        // Store payment data for retrieval by payment page and status checking
-        globalSdkPayments.set(orderId, {
+        // Store payment data in DATABASE for retrieval by payment page
+        const paymentSessionData = {
           amount: result.data.amount,
+          originalAmount: result.data.originalAmount,
+          feeAmount: result.data.feeAmount,
           currency: result.data.currency,
           description: `Drop-off Credit - ${boxSize} Box`,
           reference: orderId,
           sdkConfig: result.data.sdkConfig,
+          metadata: {
+            type: 'dropoff_credit',
+            boxSize,
+            saveCode,
+            customerPhone: cleanPhone,
+          },
+          status: 'PENDING',
           createdAt: Date.now(),
-          saveCode,
-          boxSize,
-          phone: cleanPhone,
+        };
+
+        await db.setting.upsert({
+          where: { key: `sdk_payment_${orderId}` },
+          create: {
+            key: `sdk_payment_${orderId}`,
+            value: JSON.stringify(paymentSessionData),
+            description: `SDK Payment: ${orderId}`,
+          },
+          update: {
+            value: JSON.stringify(paymentSessionData),
+          }
         });
 
-        // Also store in pending payments for status checking
-        globalPendingPayments.set(orderId, {
-          saveCode,
-          boxSize,
-          phone: cleanPhone,
-          amount: result.data.amount,
-          createdAt: Date.now(),
-          paymentId: orderId,
-          paymentUrl,
-        });
-
-        console.log('[Kiosk Payment] SDK payment created:', orderId);
+        console.log('[Kiosk Payment] SDK payment stored in database:', orderId);
 
         return NextResponse.json({
           success: true,
@@ -333,9 +305,8 @@ async function createDropoffPayment(boxSize: string, phone: string) {
   // Demo mode fallback
   console.log('[Kiosk Payment] Using demo mode - no valid DimePay credentials');
   const paymentId = `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-  // Always use production URL for QR codes
   const demoPaymentUrl = `https://pickuplocker.vercel.app/pay/demo/${paymentId}`;
-  
+
   // Generate QR code
   let qrCodeDataUrl: string | undefined;
   try {
@@ -345,16 +316,34 @@ async function createDropoffPayment(boxSize: string, phone: string) {
     console.error('[Kiosk Payment] QR generation error:', qrError);
   }
 
-  // Store for status checking
-  globalDemoPayments.set(paymentId, {
-    saveCode,
-    boxSize,
-    phone: cleanPhone,
-    amount,
-    createdAt: Date.now(),
+  // Store demo payment in DATABASE
+  await db.setting.upsert({
+    where: { key: `demo_payment_${paymentId}` },
+    create: {
+      key: `demo_payment_${paymentId}`,
+      value: JSON.stringify({
+        saveCode,
+        boxSize,
+        phone: cleanPhone,
+        amount,
+        createdAt: Date.now(),
+        status: 'PENDING',
+      }),
+      description: `Demo Payment: ${paymentId}`,
+    },
+    update: {
+      value: JSON.stringify({
+        saveCode,
+        boxSize,
+        phone: cleanPhone,
+        amount,
+        createdAt: Date.now(),
+        status: 'PENDING',
+      }),
+    }
   });
 
-  console.log('[Kiosk Payment] Demo payment stored. Total payments:', globalDemoPayments.size);
+  console.log('[Kiosk Payment] Demo payment stored in database:', paymentId);
 
   return NextResponse.json({
     success: true,
@@ -372,7 +361,7 @@ async function createDropoffPayment(boxSize: string, phone: string) {
 // Create storage fee payment - ALWAYS USES DEMO MODE
 async function createStorageFeePayment(orderId: string, amount: number, phone?: string) {
   console.log('[Kiosk Payment] createStorageFeePayment called:', { orderId, amount, phone });
-  
+
   if (!orderId || !amount || amount <= 0) {
     return NextResponse.json({
       success: false,
@@ -381,10 +370,8 @@ async function createStorageFeePayment(orderId: string, amount: number, phone?: 
   }
 
   const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+  const demoPaymentUrl = `https://pickuplocker.vercel.app/pay/demo/${paymentId}`;
 
-  // Always use demo mode
-  const demoPaymentUrl = `https://demo.dimepay.io/pay/${paymentId}`;
-  
   let qrCodeDataUrl: string | undefined;
   try {
     qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
@@ -392,13 +379,31 @@ async function createStorageFeePayment(orderId: string, amount: number, phone?: 
     console.error('[Kiosk Payment] QR generation error:', qrError);
   }
 
-  // Store for status checking
-  globalDemoPayments.set(paymentId, {
-    saveCode: '',
-    boxSize: '',
-    phone: phone || '',
-    amount,
-    createdAt: Date.now(),
+  // Store in database
+  await db.setting.upsert({
+    where: { key: `demo_payment_${paymentId}` },
+    create: {
+      key: `demo_payment_${paymentId}`,
+      value: JSON.stringify({
+        saveCode: '',
+        boxSize: '',
+        phone: phone || '',
+        amount,
+        createdAt: Date.now(),
+        status: 'PENDING',
+      }),
+      description: `Storage Fee Payment: ${paymentId}`,
+    },
+    update: {
+      value: JSON.stringify({
+        saveCode: '',
+        boxSize: '',
+        phone: phone || '',
+        amount,
+        createdAt: Date.now(),
+        status: 'PENDING',
+      }),
+    }
   });
 
   return NextResponse.json({

@@ -1,28 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDimepayConfig } from '@/lib/settings';
 import { createSDKPayment, DimePaySDKConfig } from '@/lib/dimepay';
+import { db } from '@/lib/db';
 
-// In-memory store for pending SDK payments
-// In production, this should be stored in a database or Redis
-const globalSdkPayments = new Map<string, {
-  amount: number;
-  currency: string;
-  description: string;
-  reference: string;
-  sdkConfig: {
-    clientId: string;
-    data: string;
-    test: boolean;
-    onSuccess: string;
-    onClose: string;
-  };
-  createdAt: number;
-}>();
-
-// Export for use in other modules
-export { globalSdkPayments };
-
-// GET - Retrieve payment data by reference
+// GET - Retrieve payment data by reference from database
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -35,22 +16,40 @@ export async function GET(request: NextRequest) {
       }, { status: 400 });
     }
 
-    const paymentData = globalSdkPayments.get(reference);
+    // Get payment session from database
+    const sessionSetting = await db.setting.findUnique({
+      where: { key: `sdk_payment_${reference}` }
+    });
 
-    if (!paymentData) {
+    if (!sessionSetting) {
       return NextResponse.json({
         success: false,
         error: 'Payment not found or expired'
       }, { status: 404 });
     }
 
+    const paymentData = JSON.parse(sessionSetting.value);
+
     // Check if payment is expired (1 hour)
     if (Date.now() - paymentData.createdAt > 3600000) {
-      globalSdkPayments.delete(reference);
+      // Delete expired session
+      await db.setting.delete({
+        where: { key: `sdk_payment_${reference}` }
+      }).catch(() => {});
+      
       return NextResponse.json({
         success: false,
         error: 'Payment session expired'
       }, { status: 410 });
+    }
+
+    // Check if already completed
+    if (paymentData.status === 'COMPLETED') {
+      return NextResponse.json({
+        success: true,
+        data: paymentData,
+        message: 'Payment already completed'
+      });
     }
 
     return NextResponse.json({
@@ -66,7 +65,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - Initialize SDK payment
+// POST - Initialize SDK payment and store in database
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -116,16 +115,36 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // Store payment data for retrieval by the payment page
+    // Store payment data in database for retrieval by the payment page
     const paymentReference = result.data.paymentId;
-    globalSdkPayments.set(paymentReference, {
+    
+    const paymentSessionData = {
       amount: result.data.amount,
+      originalAmount: result.data.originalAmount,
+      feeAmount: result.data.feeAmount,
       currency: result.data.currency,
       description: description || 'Payment',
       reference: paymentReference,
       sdkConfig: result.data.sdkConfig,
+      metadata: metadata,
+      status: 'PENDING',
       createdAt: Date.now(),
+    };
+
+    // Save to database using Setting model
+    await db.setting.upsert({
+      where: { key: `sdk_payment_${paymentReference}` },
+      create: {
+        key: `sdk_payment_${paymentReference}`,
+        value: JSON.stringify(paymentSessionData),
+        description: `SDK Payment Session: ${paymentReference}`,
+      },
+      update: {
+        value: JSON.stringify(paymentSessionData),
+      }
     });
+
+    console.log('[SDK Payment] Payment session stored in database:', paymentReference);
 
     // Always use production URL for payment links
     const paymentUrl = `https://pickuplocker.vercel.app/pay/${paymentReference}`;
@@ -140,6 +159,54 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('SDK payment init error:', error);
+    return NextResponse.json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+// PUT - Update payment status (for webhook completion)
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { reference, status } = body;
+
+    if (!reference) {
+      return NextResponse.json({
+        success: false,
+        error: 'Reference is required'
+      }, { status: 400 });
+    }
+
+    const sessionSetting = await db.setting.findUnique({
+      where: { key: `sdk_payment_${reference}` }
+    });
+
+    if (!sessionSetting) {
+      return NextResponse.json({
+        success: false,
+        error: 'Payment session not found'
+      }, { status: 404 });
+    }
+
+    const paymentData = JSON.parse(sessionSetting.value);
+    paymentData.status = status || 'COMPLETED';
+    paymentData.completedAt = Date.now();
+
+    await db.setting.update({
+      where: { key: `sdk_payment_${reference}` },
+      data: {
+        value: JSON.stringify(paymentData)
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Payment status updated'
+    });
+  } catch (error) {
+    console.error('SDK payment update error:', error);
     return NextResponse.json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error'
