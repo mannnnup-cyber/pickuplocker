@@ -353,13 +353,95 @@ export function verifyWebhookSignature(
   return signature === expectedSignature;
 }
 
+/**
+ * Create payment - wrapper for SDK payment (for backwards compatibility)
+ */
+export async function createPayment(
+  data: PaymentRequest,
+  config?: DimePayConfig
+): Promise<DimePayResponse<PaymentResult>> {
+  // Convert DimePayConfig to DimePaySDKConfig
+  const sdkConfig: DimePaySDKConfig = {
+    clientId: config?.clientId || '',
+    secretKey: config?.secretKey || '',
+    sandboxMode: false,
+    passFeeToCustomer: config?.passFeeToCustomer,
+    passFeeToCourier: config?.passFeeToCourier,
+    feePercentage: config?.feePercentage,
+    fixedFee: config?.fixedFee,
+  };
+
+  const result = await createSDKPayment(data, sdkConfig);
+  
+  if (!result.success || !result.data) {
+    return {
+      success: false,
+      error: result.error
+    };
+  }
+
+  // Return without sdkConfig for backwards compatibility
+  const { sdkConfig: _, ...paymentResult } = result.data;
+  return {
+    success: true,
+    data: paymentResult
+  };
+}
+
+/**
+ * Get payment status - placeholder for SDK integration
+ * With SDK integration, payment status is handled via webhooks
+ */
+export async function getPaymentStatus(
+  paymentId: string,
+  config?: DimePayConfig
+): Promise<DimePayResponse<PaymentResult>> {
+  // SDK integration relies on webhooks for status updates
+  // This is a placeholder that returns pending status
+  return {
+    success: true,
+    data: {
+      paymentId,
+      status: 'pending',
+      amount: 0,
+      currency: 'JMD',
+      createdAt: new Date().toISOString(),
+    }
+  };
+}
+
+/**
+ * List payments - placeholder for SDK integration
+ * With SDK integration, payment history comes from your database
+ */
+export async function listPayments(
+  filters?: {
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+    offset?: number;
+  },
+  config?: DimePayConfig
+): Promise<DimePayResponse<PaymentResult[]>> {
+  // SDK integration stores payments in your own database
+  // Return empty array - actual data should come from database queries
+  return {
+    success: true,
+    data: []
+  };
+}
+
 // Export default client
 const DimePayClient = {
+  createPayment,
   createSDKPayment,
   createStorageFeePayment,
   createCourierTopupPayment,
   createSDKJWT,
   getSDKInitConfig,
+  getPaymentStatus,
+  listPayments,
   verifyWebhookSignature,
   calculateDimePayFee,
   generateQRCode,
