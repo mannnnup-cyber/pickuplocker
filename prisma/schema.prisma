@@ -6,12 +6,13 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
-// For Vercel deployment, change provider to "postgresql" and set DATABASE_URL to your PostgreSQL URL
-// For local development with SQLite, use: DATABASE_URL="file:./dev.db"
+// For local development, you can use SQLite by changing provider to "sqlite"
+// For Vercel deployment, PostgreSQL is required
 
 // User roles: ADMIN, OPERATOR, CUSTOMER
 enum UserRole {
