@@ -1,0 +1,110 @@
+================================================================================
+                    BESTWOND API REQUEST PARAMETERS
+                    For Supplier Technical Support
+================================================================================
+
+API Provider: Bestwond
+API Documentation: https://bestwond.apifox.cn/
+Documentation Password: VdR72BxK
+
+--------------------------------------------------------------------------------
+                              CREDENTIALS
+--------------------------------------------------------------------------------
+App ID:        bw_86b83996147111f
+App Secret:    86b83aa4147111f18bd500163e198b20
+Device ID:     2100018247
+Base URL:      https://api.bestwond.com
+
+--------------------------------------------------------------------------------
+                          OPEN BOX REQUEST
+--------------------------------------------------------------------------------
+Endpoint:      /api/iot/open/box/
+Method:        POST
+Content-Type:  application/json
+
+Request Body (JSON):
+{
+  "app_id": "bw_86b83996147111f",
+  "timestamps": <unix_timestamp_in_seconds>,
+  "device_number": "2100018247",
+  "lock_address": "0101",
+  "use_type": "S"
+}
+
+URL Format:
+POST https://api.bestwond.com/api/iot/open/box/?sign=<SHA512_SIGNATURE>
+
+Note: lock_address format is "01" + box_number_in_hex_lowercase
+      Example: Box 1 = "0101", Box 10 = "010a", Box 12 = "010c"
+
+--------------------------------------------------------------------------------
+                        SIGNATURE CALCULATION
+--------------------------------------------------------------------------------
+Algorithm: SHA-512
+
+Steps:
+1. Sort all parameters alphabetically by key
+2. Build URL-encoded string: key1=value1&key2=value2&...
+3. Append App Secret to the end of the string
+4. Calculate SHA-512 hash of the entire string
+
+Example Signing String (before hash):
+app_id=bw_86b83996147111f&device_number=2100018247&lock_address=0101&timestamps=1711926000&use_type=S86b83aa4147111f18bd500163e198b20
+
+Note: The App Secret is appended AFTER all URL-encoded parameters (no & before it)
+
+--------------------------------------------------------------------------------
+                          COMMON ENDPOINTS
+--------------------------------------------------------------------------------
+1. Open Box:           POST /api/iot/open/box/
+2. Device Status:      POST /api/iot/device/line/status/
+3. Device List:        POST /api/iot/device/list/
+4. Box List:           POST /api/iot/device/box/list/
+5. Box Status:         POST /api/iot/device/box/status/
+6. Box Log:            POST /api/iot/device/box/log/
+
+All endpoints require:
+- sign parameter in URL query string
+- JSON body with app_id, timestamps, and other required params
+
+--------------------------------------------------------------------------------
+                          ISSUE DESCRIPTION
+--------------------------------------------------------------------------------
+Problem: When calling the Open Box API:
+- API Response: {"code":0, "data":{"status":"success"}}
+- Physical Box: DOES NOT OPEN
+
+Verification tests performed:
+✓ Device is ONLINE (confirmed via device status API)
+✓ Device appears in device list API
+✓ Box list returns all boxes correctly
+✓ API signature is accepted (no auth errors)
+✓ API returns success response
+
+However:
+✗ Physical box does not open
+✗ Device logs sometimes show "uqkey" errors
+
+Possible causes:
+1. Device not properly registered/linked to this App ID
+2. Hardware issue with the locker
+3. Firmware issue requiring device firmware update
+4. Permission issue - app may not have permission to control this device
+
+--------------------------------------------------------------------------------
+                          TEST REQUESTS
+--------------------------------------------------------------------------------
+
+1. Device Status Check:
+   POST https://api.bestwond.com/api/iot/device/line/status/?sign=<sign>
+   Body: {"app_id":"bw_86b83996147111f","timestamps":<ts>,"device_number":"2100018247"}
+
+2. Device List (to verify device is linked):
+   POST https://api.bestwond.com/api/iot/device/list/?sign=<sign>
+   Body: {"app_id":"bw_86b83996147111f","timestamps":<ts>}
+
+3. Open Box #1:
+   POST https://api.bestwond.com/api/iot/open/box/?sign=<sign>
+   Body: {"app_id":"bw_86b83996147111f","timestamps":<ts>,"device_number":"2100018247","lock_address":"0101","use_type":"S"}
+
+================================================================================

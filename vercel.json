@@ -1,0 +1,53 @@
+{
+  "buildCommand": "prisma generate && prisma db push --accept-data-loss && next build",
+  "installCommand": "bun install",
+  "framework": "nextjs",
+  "headers": [
+    {
+      "source": "/api/stats",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, s-maxage=30, stale-while-revalidate=60" }
+      ]
+    },
+    {
+      "source": "/api/status",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, s-maxage=10, stale-while-revalidate=20" }
+      ]
+    },
+    {
+      "source": "/api/boxes/availability",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, s-maxage=15, stale-while-revalidate=30" }
+      ]
+    },
+    {
+      "source": "/api/devices",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, s-maxage=60, stale-while-revalidate=120" }
+      ]
+    },
+    {
+      "source": "/api/health",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache" }
+      ]
+    },
+    {
+      "source": "/api/(kiosk|payment|orders|courier|transactions|webhooks)/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
+    }
+  ],
+  "functions": {
+    "src/app/api/cron/**/*.ts": {
+      "memory": 1024,
+      "maxDuration": 60
+    },
+    "src/app/api/sync/**/*.ts": {
+      "memory": 512,
+      "maxDuration": 30
+    }
+  }
+}
