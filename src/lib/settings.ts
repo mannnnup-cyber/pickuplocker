@@ -194,19 +194,34 @@ export async function getNotificationSettings() {
   };
 }
 
-// Get email configuration
+// Get email configuration (Resend)
 export async function getEmailConfig() {
   const settings = await loadSettings();
   
   return {
     enabled: settings['email_enabled'] === 'true',
+    // Resend settings
+    apiKey: settings['resend_apiKey'] || process.env.RESEND_API_KEY || '',
+    fromEmail: settings['resend_fromEmail'] || process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
+    fromName: settings['resend_fromName'] || process.env.RESEND_FROM_NAME || 'Pickup Jamaica',
+    // Legacy SMTP settings (kept for reference)
     host: settings['email_host'] || process.env.EMAIL_HOST || '',
     port: parseInt(settings['email_port'] || '587'),
     secure: settings['email_secure'] === 'true',
     user: settings['email_user'] || process.env.EMAIL_USER || '',
     password: settings['email_password'] || process.env.EMAIL_PASSWORD || '',
-    fromEmail: settings['email_fromEmail'] || process.env.EMAIL_FROM_EMAIL || 'noreply@pickupja.com',
-    fromName: settings['email_fromName'] || process.env.EMAIL_FROM_NAME || 'Pickup Jamaica',
+  };
+}
+
+// Get Resend configuration
+export async function getResendConfig() {
+  const settings = await loadSettings();
+  
+  return {
+    apiKey: settings['resend_apiKey'] || process.env.RESEND_API_KEY || '',
+    fromEmail: settings['resend_fromEmail'] || process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
+    fromName: settings['resend_fromName'] || process.env.RESEND_FROM_NAME || 'Pickup Jamaica',
+    enabled: settings['email_enabled'] === 'true',
   };
 }
 

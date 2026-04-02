@@ -83,6 +83,11 @@ export async function GET(request: NextRequest) {
       },
       email: {
         enabled: groupedSettings.email?.enabled || 'false',
+        // Resend settings (recommended for Vercel)
+        resend_apiKey: groupedSettings.resend?.apiKey || process.env.RESEND_API_KEY || '',
+        resend_fromEmail: groupedSettings.resend?.fromEmail || process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
+        resend_fromName: groupedSettings.resend?.fromName || process.env.RESEND_FROM_NAME || 'Pickup Jamaica',
+        // Legacy SMTP settings (not recommended for Vercel)
         host: groupedSettings.email?.host || '',
         port: groupedSettings.email?.port || '587',
         secure: groupedSettings.email?.secure || 'true',

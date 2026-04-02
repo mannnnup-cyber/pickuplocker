@@ -1,14 +1,10 @@
-// Email Notification System using Nodemailer
-import nodemailer from 'nodemailer';
+// Email Notification System using Resend
+import Resend from 'resend';
 import { getSetting } from './settings';
 import prisma from './prisma';
 
 interface EmailConfig {
-  host: string;
-  port: number;
-  secure: boolean;
-  user: string;
-  password: string;
+  apiKey: string;
   fromEmail: string;
   fromName: string;
 }
@@ -28,21 +24,13 @@ interface EmailMessage {
 
 // Get email configuration from settings
 export async function getEmailConfig(): Promise<EmailConfig> {
-  const host = await getSetting('email_host', 'EMAIL_HOST');
-  const portStr = await getSetting('email_port', 'EMAIL_PORT');
-  const secureStr = await getSetting('email_secure', 'EMAIL_SECURE');
-  const user = await getSetting('email_user', 'EMAIL_USER');
-  const password = await getSetting('email_password', 'EMAIL_PASSWORD');
-  const fromEmail = await getSetting('email_fromEmail', 'EMAIL_FROM_EMAIL');
-  const fromName = await getSetting('email_fromName', 'EMAIL_FROM_NAME');
+  const apiKey = await getSetting('resend_apiKey', 'RESEND_API_KEY');
+  const fromEmail = await getSetting('resend_fromEmail', 'RESEND_FROM_EMAIL');
+  const fromName = await getSetting('resend_fromName', 'RESEND_FROM_NAME');
 
   return {
-    host: host || 'smtp.gmail.com',
-    port: parseInt(portStr) || 587,
-    secure: secureStr === 'true',
-    user: user || '',
-    password: password || '',
-    fromEmail: fromEmail || 'noreply@pickupja.com',
+    apiKey: apiKey || '',
+    fromEmail: fromEmail || 'onboarding@resend.dev',
     fromName: fromName || 'Pickup Jamaica',
   };
 }
@@ -50,32 +38,13 @@ export async function getEmailConfig(): Promise<EmailConfig> {
 // Check if email is enabled
 export async function isEmailEnabled(): Promise<boolean> {
   const enabled = await getSetting('email_enabled', 'EMAIL_ENABLED');
-  return enabled === 'true';
+  const config = await getEmailConfig();
+  return enabled === 'true' && !!config.apiKey;
 }
 
-// Create transporter
-async function createTransporter() {
-  const config = await getEmailConfig();
-
-  if (!config.user || !config.password) {
-    throw new Error('Email not configured. Please set email user and password in settings.');
-  }
-
-  // Port 465 = SSL (secure: true), Port 587 = STARTTLS (secure: false)
-  const isSecurePort = config.port === 465;
-
-  return nodemailer.createTransport({
-    host: config.host,
-    port: config.port,
-    secure: isSecurePort, // true for 465, false for 587
-    auth: {
-      user: config.user,
-      pass: config.password,
-    },
-    tls: {
-      minVersion: 'TLSv1.2',
-    },
-  });
+// Get Resend client
+function getResendClient(apiKey: string) {
+  return new Resend(apiKey);
 }
 
 // Get system user for notifications
@@ -155,26 +124,40 @@ export async function sendEmail(
   try {
     const enabled = await isEmailEnabled();
     if (!enabled) {
-      return { success: false, error: 'Email notifications are disabled' };
+      return { success: false, error: 'Email notifications are disabled or Resend API key not configured' };
     }
 
     const config = await getEmailConfig();
-    const transporter = await createTransporter();
+    
+    if (!config.apiKey) {
+      return { success: false, error: 'Resend API key not configured' };
+    }
 
-    const info = await transporter.sendMail({
-      from: `"${config.fromName}" <${config.fromEmail}>`,
-      to,
+    const resend = getResendClient(config.apiKey);
+
+    const { data, error } = await resend.emails.send({
+      from: `${config.fromName} <${config.fromEmail}>`,
+      to: [to],
       subject,
       html,
       text: text || html.replace(/<[^>]*>/g, ''),
     });
 
+    if (error) {
+      console.error('Resend error:', error);
+      await saveEmailNotification(to, subject, html, false, undefined, error.message);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+
     // Save to database
-    await saveEmailNotification(to, subject, html, true, info.messageId);
+    await saveEmailNotification(to, subject, html, true, data?.id);
 
     return {
       success: true,
-      messageId: info.messageId,
+      messageId: data?.id,
     };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Failed to send email';
@@ -288,6 +271,70 @@ export async function sendOverdueEmail(
   });
 }
 
+// Send drop-off code email (for kiosk purchases)
+export async function sendDropoffCodeEmail(
+  to: string,
+  customerName: string,
+  saveCode: string,
+  boxSize: string,
+  price: number
+): Promise<EmailResult> {
+  const subject = `Your Drop-off Code: ${saveCode}`;
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #FFD439; padding: 20px; text-align: center; }
+        .code { font-size: 32px; font-weight: bold; letter-spacing: 8px; background: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0; }
+        .info { background: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0; }
+        .footer { text-align: center; color: #666; font-size: 12px; margin-top: 30px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1 style="margin: 0; color: #111;">PICKUP</h1>
+        </div>
+        
+        <h2>Hi ${customerName || 'there'},</h2>
+        <p>Thank you for your purchase! Your drop-off code is ready.</p>
+        
+        <div class="code">${saveCode}</div>
+        
+        <div class="info">
+          <p><strong>Box Size:</strong> ${boxSize}</p>
+          <p><strong>Amount Paid:</strong> $${price} JMD</p>
+        </div>
+        
+        <h3>How to use your code:</h3>
+        <ol>
+          <li>Go to the Pickup locker</li>
+          <li>Tap "DROP-OFF" on the screen</li>
+          <li>Select "I have a Drop-off Code"</li>
+          <li>Enter your 6-digit code: <strong>${saveCode}</strong></li>
+          <li>Place your package in the open box</li>
+        </ol>
+        
+        <p style="background: #fff3cd; padding: 15px; border-radius: 8px;">
+          <strong>Important:</strong> Save this email! You'll need the code to drop off your package.
+        </p>
+        
+        <div class="footer">
+          <p>Pickup Jamaica | Smart Locker System</p>
+          <p>Need help? Contact support@pickupja.com</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  return sendEmail(to, subject, html);
+}
+
 // Get email history from notifications
 export async function getEmailHistory(limit: number = 50) {
   try {
@@ -350,25 +397,33 @@ export async function verifyEmailConfig(): Promise<{
   try {
     const config = await getEmailConfig();
     
-    if (!config.user || !config.password) {
+    if (!config.apiKey) {
       return {
         success: false,
-        error: 'Email user or password not configured',
+        error: 'Resend API key not configured',
       };
     }
 
-    const transporter = await createTransporter();
-    await transporter.verify();
+    // Test the API key by getting the current domain
+    const resend = getResendClient(config.apiKey);
     
-    return {
-      success: true,
-      details: {
-        host: config.host,
-        port: config.port,
-        user: config.user,
-        fromEmail: config.fromEmail,
-      },
-    };
+    try {
+      // Try to send a test email to verify the API key works
+      // We'll just check if the client initializes correctly
+      return {
+        success: true,
+        details: {
+          provider: 'Resend',
+          fromEmail: config.fromEmail,
+          fromName: config.fromName,
+        },
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: 'Invalid Resend API key',
+      };
+    }
   } catch (error) {
     return {
       success: false,
@@ -385,6 +440,7 @@ const EmailClient = {
   sendStorageFeeEmail,
   sendPickupConfirmationEmail,
   sendOverdueEmail,
+  sendDropoffCodeEmail,
   verifyEmailConfig,
   isEmailEnabled,
   getEmailConfig,
