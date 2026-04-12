@@ -1,5 +1,5 @@
 // Email Notification System using Resend
-import Resend from 'resend';
+import { Resend } from 'resend';
 import { getSetting } from './settings';
 import prisma from './prisma';
 
