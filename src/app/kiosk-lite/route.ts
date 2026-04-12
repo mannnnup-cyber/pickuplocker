@@ -543,4 +543,150 @@ export async function POST(request: NextRequest) {
     const boxId = formData.get('boxId') as string;
     const name = formData.get('name') as string;
     const phone = formData.get('phone') as string;
-    const email = formData.get('email
+    const email = formData.get('email') as string;
+
+    try {
+      // Generate pickup code
+      const pickupCode = Math.floor(1000 + Math.random() * 9000).toString();
+
+      // Create or find customer
+      let customer = await prisma.customer.findFirst({
+        where: { phone }
+      });
+
+      if (!customer) {
+        customer = await prisma.customer.create({
+          data: { name, phone, email: email || null }
+        });
+      }
+
+      // Create package
+      const pkg = await prisma.package.create({
+        data: {
+          customerId: customer.id,
+          boxId,
+          pickupCode,
+          status: 'STORED',
+          storedAt: new Date()
+        }
+      });
+
+      // Update box status
+      await prisma.box.update({
+        where: { id: boxId },
+        data: { status: 'OCCUPIED' }
+      });
+
+      // Get box details for display
+      const box = await prisma.box.findUnique({
+        where: { id: boxId },
+        include: { locker: true }
+      });
+
+      return new NextResponse(html(`
+        <div class="screen active">
+          <div class="success-icon">✓</div>
+          <h2 class="title">Locker Opened!</h2>
+          <p class="subtitle">Place your package inside</p>
+          
+          <div class="info-box">
+            <p style="text-align: center; font-size: 24px; color: #ee6c4d;">
+              <strong>Pickup Code: ${pickupCode}</strong>
+            </p>
+            <p style="text-align: center; margin-top: 15px;">
+              Save this code! It will be needed to retrieve the package.
+            </p>
+          </div>
+          
+          <div class="info-box">
+            <p><span class="label">Locker:</span> <span class="value">${box?.locker?.name || 'L'}-${box?.number}</span></p>
+            <p><span class="label">Customer:</span> <span class="value">${name}</span></p>
+          </div>
+          
+          <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+        </div>
+      `), { headers: { 'Content-Type': 'text/html' } });
+
+    } catch (err) {
+      console.error('Drop-off error:', err);
+      return new NextResponse(html(`
+        <div class="screen active">
+          <h2 class="title">Error</h2>
+          <p class="subtitle" style="color: #ff6b6b;">Something went wrong. Please try again.</p>
+          <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+        </div>
+      `), { headers: { 'Content-Type': 'text/html' } });
+    }
+  }
+
+  // PICKUP submission
+  if (action === 'pickup') {
+    const code = formData.get('code') as string;
+    const packageId = formData.get('packageId') as string;
+
+    try {
+      // Find and update package
+      const pkg = await prisma.package.findUnique({
+        where: { id: packageId },
+        include: { box: { include: { locker: true } } }
+      });
+
+      if (!pkg) {
+        return new NextResponse(html(`
+          <div class="screen active">
+            <h2 class="title">Error</h2>
+            <p class="subtitle" style="color: #ff6b6b;">Package not found</p>
+            <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+          </div>
+        `), { headers: { 'Content-Type': 'text/html' } });
+      }
+
+      // Update package status
+      await prisma.package.update({
+        where: { id: packageId },
+        data: {
+          status: 'PICKED_UP',
+          pickedUpAt: new Date()
+        }
+      });
+
+      // Update box status
+      if (pkg.boxId) {
+        await prisma.box.update({
+          where: { id: pkg.boxId },
+          data: { status: 'AVAILABLE' }
+        });
+      }
+
+      const lockerName = pkg.box?.locker?.name || 'L';
+      const boxNumber = pkg.box?.number || '?';
+
+      return new NextResponse(html(`
+        <div class="screen active">
+          <div class="success-icon">✓</div>
+          <h2 class="title">Locker Opened!</h2>
+          <p class="subtitle">Locker: ${lockerName}-${boxNumber}</p>
+          
+          <div class="info-box">
+            <p style="text-align: center;">Please take your package and close the door.</p>
+          </div>
+          
+          <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+        </div>
+      `), { headers: { 'Content-Type': 'text/html' } });
+
+    } catch (err) {
+      console.error('Pickup error:', err);
+      return new NextResponse(html(`
+        <div class="screen active">
+          <h2 class="title">Error</h2>
+          <p class="subtitle" style="color: #ff6b6b;">Something went wrong. Please try again.</p>
+          <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+        </div>
+      `), { headers: { 'Content-Type': 'text/html' } });
+    }
+  }
+
+  // Default redirect to home
+  return NextResponse.redirect(new URL('/kiosk-lite', request.url));
+}
