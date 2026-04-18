@@ -53,7 +53,9 @@ function html(content: string, styles: string = '') {
       border: none;
       border-radius: 10px;
       cursor: pointer;
-      transition: all 0.3s ease;
+      -webkit-appearance: none;
+      appearance: none;
+      -webkit-tap-highlight-color: rgba(0,0,0,0);
     }
     .btn-primary {
       background: #ee6c4d;
@@ -84,6 +86,7 @@ function html(content: string, styles: string = '') {
       display: inline-block;
       width: auto;
       font-size: 18px;
+      text-decoration: none;
     }
     .title {
       text-align: center;
@@ -114,6 +117,8 @@ function html(content: string, styles: string = '') {
       border-radius: 8px;
       background: #0d1b2a;
       color: white;
+      -webkit-appearance: none;
+      appearance: none;
     }
     .form-group input:focus, .form-group select:focus {
       outline: none;
@@ -133,6 +138,9 @@ function html(content: string, styles: string = '') {
       border: none;
       border-radius: 8px;
       cursor: pointer;
+      -webkit-appearance: none;
+      appearance: none;
+      -webkit-tap-highlight-color: rgba(0,0,0,0);
     }
     .box-btn:disabled {
       background: #1e3a5f;
@@ -164,16 +172,6 @@ function html(content: string, styles: string = '') {
       height: 20px;
       border-radius: 4px;
     }
-    .qr-container {
-      text-align: center;
-      padding: 20px;
-      background: white;
-      border-radius: 10px;
-      margin: 20px 0;
-    }
-    .qr-container img {
-      max-width: 250px;
-    }
     .success-icon {
       text-align: center;
       font-size: 80px;
@@ -197,6 +195,18 @@ function html(content: string, styles: string = '') {
       color: white;
       font-weight: bold;
     }
+    .code-display {
+      text-align: center;
+      font-size: 48px;
+      color: #ee6c4d;
+      font-weight: bold;
+      padding: 20px;
+      background: #0d1b2a;
+      border-radius: 10px;
+      margin: 15px 0;
+      border: 2px solid #3d5a80;
+      letter-spacing: 8px;
+    }
     .payment-details {
       background: #0d1b2a;
       padding: 15px;
@@ -214,6 +224,12 @@ function html(content: string, styles: string = '') {
     }
     .center {
       text-align: center;
+    }
+    .error-msg {
+      color: #ff6b6b;
+      text-align: center;
+      margin-bottom: 15px;
+      font-size: 16px;
     }
     @media (max-width: 480px) {
       .box-grid {
@@ -239,454 +255,139 @@ function html(content: string, styles: string = '') {
 </html>`;
 }
 
-// Home Screen
-function homeScreen() {
-  return html(`
-    <div class="screen active" id="home">
-      <h2 class="title">Welcome</h2>
-      <p class="subtitle">What would you like to do?</p>
-      
-      <form action="/kiosk-lite?action=dropoff" method="get">
-        <button type="submit" class="btn btn-primary">DROP-OFF</button>
-      </form>
-      
-      <form action="/kiosk-lite?action=pickup" method="get">
-        <button type="submit" class="btn btn-secondary">PICKUP</button>
-      </form>
-    </div>
-  `);
-}
-
-// GET handler - display screens
+// GET handler - display screens only
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const action = searchParams.get('action');
-  const step = searchParams.get('step');
-  const boxId = searchParams.get('boxId');
-  const code = searchParams.get('code');
   const error = searchParams.get('error');
 
   // Home screen
   if (!action) {
-    return new NextResponse(homeScreen(), {
-      headers: { 'Content-Type': 'text/html' },
-    });
+    return new NextResponse(html(`
+      <div class="screen active" id="home">
+        <h2 class="title">Welcome</h2>
+        <p class="subtitle">What would you like to do?</p>
+
+        <form action="/api/kiosk-action" method="POST">
+          <input type="hidden" name="flow" value="dropoff">
+          <input type="hidden" name="step" value="1">
+          <button type="submit" class="btn btn-primary">DROP-OFF</button>
+        </form>
+
+        <form action="/api/kiosk-action" method="POST">
+          <input type="hidden" name="flow" value="pickup">
+          <input type="hidden" name="step" value="1">
+          <button type="submit" class="btn btn-secondary">PICKUP</button>
+        </form>
+      </div>
+    `), { headers: { 'Content-Type': 'text/html' } });
   }
 
-  // DROP-OFF flow
+  // DROP-OFF: Enter customer info
   if (action === 'dropoff') {
-    if (!step) {
-      // Step 1: Enter customer info
-      return new NextResponse(html(`
-        <div class="screen active">
-          <h2 class="title">Drop-Off</h2>
-          <p class="subtitle">Step 1: Customer Information</p>
-          
-          ${error ? `<p style="color: #ff6b6b; text-align: center;">${error}</p>` : ''}
-          
-          <form action="/kiosk-lite" method="get">
-            <input type="hidden" name="action" value="dropoff">
-            <input type="hidden" name="step" value="2">
-            
-            <div class="form-group">
-              <label>Customer Name</label>
-              <input type="text" name="name" required placeholder="Enter name">
-            </div>
-            
-            <div class="form-group">
-              <label>Phone Number</label>
-              <input type="tel" name="phone" required placeholder="Enter phone">
-            </div>
-            
-            <div class="form-group">
-              <label>Email (Optional)</label>
-              <input type="email" name="email" placeholder="Enter email">
-            </div>
-            
-            <button type="submit" class="btn btn-primary">Continue</button>
-          </form>
-          
-          <div class="nav-buttons">
-            <a href="/kiosk-lite" class="btn btn-back">Back</a>
+    return new NextResponse(html(`
+      <div class="screen active">
+        <h2 class="title">Drop-Off</h2>
+        <p class="subtitle">Step 1: Customer Information</p>
+
+        ${error ? `<p class="error-msg">${error}</p>` : ''}
+
+        <form action="/api/kiosk-action" method="POST">
+          <input type="hidden" name="flow" value="dropoff">
+          <input type="hidden" name="step" value="2">
+
+          <div class="form-group">
+            <label>Customer Name</label>
+            <input type="text" name="name" required placeholder="Enter name">
           </div>
+
+          <div class="form-group">
+            <label>Phone Number</label>
+            <input type="tel" name="phone" required placeholder="Enter phone">
+          </div>
+
+          <div class="form-group">
+            <label>Email (Optional)</label>
+            <input type="email" name="email" placeholder="Enter email">
+          </div>
+
+          <button type="submit" class="btn btn-primary">Continue</button>
+        </form>
+
+        <div class="nav-buttons">
+          <a href="/kiosk-lite" class="btn btn-back">Back</a>
         </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
-    }
-
-    if (step === '2') {
-      const name = searchParams.get('name');
-      const phone = searchParams.get('phone');
-      const email = searchParams.get('email');
-
-      if (!name || !phone) {
-        return NextResponse.redirect(new URL('/kiosk-lite?action=dropoff&error=Name and phone are required', request.url));
-      }
-
-      // Get available boxes
-      const boxes = await prisma.box.findMany({
-        where: { status: 'AVAILABLE' },
-        include: { locker: true },
-        orderBy: [{ locker: { name: 'asc' } }, ['S', 'M', 'L', 'XL'].indexOf('size') === -1 ? 999 : ['S', 'M', 'L', 'XL'].indexOf('size')]
-      });
-
-      if (boxes.length === 0) {
-        return new NextResponse(html(`
-          <div class="screen active">
-            <h2 class="title">No Lockers Available</h2>
-            <p class="subtitle" style="color: #ff6b6b;">All lockers are currently in use.</p>
-            <p style="text-align: center; margin: 20px 0;">Please try again later or contact support.</p>
-            <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
-          </div>
-        `), { headers: { 'Content-Type': 'text/html' } });
-      }
-
-      // Group boxes by size
-      const sizeColors: Record<string, string> = {
-        'S': 'small',
-        'M': 'medium', 
-        'L': 'large',
-        'XL': 'xlarge'
-      };
-
-      const boxButtons = boxes.map(box => 
-        `<button type="submit" name="boxId" value="${box.id}" class="box-btn ${sizeColors[box.size] || ''}">${box.locker?.name || 'L'}-${box.number}</button>`
-      ).join('');
-
-      return new NextResponse(html(`
-        <div class="screen active">
-          <h2 class="title">Select Locker</h2>
-          <p class="subtitle">Step 2: Choose an available locker</p>
-          
-          <div class="legend">
-            <div class="legend-item"><div class="legend-color" style="background: #2196F3;"></div> Small</div>
-            <div class="legend-item"><div class="legend-color" style="background: #4CAF50;"></div> Medium</div>
-            <div class="legend-item"><div class="legend-color" style="background: #FF9800;"></div> Large</div>
-            <div class="legend-item"><div class="legend-color" style="background: #9C27B0;"></div> X-Large</div>
-          </div>
-          
-          <form action="/kiosk-lite" method="get">
-            <input type="hidden" name="action" value="dropoff">
-            <input type="hidden" name="step" value="3">
-            <input type="hidden" name="name" value="${name}">
-            <input type="hidden" name="phone" value="${phone}">
-            <input type="hidden" name="email" value="${email || ''}">
-            
-            <div class="box-grid">
-              ${boxButtons}
-            </div>
-          </form>
-          
-          <div class="nav-buttons">
-            <a href="/kiosk-lite?action=dropoff" class="btn btn-back">Back</a>
-          </div>
-        </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
-    }
-
-    if (step === '3' && boxId) {
-      const name = searchParams.get('name');
-      const phone = searchParams.get('phone');
-      const email = searchParams.get('email');
-
-      // Get box details
-      const box = await prisma.box.findUnique({
-        where: { id: boxId },
-        include: { locker: true }
-      });
-
-      if (!box) {
-        return NextResponse.redirect(new URL('/kiosk-lite?action=dropoff&error=Locker not found', request.url));
-      }
-
-      // Generate pickup code
-      const pickupCode = Math.floor(1000 + Math.random() * 9000).toString();
-
-      return new NextResponse(html(`
-        <div class="screen active">
-          <h2 class="title">Confirm Drop-Off</h2>
-          <p class="subtitle">Step 3: Review and confirm</p>
-          
-          <div class="info-box">
-            <p><span class="label">Locker:</span> <span class="value">${box.locker?.name || 'L'}-${box.number}</span></p>
-            <p><span class="label">Size:</span> <span class="value">${box.size}</span></p>
-            <p><span class="label">Customer:</span> <span class="value">${name}</span></p>
-            <p><span class="label">Phone:</span> <span class="value">${phone}</span></p>
-            ${email ? `<p><span class="label">Email:</span> <span class="value">${email}</span></p>` : ''}
-          </div>
-          
-          <form action="/kiosk-lite" method="post">
-            <input type="hidden" name="action" value="dropoff">
-            <input type="hidden" name="boxId" value="${boxId}">
-            <input type="hidden" name="name" value="${name}">
-            <input type="hidden" name="phone" value="${phone}">
-            <input type="hidden" name="email" value="${email || ''}">
-            
-            <button type="submit" class="btn btn-success">CONFIRM - OPEN LOCKER</button>
-          </form>
-          
-          <div class="nav-buttons">
-            <a href="/kiosk-lite?action=dropoff&step=2&name=${encodeURIComponent(name || '')}&phone=${encodeURIComponent(phone || '')}&email=${encodeURIComponent(email || '')}" class="btn btn-back">Back</a>
-          </div>
-        </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
-    }
+      </div>
+    `), { headers: { 'Content-Type': 'text/html' } });
   }
 
-  // PICKUP flow
+  // PICKUP: Enter pickup code
   if (action === 'pickup') {
-    if (!step) {
-      return new NextResponse(html(`
-        <div class="screen active">
-          <h2 class="title">Pickup</h2>
-          <p class="subtitle">Enter your pickup code</p>
-          
-          ${error ? `<p style="color: #ff6b6b; text-align: center;">${error}</p>` : ''}
-          
-          <form action="/kiosk-lite" method="get">
-            <input type="hidden" name="action" value="pickup">
-            <input type="hidden" name="step" value="2">
-            
-            <div class="form-group">
-              <label>Pickup Code</label>
-              <input type="text" name="code" required placeholder="Enter 4-digit code" maxlength="4" pattern="[0-9]{4}">
-            </div>
-            
-            <button type="submit" class="btn btn-primary">Find Package</button>
-          </form>
-          
-          <div class="nav-buttons">
-            <a href="/kiosk-lite" class="btn btn-back">Back</a>
+    return new NextResponse(html(`
+      <div class="screen active">
+        <h2 class="title">Pickup</h2>
+        <p class="subtitle">Enter your pickup code</p>
+
+        ${error ? `<p class="error-msg">${error}</p>` : ''}
+
+        <form action="/api/kiosk-action" method="POST">
+          <input type="hidden" name="flow" value="pickup">
+          <input type="hidden" name="step" value="2">
+
+          <div class="form-group">
+            <label>Pickup Code</label>
+            <input type="text" name="code" required placeholder="Enter 4-digit code" maxlength="4" pattern="[0-9]{4}">
           </div>
+
+          <button type="submit" class="btn btn-primary">Find Package</button>
+        </form>
+
+        <div class="nav-buttons">
+          <a href="/kiosk-lite" class="btn btn-back">Back</a>
         </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
-    }
-
-    if (step === '2' && code) {
-      // Find package by pickup code
-      const pkg = await prisma.package.findFirst({
-        where: { 
-          pickupCode: code,
-          status: { in: ['STORED', 'PAYMENT_PENDING'] }
-        },
-        include: { 
-          box: { include: { locker: true } },
-          customer: true
-        }
-      });
-
-      if (!pkg) {
-        return new NextResponse(html(`
-          <div class="screen active">
-            <h2 class="title">Not Found</h2>
-            <p class="subtitle" style="color: #ff6b6b;">No package found with code: ${code}</p>
-            <p style="text-align: center; margin: 20px 0;">Please check your code and try again.</p>
-            <a href="/kiosk-lite?action=pickup" class="btn btn-primary">Try Again</a>
-            <a href="/kiosk-lite" class="btn btn-back">Back to Home</a>
-          </div>
-        `), { headers: { 'Content-Type': 'text/html' } });
-      }
-
-      const lockerName = pkg.box?.locker?.name || 'L';
-      const boxNumber = pkg.box?.number || '?';
-      const customerName = pkg.customer?.name || 'Customer';
-      const hasPayment = pkg.status === 'PAYMENT_PENDING';
-
-      return new NextResponse(html(`
-        <div class="screen active">
-          <h2 class="title">Package Found</h2>
-          <p class="subtitle">Locker: ${lockerName}-${boxNumber}</p>
-          
-          <div class="info-box">
-            <p><span class="label">Customer:</span> <span class="value">${customerName}</span></p>
-            <p><span class="label">Locker:</span> <span class="value">${lockerName}-${boxNumber}</span></p>
-            <p><span class="label">Dropped:</span> <span class="value">${pkg.createdAt?.toLocaleDateString() || 'N/A'}</span></p>
-            ${hasPayment ? `<p style="color: #ee6c4d; font-weight: bold;">Payment Required</p>` : ''}
-          </div>
-          
-          <form action="/kiosk-lite" method="post">
-            <input type="hidden" name="action" value="pickup">
-            <input type="hidden" name="code" value="${code}">
-            <input type="hidden" name="packageId" value="${pkg.id}">
-            
-            ${hasPayment ? `
-              <div class="payment-details">
-                <p><strong>Payment Required</strong></p>
-                <p>Amount: Contact attendant</p>
-              </div>
-              <button type="submit" class="btn btn-success">PAY & OPEN LOCKER</button>
-            ` : `
-              <button type="submit" class="btn btn-success">OPEN LOCKER</button>
-            `}
-          </form>
-          
-          <div class="nav-buttons">
-            <a href="/kiosk-lite?action=pickup" class="btn btn-back">Back</a>
-          </div>
-        </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
-    }
+      </div>
+    `), { headers: { 'Content-Type': 'text/html' } });
   }
 
   // Default to home
-  return new NextResponse(homeScreen(), {
-    headers: { 'Content-Type': 'text/html' },
-  });
+  return new NextResponse(html(`
+    <div class="screen active" id="home">
+      <h2 class="title">Welcome</h2>
+      <p class="subtitle">What would you like to do?</p>
+
+      <form action="/api/kiosk-action" method="POST">
+        <input type="hidden" name="flow" value="dropoff">
+        <input type="hidden" name="step" value="1">
+        <button type="submit" class="btn btn-primary">DROP-OFF</button>
+      </form>
+
+      <form action="/api/kiosk-action" method="POST">
+        <input type="hidden" name="flow" value="pickup">
+        <input type="hidden" name="step" value="1">
+        <button type="submit" class="btn btn-secondary">PICKUP</button>
+      </form>
+    </div>
+  `), { headers: { 'Content-Type': 'text/html' } });
 }
 
-// POST handler - process actions
+// POST handler - redirect to GET for simple navigation, 
+// or forward to /api/kiosk-action for data processing
 export async function POST(request: NextRequest) {
   const formData = await request.formData();
-  const action = formData.get('action') as string;
+  const flow = formData.get('flow') as string;
+  const step = formData.get('step') as string;
 
-  // DROP-OFF submission
-  if (action === 'dropoff') {
-    const boxId = formData.get('boxId') as string;
-    const name = formData.get('name') as string;
-    const phone = formData.get('phone') as string;
-    const email = formData.get('email') as string;
-
-    try {
-      // Generate pickup code
-      const pickupCode = Math.floor(1000 + Math.random() * 9000).toString();
-
-      // Create or find customer
-      let customer = await prisma.customer.findFirst({
-        where: { phone }
-      });
-
-      if (!customer) {
-        customer = await prisma.customer.create({
-          data: { name, phone, email: email || null }
-        });
-      }
-
-      // Create package
-      const pkg = await prisma.package.create({
-        data: {
-          customerId: customer.id,
-          boxId,
-          pickupCode,
-          status: 'STORED',
-          storedAt: new Date()
-        }
-      });
-
-      // Update box status
-      await prisma.box.update({
-        where: { id: boxId },
-        data: { status: 'OCCUPIED' }
-      });
-
-      // Get box details for display
-      const box = await prisma.box.findUnique({
-        where: { id: boxId },
-        include: { locker: true }
-      });
-
-      return new NextResponse(html(`
-        <div class="screen active">
-          <div class="success-icon">✓</div>
-          <h2 class="title">Locker Opened!</h2>
-          <p class="subtitle">Place your package inside</p>
-          
-          <div class="info-box">
-            <p style="text-align: center; font-size: 24px; color: #ee6c4d;">
-              <strong>Pickup Code: ${pickupCode}</strong>
-            </p>
-            <p style="text-align: center; margin-top: 15px;">
-              Save this code! It will be needed to retrieve the package.
-            </p>
-          </div>
-          
-          <div class="info-box">
-            <p><span class="label">Locker:</span> <span class="value">${box?.locker?.name || 'L'}-${box?.number}</span></p>
-            <p><span class="label">Customer:</span> <span class="value">${name}</span></p>
-          </div>
-          
-          <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
-        </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
-
-    } catch (err) {
-      console.error('Drop-off error:', err);
-      return new NextResponse(html(`
-        <div class="screen active">
-          <h2 class="title">Error</h2>
-          <p class="subtitle" style="color: #ff6b6b;">Something went wrong. Please try again.</p>
-          <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
-        </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
+  // Step 1: Just redirect to the appropriate GET page for form entry
+  if (step === '1') {
+    if (flow === 'dropoff') {
+      return NextResponse.redirect(new URL('/kiosk-lite?action=dropoff', request.url));
+    }
+    if (flow === 'pickup') {
+      return NextResponse.redirect(new URL('/kiosk-lite?action=pickup', request.url));
     }
   }
 
-  // PICKUP submission
-  if (action === 'pickup') {
-    const code = formData.get('code') as string;
-    const packageId = formData.get('packageId') as string;
-
-    try {
-      // Find and update package
-      const pkg = await prisma.package.findUnique({
-        where: { id: packageId },
-        include: { box: { include: { locker: true } } }
-      });
-
-      if (!pkg) {
-        return new NextResponse(html(`
-          <div class="screen active">
-            <h2 class="title">Error</h2>
-            <p class="subtitle" style="color: #ff6b6b;">Package not found</p>
-            <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
-          </div>
-        `), { headers: { 'Content-Type': 'text/html' } });
-      }
-
-      // Update package status
-      await prisma.package.update({
-        where: { id: packageId },
-        data: {
-          status: 'PICKED_UP',
-          pickedUpAt: new Date()
-        }
-      });
-
-      // Update box status
-      if (pkg.boxId) {
-        await prisma.box.update({
-          where: { id: pkg.boxId },
-          data: { status: 'AVAILABLE' }
-        });
-      }
-
-      const lockerName = pkg.box?.locker?.name || 'L';
-      const boxNumber = pkg.box?.number || '?';
-
-      return new NextResponse(html(`
-        <div class="screen active">
-          <div class="success-icon">✓</div>
-          <h2 class="title">Locker Opened!</h2>
-          <p class="subtitle">Locker: ${lockerName}-${boxNumber}</p>
-          
-          <div class="info-box">
-            <p style="text-align: center;">Please take your package and close the door.</p>
-          </div>
-          
-          <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
-        </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
-
-    } catch (err) {
-      console.error('Pickup error:', err);
-      return new NextResponse(html(`
-        <div class="screen active">
-          <h2 class="title">Error</h2>
-          <p class="subtitle" style="color: #ff6b6b;">Something went wrong. Please try again.</p>
-          <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
-        </div>
-      `), { headers: { 'Content-Type': 'text/html' } });
-    }
-  }
-
-  // Default redirect to home
+  // All other steps should be handled by /api/kiosk-action
+  // But just in case someone POSTs here directly, redirect to home
   return NextResponse.redirect(new URL('/kiosk-lite', request.url));
 }
