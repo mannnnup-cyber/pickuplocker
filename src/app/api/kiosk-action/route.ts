@@ -121,10 +121,12 @@ const SHARED_CSS = `
     display: flex;
     -webkit-flex-wrap: wrap;
     flex-wrap: wrap;
-    gap: 10px;
     -webkit-justify-content: center;
     justify-content: center;
     margin: 20px 0;
+  }
+  .box-sizes form {
+    margin: 5px;
   }
   .box-btn {
     padding: 20px 30px;
@@ -173,7 +175,6 @@ const SHARED_CSS = `
     display: flex;
     -webkit-flex-wrap: wrap;
     flex-wrap: wrap;
-    gap: 10px;
     -webkit-justify-content: center;
     justify-content: center;
     margin: 20px 0;
@@ -184,7 +185,10 @@ const SHARED_CSS = `
     display: flex;
     -webkit-align-items: center;
     align-items: center;
-    gap: 5px;
+    margin: 0 8px;
+  }
+  .legend-item .legend-color {
+    margin-right: 5px;
   }
   .legend-color { width: 20px; height: 20px; border-radius: 4px; }
   .nav-buttons {
@@ -474,15 +478,15 @@ async function handleUseSaveCode(formData: FormData): Promise<NextResponse> {
     `);
   }
 
-  if (!recipientPhone) {
+  if (!recipientPhone && !expressOrder.customerPhone) {
     return htmlResponse(`
       <h2 class="title">Phone Required</h2>
-      <p class="error-msg">A recipient phone number is required for drop-off.</p>
+      <p class="error-msg">A phone number is required for drop-off notifications.</p>
       <a href="/kiosk-lite?action=dropoff-save" class="btn btn-primary">Try Again</a>
     `);
   }
 
-  const cleanPhone = recipientPhone.replace(/[^0-9+]/g, '');
+  const cleanPhone = (recipientPhone || expressOrder.customerPhone || '').replace(/[^0-9+]/g, '');
 
   // Get device
   const device = await db.device.findFirst({

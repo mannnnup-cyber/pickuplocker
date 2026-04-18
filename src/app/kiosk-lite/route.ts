@@ -204,7 +204,6 @@ const SHARED_CSS = `
     display: flex;
     -webkit-flex-wrap: wrap;
     flex-wrap: wrap;
-    gap: 10px;
     -webkit-justify-content: center;
     justify-content: center;
     margin: 15px 0;
@@ -215,7 +214,10 @@ const SHARED_CSS = `
     display: flex;
     -webkit-align-items: center;
     align-items: center;
-    gap: 5px;
+    margin: 0 8px;
+  }
+  .legend-item .legend-color {
+    margin-right: 5px;
   }
   .legend-color {
     width: 18px;
@@ -356,6 +358,10 @@ export async function GET(request: NextRequest) {
         <div class="form-group">
           <label>Save Code</label>
           <input type="text" name="saveCode" required placeholder="000000" maxlength="6" pattern="[0-9]{6}" inputmode="numeric">
+        </div>
+        <div class="form-group">
+          <label>Phone Number</label>
+          <input type="tel" name="phone" required placeholder="876-XXX-XXXX" inputmode="tel">
         </div>
         <button type="submit" class="btn btn-primary">OPEN LOCKER</button>
       </form>
