@@ -44,6 +44,16 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      // Kiosk-lite: no caching (always fresh for kiosk device)
+      {
+        source: '/kiosk-lite',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'no-store, no-cache, must-revalidate',
+          },
+        ],
+      },
     ];
   },
 };

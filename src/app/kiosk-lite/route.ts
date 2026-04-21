@@ -258,6 +258,31 @@ const SHARED_CSS = `
   .qr-container img {
     max-width: 250px;
   }
+  #kiosk-clock {
+    color: #FFD439;
+    font-weight: bold;
+  }
+  .footer {
+    text-align: center;
+    margin-top: 40px;
+    padding-top: 15px;
+    border-top: 1px solid #333333;
+    font-size: 12px;
+    color: #555555;
+  }
+  .spinner {
+    display: inline-block;
+    width: 40px;
+    height: 40px;
+    border: 4px solid #333333;
+    border-top: 4px solid #FFD439;
+    border-radius: 50%;
+    -webkit-animation: spin 1s linear infinite;
+    animation: spin 1s linear infinite;
+    margin: 20px auto;
+  }
+  @-webkit-keyframes spin { 0% { -webkit-transform: rotate(0deg); } 100% { -webkit-transform: rotate(360deg); } }
+  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
   @media (max-width: 480px) {
     .btn { font-size: 18px; padding: 18px 15px; }
     .title { font-size: 22px; }
@@ -265,7 +290,59 @@ const SHARED_CSS = `
   }
 `;
 
-function renderPage(content: string): string {
+// Kiosk-mode JavaScript - Android 5.0 compatible (ES5 only, no arrow functions, no const/let, no Promises)
+const KIOSK_JS = `
+  // Inactivity timeout - return to home after 90 seconds of no interaction
+  var inactivityTimer;
+  var INACTIVITY_MS = 90000;
+
+  function resetInactivityTimer() {
+    clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(function() {
+      window.location.href = '/kiosk-lite';
+    }, INACTIVITY_MS);
+  }
+
+  // Listen for user activity
+  document.addEventListener('touchstart', resetInactivityTimer, false);
+  document.addEventListener('click', resetInactivityTimer, false);
+  document.addEventListener('keydown', resetInactivityTimer, false);
+
+  // Start timer on page load
+  resetInactivityTimer();
+
+  // Update clock display
+  function updateClock() {
+    var el = document.getElementById('kiosk-clock');
+    if (!el) return;
+    var now = new Date();
+    var h = now.getHours();
+    var m = now.getMinutes();
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12;
+    if (h === 0) h = 12;
+    if (m < 10) m = '0' + m;
+    el.textContent = h + ':' + m + ' ' + ampm;
+  }
+  updateClock();
+  setInterval(updateClock, 30000);
+
+  // Try to enter fullscreen (works in some WebView versions)
+  function tryFullscreen() {
+    var el = document.documentElement;
+    if (el.requestFullscreen) {
+      el.requestFullscreen();
+    } else if (el.webkitRequestFullscreen) {
+      el.webkitRequestFullscreen();
+    }
+  }
+  // Auto-enter fullscreen on first touch
+  document.addEventListener('touchstart', function() {
+    tryFullscreen();
+  }, { once: true });
+`;
+
+function renderPage(content: string, extraHead: string = ''): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -275,15 +352,17 @@ function renderPage(content: string): string {
   <meta name="format-detection" content="telephone=no">
   <title>Pickup - Smart Locker</title>
   <style>${SHARED_CSS}</style>
+  ${extraHead}
 </head>
 <body>
   <div class="container">
     <div class="header">
       <h1>PICKUP</h1>
-      <p>Smart Locker System</p>
+      <p>Smart Locker System <span id="kiosk-clock" style="margin-left:10px;"></span></p>
     </div>
     ${content}
   </div>
+  <script>${KIOSK_JS}</script>
 </body>
 </html>`;
 }
@@ -317,6 +396,7 @@ export async function GET(request: NextRequest) {
         <button type="submit" class="btn btn-secondary">PICKUP</button>
       </form>
       <p style="text-align:center; margin-top:30px; color:#666; font-size:12px;">Available 24/7</p>
+      <div class="footer">Pickup Jamaica | UTech Campus</div>
     `), { headers: HTML_HEADERS });
   }
 
