@@ -240,7 +240,7 @@ const SHARED_CSS = `
   }
 `;
 
-// Kiosk-mode JavaScript - Android 5.0 compatible (ES5 only)
+// Kiosk-mode JavaScript - Android 5.0 compatible (ES5 only, no arrow functions, no const/let, no Promises)
 const KIOSK_JS = `
   var inactivityTimer;
   var INACTIVITY_MS = 90000;
@@ -268,6 +268,42 @@ const KIOSK_JS = `
   }
   updateClock();
   setInterval(updateClock, 30000);
+
+  // ---- AJAX Payment Polling (Chrome 37 compatible) ----
+  // Polls /api/kiosk/payment-status every N seconds.
+  // When payment is completed, redirects to the appropriate screen.
+  // The QR code stays visible on the page while polling runs.
+  function startPaymentPolling(pollUrl, checkIntervalMs) {
+    var pollInterval = setInterval(function() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', pollUrl, true);
+      xhr.setRequestHeader('Accept', 'application/json');
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        if (xhr.status !== 200) return;
+        try {
+          var resp = JSON.parse(xhr.responseText);
+          if (resp && resp.status === 'completed') {
+            clearInterval(pollInterval);
+            // Stop the inactivity timer while redirecting
+            clearTimeout(inactivityTimer);
+            // Redirect to the appropriate next screen
+            window.location.href = resp.redirectUrl || '/kiosk-lite?action=payment-success&msg=' + encodeURIComponent(resp.message || 'Payment confirmed!');
+          } else if (resp && resp.status === 'failed') {
+            clearInterval(pollInterval);
+            window.location.href = '/kiosk-lite?action=error&msg=' + encodeURIComponent(resp.message || 'Payment failed');
+          } else if (resp && resp.status === 'not_found') {
+            clearInterval(pollInterval);
+            window.location.href = '/kiosk-lite?action=error&msg=' + encodeURIComponent('Payment session not found');
+          }
+          // status === 'pending' → keep polling, do nothing
+        } catch(e) {
+          // Non-JSON response — ignore, keep polling
+        }
+      };
+      xhr.send();
+    }, checkIntervalMs || 5000);
+  }
 `;
 
 /** Render a full HTML page with shared chrome */
@@ -871,8 +907,7 @@ async function handleBuyCreatePayment(formData: FormData): Promise<NextResponse>
     });
   }
 
-  // Show QR code page with meta refresh for polling
-  const pollUrl = `/api/kiosk-action?flow=dropoff&step=check_payment&paymentId=${encodeURIComponent(paymentId)}`;
+  // Show QR code page with AJAX polling (QR stays visible while checking payment)
   const qrImg = qrCodeDataUrl
     ? `<div class="qr-container"><img src="${qrCodeDataUrl}" alt="Payment QR Code" /></div>`
     : '<p style="text-align:center; color:#999;">QR code unavailable</p>';
@@ -884,18 +919,12 @@ async function handleBuyCreatePayment(formData: FormData): Promise<NextResponse>
     ${qrImg}
     <div class="info-box">
       <p style="text-align:center;">Scan the QR code with your phone to complete payment.</p>
-      <p style="text-align:center; font-size:14px; color:#999;">This page will refresh automatically...</p>
+      <p style="text-align:center; font-size:14px; color:#999;">Checking payment status...</p>
     </div>
     <div style="text-align:center;"><div class="spinner"></div></div>
-    <form action="/api/kiosk-action" method="POST">
-      <input type="hidden" name="flow" value="dropoff">
-      <input type="hidden" name="step" value="check_payment">
-      <input type="hidden" name="paymentId" value="${esc(paymentId)}">
-      <button type="submit" class="btn btn-secondary">Check Payment Status</button>
-    </form>
     <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
   `,
-    `<meta http-equiv="refresh" content="5;url=${esc(pollUrl)}">`
+    `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
   );
 }
 
@@ -976,19 +1005,18 @@ async function handleCheckPayment(paymentId: string): Promise<NextResponse> {
       `);
     }
 
-    // Still pending – show waiting page with auto-refresh
-    const pollUrl = `/api/kiosk-action?flow=dropoff&step=check_payment&paymentId=${encodeURIComponent(paymentId)}`;
+    // Still pending – show waiting page with AJAX polling
     return htmlResponse(
       `
       <h2 class="title">Waiting for Payment</h2>
       <p class="subtitle">Please complete payment on your phone.</p>
       <div style="text-align:center;"><div class="spinner"></div></div>
       <div class="info-box">
-        <p style="text-align:center;">This page will refresh automatically...</p>
+        <p style="text-align:center;">Checking payment status...</p>
       </div>
       <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
     `,
-      `<meta http-equiv="refresh" content="5;url=${esc(pollUrl)}">`
+      `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
     );
   }
 
@@ -1071,8 +1099,7 @@ async function handleCheckPayment(paymentId: string): Promise<NextResponse> {
       `);
     }
 
-    // Still pending
-    const pollUrl = `/api/kiosk-action?flow=dropoff&step=check_payment&paymentId=${encodeURIComponent(paymentId)}`;
+    // Still pending – use AJAX polling instead of meta-refresh
     return htmlResponse(
       `
       <h2 class="title">Waiting for Payment</h2>
@@ -1080,7 +1107,7 @@ async function handleCheckPayment(paymentId: string): Promise<NextResponse> {
       <div style="text-align:center;"><div class="spinner"></div></div>
       <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
     `,
-      `<meta http-equiv="refresh" content="5;url=${esc(pollUrl)}">`
+      `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 3000);</script>`
     );
   }
 
@@ -1817,13 +1844,6 @@ async function handlePayStorageFee(formData: FormData): Promise<NextResponse> {
       <p style="text-align:center; font-size:14px; color:#999;">Payment status will update automatically...</p>
     </div>
     <div style="text-align:center;"><div class="spinner"></div></div>
-    <form action="/api/kiosk-action" method="POST">
-      <input type="hidden" name="flow" value="pickup">
-      <input type="hidden" name="step" value="check_storage_payment">
-      <input type="hidden" name="paymentId" value="${esc(paymentId)}">
-      <input type="hidden" name="pickCode" value="${esc(pickCode)}">
-      <button type="submit" class="btn btn-secondary">Check Payment Status</button>
-    </form>
     <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
   `,
     `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
@@ -1900,13 +1920,6 @@ async function handlePayStorageFeeQR(formData: FormData, request: NextRequest): 
       <p style="text-align:center; font-size:14px; color:#999;">Payment status will update automatically...</p>
     </div>
     <div style="text-align:center;"><div class="spinner"></div></div>
-    <form action="/api/kiosk-action" method="POST">
-      <input type="hidden" name="flow" value="pickup">
-      <input type="hidden" name="step" value="check_storage_payment">
-      <input type="hidden" name="paymentId" value="${esc(paymentId)}">
-      <input type="hidden" name="pickCode" value="${esc(order.trackingCode)}">
-      <button type="submit" class="btn btn-secondary">Check Payment Status</button>
-    </form>
     <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
   `,
     `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
@@ -2107,8 +2120,7 @@ async function handleCheckStoragePayment(paymentId: string): Promise<NextRespons
       `);
     }
 
-    // Still pending
-    const pollUrl = `/api/kiosk-action?flow=pickup&step=check_storage_payment&paymentId=${encodeURIComponent(paymentId)}`;
+    // Still pending – use AJAX polling
     return htmlResponse(
       `
       <h2 class="title">Waiting for Payment</h2>
@@ -2116,7 +2128,7 @@ async function handleCheckStoragePayment(paymentId: string): Promise<NextRespons
       <div style="text-align:center;"><div class="spinner"></div></div>
       <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
     `,
-      `<meta http-equiv="refresh" content="5;url=${esc(pollUrl)}">`
+      `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
     );
   }
 
@@ -2144,8 +2156,7 @@ async function handleCheckStoragePayment(paymentId: string): Promise<NextRespons
       `);
     }
 
-    // Pending
-    const pollUrl = `/api/kiosk-action?flow=pickup&step=check_storage_payment&paymentId=${encodeURIComponent(paymentId)}`;
+    // Pending – use AJAX polling
     return htmlResponse(
       `
       <h2 class="title">Waiting for Payment</h2>
@@ -2153,7 +2164,7 @@ async function handleCheckStoragePayment(paymentId: string): Promise<NextRespons
       <div style="text-align:center;"><div class="spinner"></div></div>
       <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
     `,
-      `<meta http-equiv="refresh" content="5;url=${esc(pollUrl)}">`
+      `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
     );
   }
 

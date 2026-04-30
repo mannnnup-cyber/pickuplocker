@@ -3,11 +3,16 @@ import { db } from '@/lib/db';
 
 /**
  * Payment Status Polling Endpoint
- * 
+ *
  * Used by kiosk-lite AJAX polling to check if a payment has been completed.
  * Returns JSON instead of HTML so the QR code stays on screen.
- * 
+ *
  * GET /api/kiosk/payment-status?paymentId=xxx
+ *
+ * Payment types and their redirect URLs:
+ * - dropoff_credit → /kiosk-lite?action=dropoff-confirmed&saveCode=xxx&boxSize=xxx&phone=xxx&pickCode=xxx
+ * - storage_fee   → /kiosk-lite?action=storage-confirmed&pickCode=xxx
+ * - card_tokenization → /kiosk-lite?action=payment-success&msg=Card saved successfully
  */
 export async function GET(request: NextRequest) {
   const paymentId = request.nextUrl.searchParams.get('paymentId');
@@ -23,29 +28,63 @@ export async function GET(request: NextRequest) {
 
   if (sdkSetting) {
     const paymentData = JSON.parse(sdkSetting.value);
+
     if (paymentData.status === 'COMPLETED') {
       const metadata = paymentData.metadata || {};
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
-      
+
       // Build redirect URL based on payment type
-      let redirectUrl = `/kiosk-lite?action=payment-success&msg=Payment confirmed!`;
-      
-      if (metadata.type === 'dropoff_credit') {
-        redirectUrl = `/kiosk-lite?action=payment-success&msg=Drop-off payment confirmed! Your save code: ${metadata.saveCode || ''}`;
-      } else if (metadata.type === 'storage_fee') {
-        redirectUrl = `/kiosk-lite?action=payment-success&msg=Storage fee paid! Opening locker...`;
+      let redirectUrl: string;
+      let responseMetadata: Record<string, unknown>;
+
+      switch (metadata.type) {
+        case 'dropoff_credit': {
+          const saveCode = metadata.saveCode || '';
+          const pickCode = metadata.pickCode || '';
+          const boxSize = metadata.boxSize || '';
+          const phone = metadata.customerPhone || '';
+          redirectUrl = `/kiosk-lite?action=dropoff-confirmed&saveCode=${encodeURIComponent(saveCode)}&boxSize=${encodeURIComponent(boxSize)}&phone=${encodeURIComponent(phone)}&pickCode=${encodeURIComponent(pickCode)}`;
+          responseMetadata = {
+            type: 'dropoff_credit',
+            saveCode,
+            pickCode,
+            boxSize,
+            phone,
+          };
+          break;
+        }
+
+        case 'storage_fee': {
+          const pickCode = metadata.pickCode || '';
+          redirectUrl = `/kiosk-lite?action=storage-confirmed&pickCode=${encodeURIComponent(pickCode)}`;
+          responseMetadata = {
+            type: 'storage_fee',
+            pickCode,
+          };
+          break;
+        }
+
+        case 'card_tokenization': {
+          redirectUrl = `/kiosk-lite?action=payment-success&msg=${encodeURIComponent('Card saved successfully')}`;
+          responseMetadata = {
+            type: 'card_tokenization',
+          };
+          break;
+        }
+
+        default: {
+          redirectUrl = `/kiosk-lite?action=payment-success&msg=${encodeURIComponent('Payment confirmed!')}`;
+          responseMetadata = {
+            type: metadata.type,
+          };
+          break;
+        }
       }
 
       return NextResponse.json({
         status: 'completed',
         message: paymentData.description || 'Payment confirmed',
         redirectUrl,
-        metadata: {
-          type: metadata.type,
-          saveCode: metadata.saveCode,
-          pickCode: metadata.pickCode,
-          boxSize: metadata.boxSize,
-        },
+        metadata: responseMetadata,
       });
     }
 
@@ -79,16 +118,64 @@ export async function GET(request: NextRequest) {
         })
         .catch(() => {});
 
+      const demoType = demoData.type || 'dropoff_credit';
+
+      // Build redirect URL based on demo payment type
+      let redirectUrl: string;
+      let responseMetadata: Record<string, unknown>;
+
+      switch (demoType) {
+        case 'dropoff_credit': {
+          const saveCode = demoData.saveCode || '';
+          const pickCode = demoData.pickCode || '';
+          const boxSize = demoData.boxSize || '';
+          const phone = demoData.phone || '';
+          redirectUrl = `/kiosk-lite?action=dropoff-confirmed&saveCode=${encodeURIComponent(saveCode)}&boxSize=${encodeURIComponent(boxSize)}&phone=${encodeURIComponent(phone)}&pickCode=${encodeURIComponent(pickCode)}`;
+          responseMetadata = {
+            type: 'dropoff_credit',
+            saveCode,
+            pickCode,
+            boxSize,
+            phone,
+          };
+          break;
+        }
+
+        case 'storage_fee': {
+          const pickCode = demoData.pickCode || '';
+          redirectUrl = `/kiosk-lite?action=storage-confirmed&pickCode=${encodeURIComponent(pickCode)}`;
+          responseMetadata = {
+            type: 'storage_fee',
+            pickCode,
+          };
+          break;
+        }
+
+        case 'card_tokenization': {
+          redirectUrl = `/kiosk-lite?action=payment-success&msg=${encodeURIComponent('Card saved successfully')}`;
+          responseMetadata = {
+            type: 'card_tokenization',
+          };
+          break;
+        }
+
+        default: {
+          redirectUrl = `/kiosk-lite?action=payment-success&msg=${encodeURIComponent('[DEMO] Payment confirmed!')}`;
+          responseMetadata = {
+            type: demoType,
+            saveCode: demoData.saveCode,
+            pickCode: demoData.pickCode,
+            boxSize: demoData.boxSize,
+          };
+          break;
+        }
+      }
+
       return NextResponse.json({
         status: 'completed',
-        message: '[DEMO] Payment confirmed!',
-        redirectUrl: `/kiosk-lite?action=payment-success&msg=[DEMO] Payment confirmed! Save code: ${demoData.saveCode}`,
-        metadata: {
-          type: 'dropoff_credit',
-          saveCode: demoData.saveCode,
-          pickCode: demoData.pickCode,
-          boxSize: demoData.boxSize,
-        },
+        message: `[DEMO] Payment confirmed!`,
+        redirectUrl,
+        metadata: responseMetadata,
       });
     }
 

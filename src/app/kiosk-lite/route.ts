@@ -678,6 +678,50 @@ export async function GET(request: NextRequest) {
     `), { headers: HTML_HEADERS });
   }
 
+  // ---- DROPOFF PAYMENT CONFIRMED (after QR scan payment) ----
+  if (action === 'dropoff-confirmed') {
+    const saveCode = searchParams.get('saveCode') || '';
+    const boxSize = searchParams.get('boxSize') || '';
+    const phone = searchParams.get('phone') || '';
+    const pickCode = searchParams.get('pickCode') || '';
+    return new NextResponse(renderPage(`
+      <div class="success-icon">&#10003;</div>
+      <h2 class="title">Payment Confirmed!</h2>
+      <p class="subtitle">Your drop-off code is ready.</p>
+      <div class="info-box">
+        <p style="text-align:center; color:#999999;">Your Save Code</p>
+        <div class="code-display">${esc(saveCode)}</div>
+        <p style="text-align:center; font-size:14px; color:#999999;">Use this code to open a locker</p>
+      </div>
+      <form action="/api/kiosk-action" method="POST">
+        <input type="hidden" name="flow" value="dropoff">
+        <input type="hidden" name="step" value="open_after_payment">
+        <input type="hidden" name="saveCode" value="${esc(saveCode)}">
+        <input type="hidden" name="boxSize" value="${esc(boxSize)}">
+        <input type="hidden" name="phone" value="${esc(phone)}">
+        <button type="submit" class="btn btn-success">DEPOSIT NOW</button>
+      </form>
+      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+    `), { headers: HTML_HEADERS });
+  }
+
+  // ---- STORAGE FEE PAYMENT CONFIRMED (after QR scan payment) ----
+  if (action === 'storage-confirmed') {
+    const pickCode = searchParams.get('pickCode') || '';
+    return new NextResponse(renderPage(`
+      <div class="success-icon">&#10003;</div>
+      <h2 class="title">Payment Confirmed!</h2>
+      <p class="subtitle">Storage fee has been paid.</p>
+      <form action="/api/kiosk-action" method="POST">
+        <input type="hidden" name="flow" value="pickup">
+        <input type="hidden" name="step" value="open_pickup">
+        <input type="hidden" name="pickCode" value="${esc(pickCode)}">
+        <button type="submit" class="btn btn-success">OPEN LOCKER</button>
+      </form>
+      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+    `), { headers: HTML_HEADERS });
+  }
+
   // ---- PAYMENT SUCCESS ----
   if (action === 'payment-success') {
     return new NextResponse(renderPage(`
