@@ -1,0 +1,195 @@
+// Pickup Locker Management System - Prisma Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Locker Locations ───
+model LockerLocation {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  address   String
+  city      String
+  isActive  Boolean  @default(true)
+  lockers   Locker[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Lockers ───
+model Locker {
+  id           String         @id @default(cuid())
+  lockerNumber String         // e.g., "A-01", "B-12"
+  size         LockerSize     @default(MEDIUM)
+  status       LockerStatus   @default(AVAILABLE)
+  locationId   String
+  location     LockerLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  parcels      Parcel[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@unique([lockerNumber, locationId])
+}
+
+// ─── Customers ───
+model Customer {
+  id            String     @id @default(cuid())
+  name          String
+  phone         String     @unique
+  email         String?
+  balance       Float      @default(0)   // account balance for auto-charges
+  stripePaymentMethodId String? // for future Stripe integration
+  parcels       Parcel[]
+  payments      Payment[]
+  smsLogs       SmsLog[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+}
+
+// ─── Parcels ───
+model Parcel {
+  id              String        @id @default(cuid())
+  trackingCode    String        @unique
+  description     String?
+  depositedAt     DateTime      @default(now())
+  collectedAt     DateTime?
+  status          ParcelStatus  @default(DEPOSITED)
+  lockerId        String
+  locker          Locker        @relation(fields: [lockerId], references: [id])
+  customerId      String
+  customer        Customer      @relation(fields: [customerId], references: [id])
+  storageFees     StorageFee[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+// ─── Storage Fees ───
+model StorageFee {
+  id              String          @id @default(cuid())
+  parcelId        String
+  parcel          Parcel          @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  feeType         FeeType         @default(DAILY)
+  amount          Float
+  currency        String          @default("USD")
+  freeHours       Int             @default(24) // free storage period in hours
+  ratePerHour     Float           @default(0.5) // rate after free period
+  startDate       DateTime        // when fee starts accruing
+  endDate         DateTime?       // when fee stops (parcel collected or charged)
+  status          FeeStatus       @default(ACCUMULATING)
+  chargedAt       DateTime?       // when the fee was actually charged
+  paymentId       String?         // linked payment if charged
+  payment         Payment?        @relation(fields: [paymentId], references: [id])
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+// ─── Payments ───
+model Payment {
+  id              String        @id @default(cuid())
+  customerId      String
+  customer        Customer      @relation(fields: [customerId], references: [id])
+  amount          Float
+  currency        String        @default("USD")
+  method          PaymentMethod @default(BALANCE)
+  status          PaymentStatus @default(PENDING)
+  description     String?
+  storageFees     StorageFee[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+// ─── SMS Logs ───
+model SmsLog {
+  id            String      @id @default(cuid())
+  customerId    String
+  customer      Customer    @relation(fields: [customerId], references: [id])
+  to            String      // phone number
+  message       String
+  type          SmsType     @default(DEPOSIT_NOTIFICATION)
+  status        SmsStatus   @default(QUEUED)
+  twilioSid     String?
+  errorMessage  String?
+  sentAt        DateTime?
+  createdAt     DateTime    @default(now())
+}
+
+// ─── System Settings ───
+model SystemSetting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+}
+
+// ─── Enums ───
+enum LockerSize {
+  SMALL
+  MEDIUM
+  LARGE
+  XLARGE
+}
+
+enum LockerStatus {
+  AVAILABLE
+  OCCUPIED
+  RESERVED
+  MAINTENANCE
+  OUT_OF_SERVICE
+}
+
+enum ParcelStatus {
+  DEPOSITED
+  NOTIFIED
+  REMINDED
+  OVERDUE
+  COLLECTED
+  RETURNED
+}
+
+enum FeeType {
+  DAILY
+  HOURLY
+  FLAT
+}
+
+enum FeeStatus {
+  ACCUMULATING
+  CHARGED
+  WAIVED
+  DISPUTED
+}
+
+enum PaymentMethod {
+  BALANCE
+  CASH
+  CARD
+  ONLINE
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum SmsType {
+  DEPOSIT_NOTIFICATION
+  COLLECTION_REMINDER
+  OVERDUE_NOTICE
+  FEE_CHARGED
+  FEE_WARNING
+  CUSTOM
+}
+
+enum SmsStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  UNDELIVERED
+}
