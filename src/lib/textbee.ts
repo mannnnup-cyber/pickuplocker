@@ -489,7 +489,73 @@ const TextBeeClient = {
   sendStorageFeeNotification,
   sendPickupConfirmation,
   sendOverdueReminder,
+  sendDropoffConfirmation,
+  sendFreePickupReminder,
+  sendStorageFeeApplied,
   getDeviceStatus,
 };
+
+/**
+ * Drop-off confirmation — sent immediately when a package is stored
+ * Includes the pickup code and free pickup window
+ */
+export async function sendDropoffConfirmation(
+  phone: string,
+  customerName: string,
+  pickCode: string,
+  location: string,
+  freeDays: number = 3
+): Promise<SMSResult> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  return sendTemplateSMS(phone, 'dropoff_confirmation', {
+    customerName,
+    pickCode,
+    location,
+    freeDays,
+    accountUrl: `${baseUrl}/account?phone=${encodeURIComponent(phone)}`,
+  });
+}
+
+/**
+ * Free pickup reminder — sent when the free period is ending (Day 3)
+ * Encourages pickup before fees apply
+ */
+export async function sendFreePickupReminder(
+  phone: string,
+  customerName: string,
+  pickCode: string,
+  location: string
+): Promise<SMSResult> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  return sendTemplateSMS(phone, 'free_pickup_reminder', {
+    customerName,
+    pickCode,
+    location,
+    accountUrl: `${baseUrl}/account?phone=${encodeURIComponent(phone)}`,
+  });
+}
+
+/**
+ * Storage fee applied — sent when a storage fee first kicks in (Day 4+)
+ * Includes payment link and "add card" option
+ */
+export async function sendStorageFeeApplied(
+  phone: string,
+  customerName: string,
+  pickCode: string,
+  storageDays: number,
+  fee: number,
+  paymentRef: string
+): Promise<SMSResult> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  return sendTemplateSMS(phone, 'storage_fee_applied', {
+    customerName,
+    pickCode,
+    storageDays,
+    fee,
+    paymentUrl: `${baseUrl}/pay/${paymentRef}`,
+    accountUrl: `${baseUrl}/account?phone=${encodeURIComponent(phone)}`,
+  });
+}
 
 export default TextBeeClient;

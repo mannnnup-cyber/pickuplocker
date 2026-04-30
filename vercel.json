@@ -49,5 +49,11 @@
       "memory": 512,
       "maxDuration": 30
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/storage-notifications?key=pickup-cron-2024",
+      "schedule": "0 9 * * *"
+    }
+  ]
 }

@@ -1678,8 +1678,50 @@ async function handlePickupLookup(formData: FormData): Promise<NextResponse> {
     storageDays = calc.totalDays;
   }
 
-  // If fee > 0, show payment page
+  // If fee > 0, check for saved card before showing payment page
   if (storageFee > 0) {
+    // Auto-create/find user account from phone number
+    const customerPhone = expressOrder?.customerPhone || order?.customerPhone || '';
+    let customerId = order?.customerId || '';
+
+    if (customerPhone && !customerId) {
+      // Find or create user account
+      let customer = await db.user.findFirst({ where: { phone: customerPhone } });
+      if (!customer) {
+        customer = await db.user.create({
+          data: {
+            phone: customerPhone,
+            email: `${customerPhone}@pickup.local`,
+            name: expressOrder?.customerName || order?.customerName || 'Customer',
+            role: 'CUSTOMER',
+          },
+        });
+      }
+      customerId = customer.id;
+    }
+
+    // Check if this customer has a saved card
+    const savedCard = customerId
+      ? await db.savedPaymentMethod.findFirst({
+          where: { userId: customerId, isActive: true },
+          orderBy: [{ isDefault: 'desc' }, { lastUsedAt: 'desc' }],
+        })
+      : null;
+
+    if (savedCard) {
+      // Customer has a saved card — redirect to one-tap confirm screen
+      const orderId = order?.id || '';
+      const boxName = expressOrder?.boxName || (order?.boxNumber?.toString().padStart(2, '0') || '');
+      return NextResponse.redirect(
+        new URL(
+          `/kiosk-lite?action=confirm-charge&amount=${storageFee}&brand=${encodeURIComponent(savedCard.brand || '')}&last4=${savedCard.last4 || '****'}&cardToken=${encodeURIComponent(savedCard.cardToken)}&orderId=${encodeURIComponent(orderId)}&boxName=${encodeURIComponent(boxName)}`,
+          request.url
+        ),
+        303
+      );
+    }
+
+    // No saved card — show QR payment page
     return htmlResponse(`
       <h2 class="title">Storage Fee Required</h2>
       <div class="info-box">
