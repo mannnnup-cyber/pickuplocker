@@ -165,6 +165,8 @@ export async function getStorageSettings() {
     tier2Fee: parseInt(settings['storage_tier2Fee'] || '150'),
     tier3Fee: parseInt(settings['storage_tier3Fee'] || '200'),
     maxDays: parseInt(settings['storage_maxDays'] || '30'),
+    autoChargeEnabled: settings['storage_autoChargeEnabled'] === 'true',
+    autoChargeMinDays: parseInt(settings['storage_autoChargeMinDays'] || '4'), // Don't auto-charge before day 4
   };
 }
 

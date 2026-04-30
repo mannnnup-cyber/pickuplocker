@@ -492,6 +492,8 @@ const TextBeeClient = {
   sendDropoffConfirmation,
   sendFreePickupReminder,
   sendStorageFeeApplied,
+  sendAutoChargeNotification,
+  sendAutoChargeFailed,
   getDeviceStatus,
 };
 
@@ -556,6 +558,42 @@ export async function sendStorageFeeApplied(
     paymentUrl: `${baseUrl}/pay/${paymentRef}`,
     accountUrl: `${baseUrl}/account?phone=${encodeURIComponent(phone)}`,
   });
+}
+
+/**
+ * Auto-charge success notification — sent when a saved card is charged for storage fees
+ * Confirms the charge amount and card used
+ */
+export async function sendAutoChargeNotification(
+  phone: string,
+  customerName: string,
+  cardBrand: string,
+  cardLast4: string,
+  amount: number,
+  pickCode: string
+): Promise<SMSResult> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  return sendSMS(
+    phone,
+    `Pickup Jamaica: Storage fee of JMD $${amount} has been charged to your ${cardBrand} card ending ${cardLast4}. Pickup code: ${pickCode}. Visit ${baseUrl}/account to manage your cards.`
+  );
+}
+
+/**
+ * Auto-charge failed notification — sent when a saved card charge fails
+ * Prompts customer to pay manually or update their card
+ */
+export async function sendAutoChargeFailed(
+  phone: string,
+  customerName: string,
+  amount: number,
+  pickCode: string
+): Promise<SMSResult> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  return sendSMS(
+    phone,
+    `Pickup Jamaica: We tried to charge JMD $${amount} storage fee but your card was declined. Please pay at the locker or visit ${baseUrl}/account to update your card. Pickup code: ${pickCode}`
+  );
 }
 
 export default TextBeeClient;

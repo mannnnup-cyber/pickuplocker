@@ -54,6 +54,10 @@
     {
       "path": "/api/cron/storage-notifications?key=pickup-cron-2024",
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/abandoned?secret=pickup-cron-2024",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
