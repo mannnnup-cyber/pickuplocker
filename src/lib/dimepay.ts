@@ -88,6 +88,26 @@ export interface SDKInitConfig {
   onClose: string; // callback URL
 }
 
+// Card tokenization request result
+export interface CardTokenResult {
+  cardToken: string;     // card_xxx token for future charges
+  brand?: string;        // VISA, MASTERCARD, etc.
+  last4?: string;        // Last 4 digits
+  expiryMonth?: string;
+  expiryYear?: string;
+  holderName?: string;
+  isVerified?: boolean;
+}
+
+// Charge result using a saved card token
+export interface TokenChargeResult {
+  chargeId: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  amount: number;
+  currency: string;
+  authorizationCode?: string;
+}
+
 /**
  * Calculate DimePay fee
  */
@@ -474,6 +494,250 @@ export async function listPayments(
   };
 }
 
+// ============================================
+// CARDS API — Tokenization & Future Charges
+// ============================================
+
+/**
+ * Extract card token from DimePay webhook/payment response
+ * DimePay returns card tokens in various formats depending on the API version
+ */
+export function extractCardTokenFromPayment(payment: Record<string, unknown>): CardTokenResult | null {
+  // Try multiple possible locations where DimePay might include the card token
+  const cardToken =
+    (payment.card_token as string) ||
+    (payment.cardToken as string) ||
+    ((payment.payment_method as Record<string, unknown>)?.token as string) ||
+    ((payment.source as Record<string, unknown>)?.id as string) ||
+    ((payment.card as Record<string, unknown>)?.token as string) ||
+    null;
+
+  if (!cardToken) return null;
+
+  // Extract card details if available
+  const cardInfo = (payment.card as Record<string, unknown>) ||
+    (payment.payment_method as Record<string, unknown>) ||
+    (payment.source as Record<string, unknown>) ||
+    {};
+
+  return {
+    cardToken,
+    brand: (cardInfo.brand as string) || (cardInfo.card_type as string) || undefined,
+    last4: (cardInfo.last4 as string) || (cardInfo.last_four as string) || undefined,
+    expiryMonth: (cardInfo.exp_month as string) || (cardInfo.expiry_month as string) || undefined,
+    expiryYear: (cardInfo.exp_year as string) || (cardInfo.expiry_year as string) || undefined,
+    holderName: (cardInfo.holder_name as string) || (cardInfo.name as string) || undefined,
+    isVerified: true, // If DimePay returned a token, the card was verified during payment
+  };
+}
+
+/**
+ * Charge a saved card token (server-to-server API call)
+ * Used for one-tap payments on kiosk, storage fee auto-charges, etc.
+ * 
+ * DimePay Cards API: POST /api/v1/charges
+ */
+export async function chargeCardToken(
+  data: {
+    cardToken: string;
+    amount: number;       // Amount in JMD (dollars, not cents)
+    currency?: string;
+    orderId: string;
+    description: string;
+    customerEmail?: string;
+    customerPhone?: string;
+    metadata?: Record<string, unknown>;
+    authorizeOnly?: boolean; // If true, only authorize (hold funds) without capturing
+  },
+  config: DimePaySDKConfig
+): Promise<DimePayResponse<TokenChargeResult>> {
+  try {
+    if (!config.clientId || !config.secretKey) {
+      return { success: false, error: 'DimePay not configured.' };
+    }
+
+    const baseUrl = config.baseUrl || DIMEPAY_BASE_URL;
+    const endpoint = data.authorizeOnly
+      ? `${baseUrl}/api/v1/authorizations`
+      : `${baseUrl}/api/v1/charges`;
+
+    const payload = {
+      token: data.cardToken,
+      amount: Math.round(data.amount * 100), // Convert to cents
+      currency: data.currency || 'JMD',
+      order_id: data.orderId,
+      description: data.description,
+      capture: !data.authorizeOnly,
+      metadata: {
+        ...data.metadata,
+        customer_email: data.customerEmail,
+        customer_phone: data.customerPhone,
+      },
+    };
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.secretKey}`,
+        'X-Client-Id': config.clientId,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error('DimePay charge error:', response.status, errorBody);
+      return {
+        success: false,
+        error: `Charge failed (${response.status}): ${errorBody}`,
+      };
+    }
+
+    const result = await response.json();
+
+    return {
+      success: true,
+      data: {
+        chargeId: result.id || result.charge_id || data.orderId,
+        status: result.status || 'completed',
+        amount: result.amount ? result.amount / 100 : data.amount,
+        currency: result.currency || data.currency || 'JMD',
+        authorizationCode: result.authorization_code || result.auth_code,
+      },
+    };
+  } catch (error) {
+    console.error('DimePay chargeCardToken error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Capture a previously authorized charge
+ * DimePay API: POST /api/v1/charges/{chargeId}/capture
+ */
+export async function captureAuthorization(
+  data: {
+    chargeId: string;
+    amount?: number; // If different from original auth amount
+  },
+  config: DimePaySDKConfig
+): Promise<DimePayResponse<TokenChargeResult>> {
+  try {
+    if (!config.clientId || !config.secretKey) {
+      return { success: false, error: 'DimePay not configured.' };
+    }
+
+    const baseUrl = config.baseUrl || DIMEPAY_BASE_URL;
+    const endpoint = `${baseUrl}/api/v1/charges/${data.chargeId}/capture`;
+
+    const payload: Record<string, unknown> = {};
+    if (data.amount) {
+      payload.amount = Math.round(data.amount * 100);
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.secretKey}`,
+        'X-Client-Id': config.clientId,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      return {
+        success: false,
+        error: `Capture failed (${response.status}): ${errorBody}`,
+      };
+    }
+
+    const result = await response.json();
+
+    return {
+      success: true,
+      data: {
+        chargeId: result.id || data.chargeId,
+        status: result.status || 'completed',
+        amount: result.amount ? result.amount / 100 : 0,
+        currency: result.currency || 'JMD',
+      },
+    };
+  } catch (error) {
+    console.error('DimePay captureAuthorization error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Create a tokenization request for a card (without immediate charge)
+ * This does a $0 or $1 authorization to verify and tokenize a card
+ * DimePay Cards API: POST /api/v1/cards/tokenize
+ */
+export async function tokenizeCard(
+  data: {
+    customerPhone: string;
+    customerEmail?: string;
+    customerName?: string;
+  },
+  config: DimePaySDKConfig
+): Promise<DimePayResponse<{ paymentUrl: string; reference: string }>> {
+  try {
+    if (!config.clientId || !config.secretKey) {
+      return { success: false, error: 'DimePay not configured.' };
+    }
+
+    const baseUrl = config.baseUrl || DIMEPAY_BASE_URL;
+    const reference = `TOKENIZE-${Date.now()}`;
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+
+    // Create an SDK payment with tokenization flag
+    // The QR page will include tokenize: true so DimePay returns a card token
+    const sdkResult = await createSDKPayment({
+      amount: 100, // $1.00 JMD authorization (will be voided)
+      currency: 'JMD',
+      orderId: reference,
+      description: 'Card Verification - Pickup Jamaica',
+      customerEmail: data.customerEmail,
+      customerPhone: data.customerPhone,
+      redirectUrl: `${appUrl}/account?verified=true`,
+      webhookUrl: `${appUrl}/api/webhooks/dimepay`,
+      passFeeToCustomer: false,
+      metadata: {
+        type: 'card_tokenization',
+        customerName: data.customerName,
+        tokenize: true, // Flag for webhook to save token
+      },
+    }, config);
+
+    if (!sdkResult.success || !sdkResult.data) {
+      return { success: false, error: sdkResult.error || 'Failed to create tokenization request' };
+    }
+
+    return {
+      success: true,
+      data: {
+        paymentUrl: `${appUrl}/pay/${reference}`,
+        reference,
+      },
+    };
+  } catch (error) {
+    console.error('DimePay tokenizeCard error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
 // Export default client
 const DimePayClient = {
   createPayment,
@@ -487,6 +751,11 @@ const DimePayClient = {
   verifyWebhookSignature,
   calculateDimePayFee,
   generateQRCode,
+  // Cards API
+  extractCardTokenFromPayment,
+  chargeCardToken,
+  captureAuthorization,
+  tokenizeCard,
 };
 
 export default DimePayClient;

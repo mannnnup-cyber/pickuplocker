@@ -14,7 +14,7 @@ import {
 import { sendSMS, sendPickupNotification, sendPickupConfirmation } from '@/lib/textbee';
 import { sendEmail, sendDropoffCodeEmail, isEmailEnabled } from '@/lib/email';
 import { getSetting, getDimepayConfig } from '@/lib/settings';
-import { createSDKPayment, DimePaySDKConfig } from '@/lib/dimepay';
+import { createSDKPayment, chargeCardToken, DimePaySDKConfig } from '@/lib/dimepay';
 import QRCode from 'qrcode';
 
 // Box sizes and their prices for drop-off credits (JMD)
@@ -475,6 +475,16 @@ async function handlePickupFlow(
   // step=pay_storage_fee → Create storage fee payment, show QR
   if (step === 'pay_storage_fee') {
     return await handlePayStorageFee(formData);
+  }
+
+  // step=pay_storage_fee_qr → Pay storage fee via QR (no saved card)
+  if (step === 'pay_storage_fee_qr') {
+    return await handlePayStorageFeeQR(formData, request);
+  }
+
+  // step=charge_saved_card → Charge user's saved card token
+  if (step === 'charge_saved_card') {
+    return await handleChargeSavedCard(formData);
   }
 
   // step=check_storage_payment → Check storage fee payment status
@@ -1762,7 +1772,7 @@ async function handlePayStorageFee(formData: FormData): Promise<NextResponse> {
     ${qrImg}
     <div class="info-box">
       <p style="text-align:center;">Scan the QR code to pay the storage fee.</p>
-      <p style="text-align:center; font-size:14px; color:#999;">This page will refresh automatically...</p>
+      <p style="text-align:center; font-size:14px; color:#999;">Payment status will update automatically...</p>
     </div>
     <div style="text-align:center;"><div class="spinner"></div></div>
     <form action="/api/kiosk-action" method="POST">
@@ -1774,8 +1784,237 @@ async function handlePayStorageFee(formData: FormData): Promise<NextResponse> {
     </form>
     <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
   `,
-    `<meta http-equiv="refresh" content="5;url=${esc(pollUrl)}">`
+    `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
   );
+}
+
+// ============================================
+// PICKUP: Pay storage fee via QR (no saved card)
+// ============================================
+async function handlePayStorageFeeQR(formData: FormData, request: NextRequest): Promise<NextResponse> {
+  const orderId = formData.get('orderId') as string;
+  const amount = parseFloat(formData.get('amount') as string) || 0;
+
+  if (!orderId) {
+    return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
+  }
+
+  // Find the order
+  const order = await db.order.findUnique({ where: { id: orderId } });
+  if (!order) {
+    return htmlResponse(`
+      <h2 class="title">Error</h2>
+      <p class="error-msg">Order not found.</p>
+      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+    `);
+  }
+
+  // Create QR payment for storage fee
+  const storageFee = amount || order.storageFee || 0;
+  const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+  const paymentUrl = `https://pickuplocker.vercel.app/pay/${paymentId}`;
+  const qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
+
+  // Store payment session
+  await db.setting.upsert({
+    where: { key: `demo_payment_${paymentId}` },
+    create: {
+      key: `demo_payment_${paymentId}`,
+      value: JSON.stringify({
+        pickCode: order.trackingCode,
+        orderId: order.id,
+        phone: order.customerPhone,
+        amount: storageFee,
+        createdAt: Date.now(),
+        status: 'PENDING',
+        type: 'storage_fee',
+      }),
+      description: `Storage Fee Payment: ${paymentId}`,
+    },
+    update: {
+      value: JSON.stringify({
+        pickCode: order.trackingCode,
+        orderId: order.id,
+        phone: order.customerPhone,
+        amount: storageFee,
+        createdAt: Date.now(),
+        status: 'PENDING',
+        type: 'storage_fee',
+      }),
+    },
+  });
+
+  const qrImg = qrCodeDataUrl
+    ? `<div class="qr-container"><img src="${qrCodeDataUrl}" alt="Payment QR Code" /></div>`
+    : '<p style="text-align:center; color:#999;">QR code unavailable</p>';
+
+  return htmlResponse(
+    `
+    <h2 class="title">Pay Storage Fee</h2>
+    <p class="subtitle">JMD $${storageFee} storage fee</p>
+    ${qrImg}
+    <div class="info-box">
+      <p style="text-align:center;">Scan the QR code to pay.</p>
+      <p style="text-align:center; font-size:14px; color:#999;">Payment status will update automatically...</p>
+    </div>
+    <div style="text-align:center;"><div class="spinner"></div></div>
+    <form action="/api/kiosk-action" method="POST">
+      <input type="hidden" name="flow" value="pickup">
+      <input type="hidden" name="step" value="check_storage_payment">
+      <input type="hidden" name="paymentId" value="${esc(paymentId)}">
+      <input type="hidden" name="pickCode" value="${esc(order.trackingCode)}">
+      <button type="submit" class="btn btn-secondary">Check Payment Status</button>
+    </form>
+    <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+  `,
+    `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
+  );
+}
+
+// ============================================
+// PICKUP: Charge saved card token (one-tap)
+// ============================================
+async function handleChargeSavedCard(formData: FormData): Promise<NextResponse> {
+  const cardToken = formData.get('cardToken') as string;
+  const amount = parseFloat(formData.get('amount') as string) || 0;
+  const orderId = formData.get('orderId') as string;
+  const boxName = formData.get('boxName') as string;
+
+  if (!cardToken || !amount || !orderId) {
+    return htmlResponse(`
+      <h2 class="title">Error</h2>
+      <p class="error-msg">Missing payment information.</p>
+      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+    `);
+  }
+
+  // Get DimePay config
+  const config = await getDimepayConfig();
+  const effectiveClientId = config.sandboxMode ? config.sandboxClientId : config.liveClientId;
+  const effectiveSecretKey = config.sandboxMode ? config.sandboxSecretKey : config.liveSecretKey;
+
+  // Try to charge the saved card via DimePay API
+  if (effectiveClientId && effectiveSecretKey) {
+    const sdkConfig: DimePaySDKConfig = {
+      clientId: effectiveClientId,
+      secretKey: effectiveSecretKey,
+      sandboxMode: config.sandboxMode,
+    };
+
+    const chargeResult = await chargeCardToken({
+      cardToken,
+      amount: amount,
+      orderId: `STORAGE-${orderId}-${Date.now()}`,
+      description: `Storage Fee - Pickup Jamaica`,
+      metadata: {
+        type: 'storage_fee',
+        orderId,
+        boxName,
+      },
+    }, sdkConfig);
+
+    if (chargeResult.success) {
+      // Card charged successfully — open the locker
+      const order = await db.order.findUnique({
+        where: { id: orderId },
+        include: { box: true, device: true },
+      });
+
+      if (order && order.device && order.box) {
+        try {
+          const credentials = await getCredentialsForDevice(order.device.id);
+          await openBoxWithCredentials(order.device.deviceId, parseInt(order.box.boxNumber.toString()), credentials);
+        } catch (e) {
+          console.error('Failed to open box after card charge:', e);
+        }
+
+        // Update order status
+        await db.order.update({
+          where: { id: orderId },
+          data: { status: 'PICKED_UP', pickUpAt: new Date(), storageFee: amount },
+        });
+
+        // Free the box
+        await db.box.update({
+          where: { id: order.box.id },
+          data: { status: 'AVAILABLE', lastUsedAt: new Date() },
+        });
+
+        // Update saved card lastUsedAt
+        await db.savedPaymentMethod.updateMany({
+          where: { cardToken },
+          data: { lastUsedAt: new Date() },
+        });
+
+        // Send confirmation SMS
+        try {
+          await sendPickupConfirmation(order.customerPhone, order.trackingCode);
+        } catch (e) {
+          console.error('Failed to send pickup SMS:', e);
+        }
+
+        return htmlResponse(`
+          <div class="success-icon">&#10003;</div>
+          <h2 class="title">Payment Confirmed!</h2>
+          <p class="subtitle">JMD $${amount} charged to your card.</p>
+          <div class="info-box">
+            <p style="text-align:center;">Locker is opening...</p>
+            <p><span class="label">Box:</span> <span class="value">${esc(boxName || order.boxNumber?.toString() || 'N/A')}</span></p>
+          </div>
+          <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+        `);
+      }
+    }
+
+    // Charge failed
+    return htmlResponse(`
+      <h2 class="title">Payment Failed</h2>
+      <p class="error-msg">${esc(chargeResult.error || 'Card charge failed. Please try another payment method.')}</p>
+      <form action="/api/kiosk-action" method="POST">
+        <input type="hidden" name="flow" value="pickup">
+        <input type="hidden" name="step" value="pay_storage_fee_qr">
+        <input type="hidden" name="orderId" value="${esc(orderId)}">
+        <input type="hidden" name="amount" value="${esc(amount.toString())}">
+        <button type="submit" class="btn btn-secondary">PAY WITH QR CODE</button>
+      </form>
+      <a href="/kiosk-lite" class="btn btn-back">Cancel</a>
+    `);
+  }
+
+  // Demo mode — auto-succeed
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    include: { box: true, device: true },
+  });
+
+  if (order && order.device && order.box) {
+    try {
+      const credentials = await getCredentialsForDevice(order.device.id);
+      await openBoxWithCredentials(order.device.deviceId, parseInt(order.box.boxNumber.toString()), credentials);
+    } catch (e) {
+      console.error('Failed to open box (demo):', e);
+    }
+
+    await db.order.update({
+      where: { id: orderId },
+      data: { status: 'PICKED_UP', pickUpAt: new Date(), storageFee: amount },
+    });
+
+    await db.box.update({
+      where: { id: order.box.id },
+      data: { status: 'AVAILABLE', lastUsedAt: new Date() },
+    });
+  }
+
+  return htmlResponse(`
+    <div class="success-icon">&#10003;</div>
+    <h2 class="title">[DEMO] Payment Confirmed!</h2>
+    <p class="subtitle">JMD $${amount} charged (demo mode).</p>
+    <div class="info-box">
+      <p style="text-align:center;">Locker is opening...</p>
+    </div>
+    <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+  `);
 }
 
 // ============================================

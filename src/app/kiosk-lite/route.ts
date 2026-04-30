@@ -262,6 +262,11 @@ const SHARED_CSS = `
     color: #FFD439;
     font-weight: bold;
   }
+  #kiosk-countdown {
+    color: #666666;
+    font-size: 12px;
+    margin-left: 10px;
+  }
   .footer {
     text-align: center;
     margin-top: 40px;
@@ -295,12 +300,40 @@ const KIOSK_JS = `
   // Inactivity timeout - return to home after 90 seconds of no interaction
   var inactivityTimer;
   var INACTIVITY_MS = 90000;
+  var countdownTimer;
+  var remainingSeconds = Math.floor(INACTIVITY_MS / 1000);
 
   function resetInactivityTimer() {
     clearTimeout(inactivityTimer);
+    clearInterval(countdownTimer);
+    remainingSeconds = Math.floor(INACTIVITY_MS / 1000);
+    updateCountdown();
     inactivityTimer = setTimeout(function() {
       window.location.href = '/kiosk-lite';
     }, INACTIVITY_MS);
+    countdownTimer = setInterval(function() {
+      remainingSeconds = remainingSeconds - 1;
+      if (remainingSeconds <= 0) {
+        clearInterval(countdownTimer);
+        return;
+      }
+      updateCountdown();
+    }, 1000);
+  }
+
+  function updateCountdown() {
+    var el = document.getElementById('kiosk-countdown');
+    if (!el) return;
+    var m = Math.floor(remainingSeconds / 60);
+    var s = remainingSeconds % 60;
+    if (s < 10) s = '0' + s;
+    el.textContent = m + ':' + s;
+    // Change color when low
+    if (remainingSeconds <= 15) {
+      el.style.color = '#ff6b6b';
+    } else if (remainingSeconds <= 30) {
+      el.style.color = '#FFD439';
+    }
   }
 
   // Listen for user activity
@@ -340,6 +373,34 @@ const KIOSK_JS = `
   document.addEventListener('touchstart', function() {
     tryFullscreen();
   }, { once: true });
+
+  // ---- AJAX Payment Polling (Chrome 37 compatible) ----
+  // Replaces meta-refresh so QR code stays visible while checking payment status
+  function startPaymentPolling(pollUrl, checkIntervalMs) {
+    var pollInterval = setInterval(function() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', pollUrl, true);
+      xhr.setRequestHeader('Accept', 'application/json');
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        if (xhr.status !== 200) return;
+        try {
+          var resp = JSON.parse(xhr.responseText);
+          if (resp && resp.status === 'completed') {
+            clearInterval(pollInterval);
+            // Payment confirmed — redirect to success page
+            window.location.href = resp.redirectUrl || '/kiosk-lite?action=payment-success&msg=' + encodeURIComponent(resp.message || 'Payment confirmed!');
+          } else if (resp && resp.status === 'failed') {
+            clearInterval(pollInterval);
+            window.location.href = '/kiosk-lite?action=error&msg=' + encodeURIComponent(resp.message || 'Payment failed');
+          }
+        } catch(e) {
+          // Non-JSON response — ignore, keep polling
+        }
+      };
+      xhr.send();
+    }, checkIntervalMs || 5000);
+  }
 `;
 
 function renderPage(content: string, extraHead: string = ''): string {
@@ -358,7 +419,7 @@ function renderPage(content: string, extraHead: string = ''): string {
   <div class="container">
     <div class="header">
       <h1>PICKUP</h1>
-      <p>Smart Locker System <span id="kiosk-clock" style="margin-left:10px;"></span></p>
+      <p>Smart Locker System <span id="kiosk-clock" style="margin-left:10px;"></span><span id="kiosk-countdown"></span></p>
     </div>
     ${content}
   </div>
@@ -571,6 +632,59 @@ export async function GET(request: NextRequest) {
       <div class="nav-buttons">
         <a href="/kiosk-lite" class="btn btn-back">Back</a>
       </div>
+    `), { headers: HTML_HEADERS });
+  }
+
+  // ---- CONFIRM CARD CHARGE (one-tap for saved cards) ----
+  if (action === 'confirm-charge') {
+    const amount = searchParams.get('amount') || '0';
+    const brand = searchParams.get('brand') || '';
+    const last4 = searchParams.get('last4') || '****';
+    const cardToken = searchParams.get('cardToken') || '';
+    const orderId = searchParams.get('orderId') || '';
+    const boxName = searchParams.get('boxName') || '';
+    return new NextResponse(renderPage(`
+      <h2 class="title">Storage Fee</h2>
+      <p class="subtitle">A storage fee has been applied</p>
+      <div class="info-box">
+        <p style="text-align:center; color:#999999;">Amount Due</p>
+        <div class="code-display">$${esc(amount)} JMD</div>
+      </div>
+      <div class="info-box">
+        <p style="text-align:center; color:#999999;">Charge to saved card</p>
+        <p style="text-align:center; font-size:22px; font-weight:bold;">
+          ${esc(brand)} ****${esc(last4)}
+        </p>
+      </div>
+      <form action="/api/kiosk-action" method="POST">
+        <input type="hidden" name="flow" value="pickup">
+        <input type="hidden" name="step" value="charge_saved_card">
+        <input type="hidden" name="cardToken" value="${esc(cardToken)}">
+        <input type="hidden" name="amount" value="${esc(amount)}">
+        <input type="hidden" name="orderId" value="${esc(orderId)}">
+        <input type="hidden" name="boxName" value="${esc(boxName)}">
+        <button type="submit" class="btn btn-primary">CONFIRM CHARGE</button>
+      </form>
+      <form action="/api/kiosk-action" method="POST">
+        <input type="hidden" name="flow" value="pickup">
+        <input type="hidden" name="step" value="pay_storage_fee_qr">
+        <input type="hidden" name="orderId" value="${esc(orderId)}">
+        <input type="hidden" name="amount" value="${esc(amount)}">
+        <button type="submit" class="btn btn-secondary">PAY ANOTHER WAY</button>
+      </form>
+      <div class="nav-buttons">
+        <a href="/kiosk-lite" class="btn btn-back">Cancel</a>
+      </div>
+    `), { headers: HTML_HEADERS });
+  }
+
+  // ---- PAYMENT SUCCESS ----
+  if (action === 'payment-success') {
+    return new NextResponse(renderPage(`
+      <div class="success-icon">&#10003;</div>
+      <h2 class="title">Payment Confirmed!</h2>
+      <p class="subtitle">${esc(msg || 'Your payment was successful.')}</p>
+      <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
     `), { headers: HTML_HEADERS });
   }
 

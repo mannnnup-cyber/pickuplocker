@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { verifyWebhookSignature } from '@/lib/dimepay';
+import { verifyWebhookSignature, extractCardTokenFromPayment } from '@/lib/dimepay';
 import { openBoxWithCredentials, getCredentialsForDevice } from '@/lib/bestwond';
 import { sendPickupConfirmation } from '@/lib/textbee';
 import { sendEmail, isEmailEnabled } from '@/lib/email';
@@ -70,10 +70,64 @@ async function handlePaymentCompleted(payment: {
   amount: number;
   currency: string;
   metadata?: Record<string, unknown>;
+  [key: string]: unknown; // Allow additional fields from DimePay
 }) {
   const paymentType = payment.metadata?.type as string;
   
   console.log('[Webhook] Payment completed, type:', paymentType, 'reference:', payment.reference);
+  
+  // ---- Extract and save card token if present ----
+  // DimePay includes card tokens in payment responses when tokenization is enabled
+  try {
+    const cardTokenResult = extractCardTokenFromPayment(payment);
+    if (cardTokenResult && payment.metadata) {
+      const customerPhone = payment.metadata.customerPhone as string || payment.metadata.customer_phone as string;
+      const customerId = payment.metadata.customerId as string;
+      
+      if (customerPhone || customerId) {
+        // Find the user by phone or ID
+        const user = customerId
+          ? await db.user.findUnique({ where: { id: customerId } })
+          : await db.user.findFirst({ where: { phone: customerPhone } });
+        
+        if (user) {
+          // Check if this card token already exists
+          const existingCard = await db.savedPaymentMethod.findUnique({
+            where: { cardToken: cardTokenResult.cardToken }
+          });
+          
+          if (!existingCard) {
+            // Save the new card token
+            const isUserFirst = (await db.savedPaymentMethod.count({ where: { userId: user.id } })) === 0;
+            await db.savedPaymentMethod.create({
+              data: {
+                userId: user.id,
+                cardToken: cardTokenResult.cardToken,
+                brand: cardTokenResult.brand,
+                last4: cardTokenResult.last4,
+                expiryMonth: cardTokenResult.expiryMonth,
+                expiryYear: cardTokenResult.expiryYear,
+                holderName: cardTokenResult.holderName,
+                isVerified: true,
+                verifiedAt: new Date(),
+                isDefault: isUserFirst, // First card is default
+              },
+            });
+            console.log(`[Webhook] Card token saved for user ${user.id}: ${cardTokenResult.brand} ****${cardTokenResult.last4}`);
+          } else {
+            // Update last used timestamp
+            await db.savedPaymentMethod.update({
+              where: { cardToken: cardTokenResult.cardToken },
+              data: { lastUsedAt: new Date() },
+            });
+          }
+        }
+      }
+    }
+  } catch (tokenError) {
+    // Don't fail the webhook if token extraction fails
+    console.error('[Webhook] Card token extraction failed (non-critical):', tokenError);
+  }
   
   // Handle drop-off credit payment
   if (paymentType === 'dropoff_credit') {

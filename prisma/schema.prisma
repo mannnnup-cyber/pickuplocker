@@ -133,6 +133,7 @@ model User {
   payments      Payment[]
   notifications Notification[]
   activities    Activity[]
+  savedPaymentMethods SavedPaymentMethod[]
   
   @@map("users")
 }
@@ -521,6 +522,42 @@ model CourierTransaction {
   
   @@index([courierId, createdAt])
   @@map("courier_transactions")
+}
+
+// Saved payment method (tokenized cards from DimePay)
+model SavedPaymentMethod {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  
+  // DimePay card token (card_xxx) — used for future charges
+  cardToken       String   @unique
+  
+  // Display info (never store full card number)
+  brand           String?  // VISA, MASTERCARD, etc.
+  last4           String?  // Last 4 digits, e.g. "1234"
+  expiryMonth     String?  // "12"
+  expiryYear      String?  // "2028"
+  
+  // Billing info
+  holderName      String?
+  
+  // Status
+  isActive        Boolean  @default(true)
+  isDefault       Boolean  @default(false)
+  
+  // DimePay verification
+  isVerified      Boolean  @default(false)
+  verifiedAt      DateTime?
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastUsedAt      DateTime?
+  
+  @@index([userId])
+  @@index([cardToken])
+  @@map("saved_payment_methods")
 }
 
 // SMS Marketing Campaign
