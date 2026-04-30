@@ -376,7 +376,30 @@ const KIOSK_JS = `
 
   // ---- AJAX Payment Polling (Chrome 37 compatible) ----
   // Replaces meta-refresh so QR code stays visible while checking payment status
+  // CRITICAL: Pauses the inactivity timer while waiting for payment.
+  // Without this, the 90-second inactivity timeout would redirect to home
+  // and kill the QR code while the user is still paying on their phone.
+  var _inactivityPaused = false;
+  function pauseInactivityTimer() {
+    clearTimeout(inactivityTimer);
+    clearInterval(countdownTimer);
+    _inactivityPaused = true;
+  }
+  function resumeInactivityTimer() {
+    _inactivityPaused = false;
+    resetInactivityTimer();
+  }
+  // Override resetInactivityTimer to respect paused state
+  var _origResetInactivity = resetInactivityTimer;
+  resetInactivityTimer = function() {
+    if (_inactivityPaused) return;
+    _origResetInactivity();
+  };
+
   function startPaymentPolling(pollUrl, checkIntervalMs) {
+    // Pause inactivity timer while waiting for payment
+    // This prevents the QR code from disappearing while the user pays on their phone
+    pauseInactivityTimer();
     var pollInterval = setInterval(function() {
       var xhr = new XMLHttpRequest();
       xhr.open('GET', pollUrl, true);
@@ -393,7 +416,11 @@ const KIOSK_JS = `
           } else if (resp && resp.status === 'failed') {
             clearInterval(pollInterval);
             window.location.href = '/kiosk-lite?action=error&msg=' + encodeURIComponent(resp.message || 'Payment failed');
+          } else if (resp && resp.status === 'not_found') {
+            clearInterval(pollInterval);
+            window.location.href = '/kiosk-lite?action=error&msg=' + encodeURIComponent('Payment session not found');
           }
+          // status === 'pending' → keep polling, QR stays visible
         } catch(e) {
           // Non-JSON response — ignore, keep polling
         }
