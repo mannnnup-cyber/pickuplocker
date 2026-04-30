@@ -6,28 +6,44 @@ import type { NextRequest } from 'next/server'
  * These WebViews cannot render modern CSS (oklch, CSS variables, CSS Grid)
  * or run modern JS (ES2017+, async/await, Promises natively).
  * Redirect them to kiosk-lite which is server-rendered pure HTML.
+ *
+ * IMPORTANT: Detection must be very conservative. Only detect genuinely old
+ * Android WebViews to avoid false positives that cause redirect loops.
  */
 function isOldAndroidWebView(request: NextRequest): boolean {
   const ua = request.headers.get('user-agent') || ''
 
-  // Match Android versions 4.x and 5.x
+  // Must be Android
   const androidMatch = ua.match(/Android\s+(\d+(?:\.\d+)?)/)
   if (!androidMatch) return false
 
   const androidVersion = parseFloat(androidMatch[1])
   if (androidVersion > 5.1) return false // Android 6+ is fine
 
-  // Confirm it's a WebView or old browser (not just any old Android UA)
-  const isWebView =
-    ua.includes('wv') ||                           // Standard Android WebView flag
-    ua.includes('Version/') ||                      // Older WebView format
-    ua.includes('Mobile Safari/') && !ua.includes('Chrome/') || // Very old Android browser
-    (ua.includes('Chrome/') && (() => {             // Chrome < 46 on Android 5
-      const chromeMatch = ua.match(/Chrome\/(\d+)/)
-      return chromeMatch && parseInt(chromeMatch[1]) < 46
-    })())
+  // Must have the 'wv' flag (standard Android WebView marker)
+  // This is the SAFEST detection — only real WebViews have this flag
+  if (ua.includes('; wv') || ua.includes(' wv)')) {
+    return true
+  }
 
-  return isWebView
+  // Old Android Browser (pre-Chrome) — no Chrome/ token at all
+  if (!ua.includes('Chrome/') && ua.includes('Mobile Safari/')) {
+    return true
+  }
+
+  // Very old Chrome on Android 5 (Chrome < 46 in a WebView context)
+  if (ua.includes('Chrome/')) {
+    const chromeMatch = ua.match(/Chrome\/(\d+)/)
+    if (chromeMatch) {
+      const chromeVersion = parseInt(chromeMatch[1])
+      // Only flag as old if Chrome is genuinely old AND it's an Android 5 device
+      if (chromeVersion < 46 && androidVersion <= 5.1) {
+        return true
+      }
+    }
+  }
+
+  return false
 }
 
 /**
@@ -35,64 +51,42 @@ function isOldAndroidWebView(request: NextRequest): boolean {
  * Runs on the edge before reaching your application
  */
 export function middleware(request: NextRequest) {
-  const response = NextResponse.next()
   const pathname = request.nextUrl.pathname
 
-  // Skip middleware for static files and assets
+  // ---- ALWAYS skip: kiosk-lite and API routes ----
+  // Never redirect these — prevents infinite redirect loops
+  if (pathname.startsWith('/kiosk-lite') || pathname.startsWith('/api/')) {
+    const response = NextResponse.next()
+    // Add cache-control for kiosk-lite
+    if (pathname.startsWith('/kiosk-lite')) {
+      response.headers.set('Cache-Control', 'no-store')
+    }
+    return response
+  }
+
+  // Skip static files and assets
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/static') ||
-    pathname.includes('.') // files with extensions
+    pathname.includes('.')
   ) {
-    return response
+    return NextResponse.next()
   }
 
   // ---- WebView Detection: Redirect old Android to kiosk-lite ----
   if (isOldAndroidWebView(request)) {
-    // Already on kiosk-lite or an API route? Let it through.
-    if (pathname.startsWith('/kiosk-lite') || pathname.startsWith('/api/')) {
-      // pass through
-    } else {
-      // Redirect everything else to kiosk-lite
-      const url = request.nextUrl.clone()
-      url.pathname = '/kiosk-lite'
-      return NextResponse.redirect(url)
-    }
+    const url = request.nextUrl.clone()
+    url.pathname = '/kiosk-lite'
+    return NextResponse.redirect(url)
   }
 
-  // Add security headers
+  // ---- Security headers and caching for normal browsers ----
+  const response = NextResponse.next()
+
   response.headers.set('X-Content-Type-Options', 'nosniff')
-  response.headers.set('X-Frame-Options', 'DENY')
   response.headers.set('X-XSS-Protection', '1; mode=block')
 
-  // API caching strategies
-  if (pathname.startsWith('/api/')) {
-    // For read-only API endpoints that are safe to cache
-    const readOnlyApis = [
-      '/api/status',
-      '/api/stats',
-      '/api/boxes/availability',
-      '/api/sync', // GET only
-      '/api/health',
-      '/api/devices', // GET only
-    ]
-
-    const isReadOnly = readOnlyApis.some(api => 
-      pathname === api || pathname.startsWith(api + '/')
-    )
-
-    if (isReadOnly && request.method === 'GET') {
-      // Let the edge cache these responses
-      // Actual caching is controlled by route handlers and next.config.ts
-    }
-
-    // Don't cache mutation endpoints
-    if (request.method !== 'GET') {
-      response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
-    }
-  }
-
-  // For the kiosk page (most commonly hit), add a short cache
+  // Root page - short cache
   if (pathname === '/' || pathname === '') {
     response.headers.set(
       'Cache-Control',
@@ -100,7 +94,7 @@ export function middleware(request: NextRequest) {
     )
   }
 
-  // Dashboard pages - private, no caching
+  // Dashboard/auth pages - private, no caching
   if (pathname.startsWith('/dashboard') || pathname.startsWith('/login')) {
     response.headers.set('Cache-Control', 'private, no-cache, no-store')
   }
