@@ -335,7 +335,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Default – redirect to kiosk home
-  return NextResponse.redirect(new URL('/kiosk-lite', request.url));
+  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
 }
 
 // ============================================
@@ -370,7 +370,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Fallback
-  return NextResponse.redirect(new URL('/kiosk-lite', request.url));
+  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
 }
 
 // ============================================
@@ -381,24 +381,24 @@ async function handleDropoffFlow(
   formData: FormData,
   request: NextRequest
 ): Promise<NextResponse> {
-  // step=1 → Redirect to drop-off page
+  // step=1 → Redirect to drop-off page (303 = See Other, browser follows with GET)
   if (step === '1') {
     return NextResponse.redirect(
-      new URL('/kiosk-lite?action=dropoff', request.url)
+      new URL('/kiosk-lite?action=dropoff', request.url), 303
     );
   }
 
   // step=enter_save_code → Redirect to save-code entry page
   if (step === 'enter_save_code') {
     return NextResponse.redirect(
-      new URL('/kiosk-lite?action=dropoff-save', request.url)
+      new URL('/kiosk-lite?action=dropoff-save', request.url), 303
     );
   }
 
   // step=select_size → Redirect to box size selection page
   if (step === 'select_size') {
     return NextResponse.redirect(
-      new URL('/kiosk-lite?action=dropoff-size', request.url)
+      new URL('/kiosk-lite?action=dropoff-size', request.url), 303
     );
   }
 
@@ -406,14 +406,14 @@ async function handleDropoffFlow(
   if (step === 'buy_enter_phone') {
     const boxSize = formData.get('boxSize') as string;
     return NextResponse.redirect(
-      new URL(`/kiosk-lite?action=dropoff-phone&boxSize=${esc(boxSize)}`, request.url)
+      new URL(`/kiosk-lite?action=dropoff-phone&boxSize=${esc(boxSize)}`, request.url), 303
     );
   }
 
   // step=courier_login → Redirect to courier login page
   if (step === 'courier_login') {
     return NextResponse.redirect(
-      new URL('/kiosk-lite?action=courier-login', request.url)
+      new URL('/kiosk-lite?action=courier-login', request.url), 303
     );
   }
 
@@ -449,7 +449,7 @@ async function handleDropoffFlow(
   }
 
   // Unknown step – redirect home
-  return NextResponse.redirect(new URL('/kiosk-lite', request.url));
+  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
 }
 
 // ============================================
@@ -463,7 +463,7 @@ async function handlePickupFlow(
   // step=1 → Redirect to pickup code entry page
   if (step === '1') {
     return NextResponse.redirect(
-      new URL('/kiosk-lite?action=pickup', request.url)
+      new URL('/kiosk-lite?action=pickup', request.url), 303
     );
   }
 
@@ -489,7 +489,7 @@ async function handlePickupFlow(
   }
 
   // Unknown step – redirect home
-  return NextResponse.redirect(new URL('/kiosk-lite', request.url));
+  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
 }
 
 // ============================================

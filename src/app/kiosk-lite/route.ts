@@ -584,7 +584,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Default: home
-  return NextResponse.redirect(new URL('/kiosk-lite', request.url));
+  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
 }
 
 // POST handler - only for step=1 redirects
@@ -595,12 +595,12 @@ export async function POST(request: NextRequest) {
 
   if (step === '1') {
     if (flow === 'dropoff') {
-      return NextResponse.redirect(new URL('/kiosk-lite?action=dropoff', request.url));
+      return NextResponse.redirect(new URL('/kiosk-lite?action=dropoff', request.url), 303);
     }
     if (flow === 'pickup') {
-      return NextResponse.redirect(new URL('/kiosk-lite?action=pickup', request.url));
+      return NextResponse.redirect(new URL('/kiosk-lite?action=pickup', request.url), 303);
     }
   }
 
-  return NextResponse.redirect(new URL('/kiosk-lite', request.url));
+  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
 }
