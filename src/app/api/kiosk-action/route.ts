@@ -221,11 +221,53 @@ const SHARED_CSS = `
   }
   @-webkit-keyframes spin { 0% { -webkit-transform: rotate(0deg); } 100% { -webkit-transform: rotate(360deg); } }
   @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  #kiosk-clock {
+    color: #FFD439;
+    font-weight: bold;
+  }
+  .footer {
+    text-align: center;
+    margin-top: 40px;
+    padding-top: 15px;
+    border-top: 1px solid #333333;
+    font-size: 12px;
+    color: #555555;
+  }
   @media (max-width: 480px) {
     .box-sizes { -webkit-flex-direction: column; flex-direction: column; -webkit-align-items: center; align-items: center; }
     .btn { font-size: 20px; padding: 20px; }
     .code-display { font-size: 36px; letter-spacing: 5px; }
   }
+`;
+
+// Kiosk-mode JavaScript - Android 5.0 compatible (ES5 only)
+const KIOSK_JS = `
+  var inactivityTimer;
+  var INACTIVITY_MS = 90000;
+  function resetInactivityTimer() {
+    clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(function() {
+      window.location.href = '/kiosk-lite';
+    }, INACTIVITY_MS);
+  }
+  document.addEventListener('touchstart', resetInactivityTimer, false);
+  document.addEventListener('click', resetInactivityTimer, false);
+  document.addEventListener('keydown', resetInactivityTimer, false);
+  resetInactivityTimer();
+  function updateClock() {
+    var el = document.getElementById('kiosk-clock');
+    if (!el) return;
+    var now = new Date();
+    var h = now.getHours();
+    var m = now.getMinutes();
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12;
+    if (h === 0) h = 12;
+    if (m < 10) m = '0' + m;
+    el.textContent = h + ':' + m + ' ' + ampm;
+  }
+  updateClock();
+  setInterval(updateClock, 30000);
 `;
 
 /** Render a full HTML page with shared chrome */
@@ -244,10 +286,11 @@ function renderPage(content: string, extraHead: string = ''): string {
   <div class="container">
     <div class="header">
       <h1>PICKUP</h1>
-      <p>Smart Locker System</p>
+      <p>Smart Locker System <span id="kiosk-clock" style="margin-left:10px;"></span></p>
     </div>
     ${content}
   </div>
+  <script>${KIOSK_JS}</script>
 </body>
 </html>`;
 }
