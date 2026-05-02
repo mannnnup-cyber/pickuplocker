@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Based on the provided image, here are the extracted brand guidelines:\n\n### 1. Brand Colors (Hex Codes)\n- **Background color**: `#ffffff` (white)\n- **Text color**: `#000000` (black)\n- **Accent color**: `#f0f0f0` (light gray) - used for the dropdown button background\n- **Border color**: `#e0e0e0` (medium gray) - used for the dropdown button border\n\n### 2. Logo Description\nNo logo is visible in the image. The image shows a PostgreSQL database connection string and parameters, not a brand logo.\n\n### 3. Typography/Fonts\n- **Font family**: Sans-serif (likely a system font like Arial, Helvetica, or similar)\n- **Font weight**: Regular (normal)\n- **Font size**: Appears to be approximately 14-16px (standard for code/terminal interfaces)\n- **Monospaced font**: Used for the code/parameter values (e.g., \"db.fncqazlddawrheoboxbd.supabase.co\", \"5432\", \"postgres\")\n\n### 4. Other Styling Guidelines\n- **Layout**: Clean, minimal interface with proper spacing between elements\n- **Code formatting**: Parameter names (host, port, database, user) appear in regular font, while values appear in monospaced font\n- **Security message**: \"For security reasons, your database password is never shown.\" appears in smaller text below the parameters\n- **Interactive element**: \"View parameters\" button with a dropdown arrow, styled with a light gray background and border\n- **Connection string**: Displayed at the top in a monospaced font with placeholder text \"[YOUR-PASSWORD]\"\n- **Parameter labels**: Left-aligned with corresponding values\n- **Color contrast**: High contrast between text and background for readability\n- **Border radius**: Slightly rounded corners on the dropdown button (subtle, not prominent)\n- **Line height**: Generous line spacing for readability in the code/parameter display\n\nNote: This appears to be a Supabase database connection interface, but specific Supabase brand guidelines (colors, fonts, etc.) are not visible in this particular screenshot. The styling shown is functional and follows standard UI/UX practices for code/terminal interfaces.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1772035361,
+  "id": "202602260002313bbf2a576f704c45",
+  "model": "glm-4.6v",
+  "object": "chat.completion",
+  "request_id": "202602260002313bbf2a576f704c45",
+  "usage": {
+    "completion_tokens": 479,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 169,
+    "prompt_tokens_details": {
+      "cached_tokens": 4
+    },
+    "total_tokens": 648
+  }
+}
