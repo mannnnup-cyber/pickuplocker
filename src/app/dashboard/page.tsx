@@ -7166,9 +7166,10 @@ function EmailContent() {
   const [emailConfig, setEmailConfig] = React.useState<{
     enabled: boolean;
     configured: boolean;
-    host: string;
-    user: string;
-  }>({ enabled: false, configured: false, host: '', user: '' })
+    provider: string;
+    fromEmail: string;
+    fromName: string;
+  }>({ enabled: false, configured: false, provider: 'None', fromEmail: '', fromName: '' })
   const [emailSettings, setEmailSettings] = React.useState({
     enabled: 'false',
     host: '',
@@ -7198,7 +7199,7 @@ function EmailContent() {
       if (emailData.success) {
         setEmailHistory(emailData.history || [])
         setEmailStats(emailData.stats || { sentToday: 0, totalSent: 0, totalFailed: 0 })
-        setEmailConfig(emailData.config || { enabled: false, configured: false, host: '', user: '' })
+        setEmailConfig(emailData.config || { enabled: false, configured: false, provider: 'None', fromEmail: '', fromName: '' })
       }
 
       if (templatesData.success) {
@@ -7358,7 +7359,7 @@ function EmailContent() {
               <AlertTriangle className="h-5 w-5 text-yellow-600" />
               <div>
                 <p className="font-medium text-yellow-800">Email not configured</p>
-                <p className="text-sm text-yellow-600">Configure SMTP settings in the Settings tab to enable email notifications</p>
+                <p className="text-sm text-yellow-600">Configure your Resend API key in the Settings tab to enable email notifications</p>
               </div>
             </div>
           </CardContent>

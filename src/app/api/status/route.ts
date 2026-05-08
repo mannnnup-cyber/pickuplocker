@@ -368,21 +368,25 @@ export async function GET() {
     const emailConfig = await getEmailConfig();
     const emailLatency = Date.now() - emailStart;
 
-    if (emailConfig.enabled && emailConfig.user && emailConfig.password) {
+    if (emailConfig.enabled && (emailConfig.apiKey || (emailConfig.user && emailConfig.password))) {
       // Try to verify the connection
       const verifyResult = await verifyEmailConfig();
       
+      const provider = emailConfig.apiKey ? 'Resend' : 'SMTP';
       results.push({
-        name: 'Email SMTP',
+        name: `Email (${provider})`,
         status: verifyResult.success ? 'online' : 'warning',
         message: verifyResult.success 
-          ? `SMTP connected (${emailConfig.host}:${emailConfig.port})`
+          ? (emailConfig.apiKey 
+              ? `Resend API connected (from: ${emailConfig.fromEmail})` 
+              : `SMTP connected (${emailConfig.host}:${emailConfig.port})`)
           : (verifyResult.error || 'Connection failed'),
         latency: emailLatency,
         details: {
-          host: emailConfig.host,
+          provider,
+          host: emailConfig.host || 'Not set',
           port: emailConfig.port,
-          user: emailConfig.user,
+          user: emailConfig.user || 'Not set',
           from_email: emailConfig.fromEmail,
           enabled: emailConfig.enabled,
           source: 'database'
@@ -390,13 +394,15 @@ export async function GET() {
       });
     } else {
       results.push({
-        name: 'Email SMTP',
+        name: 'Email',
         status: emailConfig.enabled ? 'warning' : 'online',
         message: emailConfig.enabled ? 'Configured but credentials incomplete' : 'Disabled (optional)',
         details: {
+          provider: emailConfig.apiKey ? 'Resend' : 'SMTP',
           host: emailConfig.host || 'Not set',
           user: emailConfig.user || 'Not set',
           password: emailConfig.password ? 'Set' : 'Not set',
+          apiKey: emailConfig.apiKey ? 'Set' : 'Not set',
           enabled: emailConfig.enabled,
           source: 'database'
         }

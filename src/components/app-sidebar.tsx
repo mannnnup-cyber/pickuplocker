@@ -136,10 +136,7 @@ function AppSidebar({ activeTab, onNavigate }: AppSidebarProps) {
               <DropdownMenuContent side="top" className="w-[--radix-popper-anchor-width] bg-white border-gray-200">
                 <DropdownMenuItem 
                   className="text-gray-600 hover:bg-gray-100 cursor-pointer"
-                  onSelect={(e) => {
-                    e.preventDefault()
-                    handleAccountSettings()
-                  }}
+                  onClick={handleAccountSettings}
                 >
                   <Settings className="mr-2 h-4 w-4" />
                   Account Settings

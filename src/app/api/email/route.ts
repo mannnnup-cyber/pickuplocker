@@ -11,7 +11,7 @@ export async function GET() {
       isEmailEnabled()
     ]);
 
-    const isConfigured = !!(config.host && config.user);
+    const isConfigured = !!config.apiKey;
 
     return NextResponse.json({
       success: true,
@@ -20,8 +20,9 @@ export async function GET() {
       config: {
         enabled,
         configured: isConfigured,
-        host: config.host,
-        user: config.user
+        provider: config.apiKey ? 'Resend' : 'None',
+        fromEmail: config.fromEmail || '',
+        fromName: config.fromName || '',
       }
     });
   } catch (error) {
