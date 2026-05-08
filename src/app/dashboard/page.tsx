@@ -142,6 +142,9 @@ interface Courier {
   autoReloadAmount: number | null
   minBalance: number | null
   _count?: { orders: number }
+  hasPin?: boolean
+  hasTempPin?: boolean
+  pinSetAt?: string | null
 }
 
 interface Stats {
@@ -5130,6 +5133,11 @@ function CouriersContent() {
   const [topupQRCode, setTopupQRCode] = React.useState<string | null>(null)
   const [topupUrl, setTopupUrl] = React.useState<string | null>(null)
   const [processingTopup, setProcessingTopup] = React.useState(false)
+  const [pinDialog, setPinDialog] = React.useState(false)
+  const [selectedCourierForPin, setSelectedCourierForPin] = React.useState<Courier | null>(null)
+  const [pinStatus, setPinStatus] = React.useState<{ hasPin: boolean; hasTempPin: boolean; pinSetAt: string | null; phone: string | null } | null>(null)
+  const [pinLoading, setPinLoading] = React.useState(false)
+  const [pinAction, setPinAction] = React.useState<'regenerate' | 'reset' | null>(null)
 
   const fetchCouriers = React.useCallback(async () => {
     setLoading(true)
@@ -5310,6 +5318,94 @@ function CouriersContent() {
     }
   }
 
+  // Fetch PIN status for a courier
+  const fetchPinStatus = async (courier: Courier) => {
+    setPinLoading(true)
+    try {
+      const res = await fetch(`/api/courier/pin?courierId=${courier.id}`)
+      const data = await res.json()
+      if (data.success) {
+        setPinStatus(data.pinStatus)
+      } else {
+        setPinStatus(null)
+      }
+    } catch (error) {
+      console.error('Failed to fetch PIN status:', error)
+      setPinStatus(null)
+    } finally {
+      setPinLoading(false)
+    }
+  }
+
+  // Open PIN management dialog
+  const openPinDialog = (courier: Courier) => {
+    setSelectedCourierForPin(courier)
+    setPinDialog(true)
+    setPinAction(null)
+    fetchPinStatus(courier)
+  }
+
+  // Handle regenerate temp PIN
+  const handleRegenerateTempPin = async () => {
+    if (!selectedCourierForPin) return
+    setPinLoading(true)
+    try {
+      const res = await fetch('/api/courier/pin', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          courierId: selectedCourierForPin.id,
+          adminInitiated: true,
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        alert(data.message || `Temporary PIN sent to courier's phone`)
+        fetchPinStatus(selectedCourierForPin)
+        fetchCouriers()
+      } else {
+        alert(data.error || 'Failed to regenerate temp PIN')
+      }
+    } catch (error) {
+      console.error('Failed to regenerate temp PIN:', error)
+      alert('Failed to regenerate temp PIN')
+    } finally {
+      setPinLoading(false)
+      setPinAction(null)
+    }
+  }
+
+  // Handle full PIN reset (clears current PIN and sends temp PIN)
+  const handleResetPin = async () => {
+    if (!selectedCourierForPin) return
+    setPinLoading(true)
+    try {
+      // Use the couriers API to regenerate temp PIN after clearing current one
+      const res = await fetch('/api/couriers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: selectedCourierForPin.id,
+          action: 'regenerate_temp_pin',
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        alert(data.message || `PIN reset. Temporary PIN sent to courier's phone.`)
+        fetchPinStatus(selectedCourierForPin)
+        fetchCouriers()
+      } else {
+        alert(data.error || 'Failed to reset PIN')
+      }
+    } catch (error) {
+      console.error('Failed to reset PIN:', error)
+      alert('Failed to reset PIN')
+    } finally {
+      setPinLoading(false)
+      setPinAction(null)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -5334,6 +5430,7 @@ function CouriersContent() {
                 <TableHead className="text-gray-500 uppercase text-xs">Code</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Contact</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Status</TableHead>
+                <TableHead className="text-gray-500 uppercase text-xs">PIN</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Balance</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Credit Limit</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Orders</TableHead>
@@ -5350,6 +5447,15 @@ function CouriersContent() {
                     {courier.phone && <div className="text-gray-500 text-xs">{courier.phone}</div>}
                   </TableCell>
                   <TableCell><Badge className={getStatusBadge(courier.status)}>{courier.status}</Badge></TableCell>
+                  <TableCell>
+                    {courier.hasPin ? (
+                      <Badge className="bg-green-100 text-green-700 text-xs"><Lock className="h-3 w-3 mr-1" />Set</Badge>
+                    ) : courier.hasTempPin ? (
+                      <Badge className="bg-yellow-100 text-yellow-700 text-xs"><Lock className="h-3 w-3 mr-1" />Temp</Badge>
+                    ) : (
+                      <Badge className="bg-red-100 text-red-700 text-xs"><Lock className="h-3 w-3 mr-1" />None</Badge>
+                    )}
+                  </TableCell>
                   <TableCell className="font-bold text-[#111111]">{formatCurrency(courier.balance)}</TableCell>
                   <TableCell>{formatCurrency(courier.creditLimit)}</TableCell>
                   <TableCell>{courier._count?.orders || 0}</TableCell>
@@ -5369,6 +5475,10 @@ function CouriersContent() {
                         <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSelectedCourierForTopup(courier); setTopupDialog(true); setTopupQRCode(null); setTopupUrl(null); setTopupAmount(''); }}>
                           <CreditCard className="mr-2 h-4 w-4" />
                           Top-up via DimePay
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); openPinDialog(courier); }}>
+                          <Lock className="mr-2 h-4 w-4" />
+                          Manage PIN
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onSelect={(e) => { 
@@ -5602,6 +5712,155 @@ function CouriersContent() {
             <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => { setDeleteDialog(false); setSelectedCourier(null); }}>Cancel</Button>
             <Button variant="destructive" className="uppercase" onClick={handleDeleteCourier} disabled={processing}>
               {processing ? 'Deleting...' : 'Delete Courier'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* PIN Management Dialog */}
+      <Dialog open={pinDialog} onOpenChange={setPinDialog}>
+        <DialogContent className="bg-white border-gray-200 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-[#111111] uppercase flex items-center gap-2">
+              <Lock className="h-5 w-5" />
+              Manage PIN — {selectedCourierForPin?.name}
+            </DialogTitle>
+            <DialogDescription className="text-gray-500">
+              View PIN status and manage courier authentication
+            </DialogDescription>
+          </DialogHeader>
+
+          {pinLoading && !pinStatus ? (
+            <div className="py-8 text-center text-gray-500">Loading PIN status...</div>
+          ) : pinStatus ? (
+            <div className="space-y-4 py-4">
+              {/* PIN Status Card */}
+              <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+                <h4 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">PIN Status</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <span className="text-xs text-gray-500">Permanent PIN</span>
+                    <div className="flex items-center gap-1 mt-1">
+                      {pinStatus.hasPin ? (
+                        <Badge className="bg-green-100 text-green-700 text-xs">Set</Badge>
+                      ) : (
+                        <Badge className="bg-red-100 text-red-700 text-xs">Not Set</Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-xs text-gray-500">Temporary PIN</span>
+                    <div className="flex items-center gap-1 mt-1">
+                      {pinStatus.hasTempPin ? (
+                        <Badge className="bg-yellow-100 text-yellow-700 text-xs">Active</Badge>
+                      ) : (
+                        <Badge className="bg-gray-100 text-gray-500 text-xs">None</Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {pinStatus.pinSetAt && (
+                  <div>
+                    <span className="text-xs text-gray-500">PIN Set On</span>
+                    <p className="text-sm text-gray-700">{new Date(pinStatus.pinSetAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                  </div>
+                )}
+                {pinStatus.phone && (
+                  <div>
+                    <span className="text-xs text-gray-500">Phone on File</span>
+                    <p className="text-sm text-gray-700 font-mono">{pinStatus.phone}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* PIN Actions */}
+              <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Actions</h4>
+                
+                {!pinStatus.hasPin && !pinStatus.hasTempPin && (
+                  <p className="text-sm text-gray-500 bg-yellow-50 p-3 rounded-md">
+                    This courier has no PIN set up. Generate a temporary PIN to allow them to set their permanent PIN at the kiosk or online.
+                  </p>
+                )}
+
+                {/* Generate / Regenerate Temp PIN */}
+                {pinAction === 'regenerate' ? (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-3">
+                    <p className="text-sm text-yellow-800 font-medium">
+                      {pinStatus.hasTempPin ? 'Regenerate Temporary PIN' : 'Generate Temporary PIN'}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      A new 4-digit temporary PIN will be sent to the courier's phone via SMS. They can use it to set their permanent PIN at the kiosk or at pickuplocker.vercel.app/courier/pin. The temp PIN expires in 24 hours.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase text-sm"
+                        onClick={handleRegenerateTempPin}
+                        disabled={pinLoading}
+                      >
+                        {pinLoading ? 'Sending...' : 'Confirm & Send SMS'}
+                      </Button>
+                      <Button variant="outline" className="text-sm" onClick={() => setPinAction(null)}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start text-sm border-gray-200"
+                    onClick={() => setPinAction('regenerate')}
+                  >
+                    <Lock className="mr-2 h-4 w-4 text-yellow-600" />
+                    {pinStatus.hasTempPin ? 'Regenerate Temporary PIN' : 'Generate Temporary PIN'}
+                  </Button>
+                )}
+
+                {/* Reset PIN (full reset — clears current and sends temp) */}
+                {pinStatus.hasPin && (
+                  pinAction === 'reset' ? (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-3">
+                      <p className="text-sm text-red-800 font-medium">Reset Courier PIN</p>
+                      <p className="text-sm text-gray-600">
+                        This will <strong>clear the courier's current PIN</strong> and send them a new temporary PIN via SMS. They will need to set a new permanent PIN at the kiosk or online. This action cannot be undone.
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="destructive"
+                          className="text-sm uppercase"
+                          onClick={handleResetPin}
+                          disabled={pinLoading}
+                        >
+                          {pinLoading ? 'Resetting...' : 'Reset PIN & Send SMS'}
+                        </Button>
+                        <Button variant="outline" className="text-sm" onClick={() => setPinAction(null)}>Cancel</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start text-sm border-gray-200 text-red-600 hover:text-red-700 hover:bg-red-50"
+                      onClick={() => setPinAction('reset')}
+                    >
+                      <Lock className="mr-2 h-4 w-4 text-red-500" />
+                      Reset PIN (Clear & Send New Temp PIN)
+                    </Button>
+                  )
+                )}
+              </div>
+
+              {/* Info Box */}
+              <div className="bg-blue-50 rounded-md p-3">
+                <p className="text-xs text-blue-700">
+                  Couriers can also set or change their PIN at pickuplocker.vercel.app/courier/pin using their phone number and temporary PIN.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-gray-500">Could not load PIN status. The courier may not have a phone number on file.</div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => { setPinDialog(false); setSelectedCourierForPin(null); setPinStatus(null); setPinAction(null); }}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

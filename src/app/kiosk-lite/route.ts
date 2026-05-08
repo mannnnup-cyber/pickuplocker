@@ -597,14 +597,18 @@ export async function GET(request: NextRequest) {
   if (action === 'courier-login') {
     return new NextResponse(renderPage(`
       <h2 class="title">Courier Login</h2>
-      <p class="subtitle">Enter your courier PIN</p>
+      <p class="subtitle">Enter your phone number and PIN</p>
       ${error ? `<p class="error-msg">${esc(error)}</p>` : ''}
       <form action="/api/kiosk-action" method="POST">
         <input type="hidden" name="flow" value="dropoff">
         <input type="hidden" name="step" value="courier_auth">
         <div class="form-group">
+          <label>Phone Number</label>
+          <input type="tel" name="phone" required placeholder="876-XXX-XXXX" maxlength="15" inputmode="tel">
+        </div>
+        <div class="form-group">
           <label>Courier PIN</label>
-          <input type="password" name="pin" required placeholder="Enter PIN" maxlength="6" inputmode="numeric">
+          <input type="password" name="pin" required placeholder="Enter 4-digit PIN" maxlength="4" inputmode="numeric" pattern="[0-9]*">
         </div>
         <button type="submit" class="btn btn-primary">LOGIN</button>
       </form>
