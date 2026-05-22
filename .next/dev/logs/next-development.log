@@ -3599,3 +3599,278 @@ Import traces:
   Client Component SSR:
     ./src/app/page.tsx [Client Component SSR]
     ./src/app/page.tsx [Server Component]
+[00:11:28.788] Server  ERROR   ⨯ ./src/app/page.tsx:6:1
+Export Card doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export Card was not found in module [project]/src/components/ui/card.tsx [app-client] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+
+./src/app/page.tsx:6:1
+Export Card doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export Card was not found in module [project]/src/components/ui/card.tsx [app-ssr] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+
+./src/app/page.tsx:6:1
+Export CardContent doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export CardContent was not found in module [project]/src/components/ui/card.tsx [app-client] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+
+./src/app/page.tsx:6:1
+Export CardContent doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export CardContent was not found in module [project]/src/components/ui/card.tsx [app-ssr] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+
+
+[00:11:30.252] Browser ERROR   ./src/app/page.tsx:6:1
+Export Card doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export Card was not found in module [project]/src/components/ui/card.tsx [app-client] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+[00:11:30.252] Browser ERROR   ./src/app/page.tsx:6:1
+Export Card doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export Card was not found in module [project]/src/components/ui/card.tsx [app-ssr] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+[00:11:30.252] Browser ERROR   ./src/app/page.tsx:6:1
+Export CardContent doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export CardContent was not found in module [project]/src/components/ui/card.tsx [app-client] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+[00:11:30.252] Browser ERROR   ./src/app/page.tsx:6:1
+Export CardContent doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export CardContent was not found in module [project]/src/components/ui/card.tsx [app-ssr] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+[00:11:30.252] Browser ERROR   ./src/app/page.tsx:6:1
+Export Card doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export Card was not found in module [project]/src/components/ui/card.tsx [app-client] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+[00:11:30.252] Browser ERROR   ./src/app/page.tsx:6:1
+Export Card doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export Card was not found in module [project]/src/components/ui/card.tsx [app-ssr] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+[00:11:30.252] Browser ERROR   ./src/app/page.tsx:6:1
+Export CardContent doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export CardContent was not found in module [project]/src/components/ui/card.tsx [app-client] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
+[00:11:30.252] Browser ERROR   ./src/app/page.tsx:6:1
+Export CardContent doesn't exist in target module
+  4 | import Link from "next/link"
+  5 | import { Button } from "@/components/ui/button"
+> 6 | import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  7 | import { Badge } from "@/components/ui/badge"
+  8 | import { 
+  9 |   Package, 
+
+The export CardContent was not found in module [project]/src/components/ui/card.tsx [app-ssr] (ecmascript).
+The module has no exports at all.
+All exports of the module are statically known (It doesn't have dynamic exports). So it's known statically that the requested export doesn't exist.
+
+Import traces:
+  Client Component Browser:
+    ./src/app/page.tsx [Client Component Browser]
+    ./src/app/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/app/page.tsx [Client Component SSR]
+    ./src/app/page.tsx [Server Component]
