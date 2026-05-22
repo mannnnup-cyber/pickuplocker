@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import crypto from 'crypto';
 import {
   expressSaveOrTakeWithCredentials,
   setSaveOrderWithCredentials,
@@ -477,6 +478,11 @@ async function handleDropoffFlow(
   // step=courier_auth → Verify courier PIN
   if (step === 'courier_auth') {
     return await handleCourierAuth(formData);
+  }
+
+  // step=courier_set_pin → Set permanent PIN after temp PIN login
+  if (step === 'courier_set_pin') {
+    return await handleCourierSetPin(formData);
   }
 
   // step=courier_dropoff → Process courier drop-off
@@ -1345,26 +1351,115 @@ async function handleOpenAfterPayment(formData: FormData): Promise<NextResponse>
 // ============================================
 // DROP-OFF: Courier auth (verify PIN)
 // ============================================
+
+// Hash PIN for verification — must match the hashing in /api/courier/pin and /api/courier/login
+function hashPin(pin: string, phone: string): string {
+  return crypto
+    .createHmac('sha256', process.env.NEXTAUTH_SECRET || 'pickup-secret-key')
+    .update(`${phone}:${pin}`)
+    .digest('hex');
+}
+
 async function handleCourierAuth(formData: FormData): Promise<NextResponse> {
   const pin = formData.get('pin') as string;
+  const phone = formData.get('phone') as string;
 
-  if (!pin || pin.length < 4) {
+  if (!pin || !/^\d{4}$/.test(pin)) {
     return htmlResponse(`
       <h2 class="title">Invalid PIN</h2>
-      <p class="error-msg">Please enter a valid courier PIN.</p>
+      <p class="error-msg">Please enter a valid 4-digit courier PIN.</p>
       <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
     `);
   }
 
-  // Find courier by PIN
+  if (!phone) {
+    return htmlResponse(`
+      <h2 class="title">Phone Required</h2>
+      <p class="error-msg">Please enter your phone number.</p>
+      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+    `);
+  }
+
+  // Clean phone number
+  const cleanPhone = phone.replace(/[^0-9+]/g, '');
+
+  // Find courier by phone (with flexible matching)
   const courier = await db.courier.findFirst({
-    where: { pin, status: 'ACTIVE' },
+    where: {
+      status: 'ACTIVE',
+      OR: [
+        { phone: cleanPhone },
+        { phone: cleanPhone.replace(/^1/, '') },
+        { phone: `1${cleanPhone}` },
+      ],
+    },
   });
 
   if (!courier) {
     return htmlResponse(`
       <h2 class="title">Authentication Failed</h2>
-      <p class="error-msg">Invalid PIN or inactive account.</p>
+      <p class="error-msg">No active courier account found with that phone number.</p>
+      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+    `);
+  }
+
+  // Verify PIN using HMAC hash comparison (matching the /api/courier/login flow)
+  if (!courier.phone) {
+    return htmlResponse(`
+      <h2 class="title">Account Error</h2>
+      <p class="error-msg">Courier account has no phone number on file. Please contact admin.</p>
+      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+    `);
+  }
+
+  // Check if courier has a PIN set
+  if (!courier.pin) {
+    // Check if there's a temp PIN for first-time setup
+    if (courier.tempPin && courier.tempPin === pin) {
+      // First-time login with temp PIN — redirect to PIN setup
+      // For kiosk, we'll let them through but prompt to set PIN later
+      // Update last login
+      await db.courier.update({
+        where: { id: courier.id },
+        data: { lastLoginAt: new Date() },
+      });
+
+      return htmlResponse(`
+        <h2 class="title">Set Your PIN</h2>
+        <p class="subtitle">You logged in with a temporary PIN. Please set your permanent PIN to continue.</p>
+        <form action="/api/kiosk-action" method="POST">
+          <input type="hidden" name="flow" value="dropoff">
+          <input type="hidden" name="step" value="courier_set_pin">
+          <input type="hidden" name="courierId" value="${esc(courier.id)}">
+          <div class="form-group">
+            <label>New 4-Digit PIN</label>
+            <input type="password" name="newPin" required placeholder="Enter new PIN" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+          </div>
+          <div class="form-group">
+            <label>Confirm PIN</label>
+            <input type="password" name="confirmPin" required placeholder="Confirm new PIN" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+          </div>
+          <button type="submit" class="btn btn-primary">SET PIN & CONTINUE</button>
+        </form>
+        <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+      `);
+    }
+
+    return htmlResponse(`
+      <h2 class="title">PIN Not Set</h2>
+      <p class="error-msg">Your courier PIN has not been set yet. Please contact admin to get your temporary PIN.</p>
+      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+    `);
+  }
+
+  // Verify the hashed PIN
+  const hashedInput = hashPin(pin, courier.phone);
+  if (hashedInput !== courier.pin) {
+    return htmlResponse(`
+      <h2 class="title">Authentication Failed</h2>
+      <p class="error-msg">Incorrect PIN. Please try again.</p>
       <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
       <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
     `);
@@ -1399,6 +1494,101 @@ async function handleCourierAuth(formData: FormData): Promise<NextResponse> {
 
   return htmlResponse(`
     <h2 class="title">Courier Drop-Off</h2>
+    <div class="info-box">
+      <p><span class="label">Courier:</span> <span class="value">${esc(courier.name)}</span></p>
+      <p><span class="label">Balance:</span> <span class="value" style="color:#FFD439;">JMD $${courier.balance.toFixed(2)}</span></p>
+    </div>
+    <p class="subtitle">Select box size for drop-off:</p>
+    <div class="box-sizes">
+      ${boxButtons}
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-color" style="background:#2196F3"></div> Small ($150)</div>
+      <div class="legend-item"><div class="legend-color" style="background:#4CAF50"></div> Medium ($200)</div>
+      <div class="legend-item"><div class="legend-color" style="background:#FF9800"></div> Large ($300)</div>
+      <div class="legend-item"><div class="legend-color" style="background:#9C27B0"></div> X-Large ($400)</div>
+    </div>
+    <a href="/kiosk-lite" class="btn btn-back" style="margin-top:20px; display:inline-block;">Cancel</a>
+  `);
+}
+
+// ============================================
+// DROP-OFF: Courier set PIN (after temp PIN login)
+// ============================================
+async function handleCourierSetPin(formData: FormData): Promise<NextResponse> {
+  const courierId = formData.get('courierId') as string;
+  const newPin = formData.get('newPin') as string;
+  const confirmPin = formData.get('confirmPin') as string;
+
+  if (!courierId || !newPin || !confirmPin) {
+    return htmlResponse(`
+      <h2 class="title">Error</h2>
+      <p class="error-msg">Missing required fields.</p>
+      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+    `);
+  }
+
+  if (!/^\d{4}$/.test(newPin)) {
+    return htmlResponse(`
+      <h2 class="title">Invalid PIN</h2>
+      <p class="error-msg">PIN must be exactly 4 digits.</p>
+      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+    `);
+  }
+
+  if (newPin !== confirmPin) {
+    return htmlResponse(`
+      <h2 class="title">PINs Don't Match</h2>
+      <p class="error-msg">The PINs you entered do not match. Please try again.</p>
+      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+    `);
+  }
+
+  const courier = await db.courier.findUnique({ where: { id: courierId } });
+  if (!courier || !courier.phone) {
+    return htmlResponse(`
+      <h2 class="title">Error</h2>
+      <p class="error-msg">Courier account not found or has no phone number.</p>
+      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+    `);
+  }
+
+  // Hash and save the new PIN
+  const hashedPin = hashPin(newPin, courier.phone);
+  await db.courier.update({
+    where: { id: courierId },
+    data: {
+      pin: hashedPin,
+      pinSetAt: new Date(),
+      tempPin: null,
+      lastLoginAt: new Date(),
+    },
+  });
+
+  // Show the courier drop-off page with box sizes and balance
+  const sizeLabels: Record<string, string> = { S: 'Small', M: 'Medium', L: 'Large', XL: 'X-Large' };
+  const boxButtons = Object.entries(BOX_PRICES)
+    .map(([size, price]) => {
+      const canAfford = courier.balance >= price;
+      return `
+        <form action="/api/kiosk-action" method="POST" style="display:inline-block;">
+          <input type="hidden" name="flow" value="dropoff">
+          <input type="hidden" name="step" value="courier_dropoff">
+          <input type="hidden" name="courierId" value="${esc(courier.id)}">
+          <input type="hidden" name="boxSize" value="${esc(size)}">
+          <button type="submit" class="box-btn box-${esc(size)}" ${canAfford ? '' : 'disabled'}
+            style="min-width:140px; text-align:center; line-height:1.3;">
+            ${esc(sizeLabels[size])}<br>
+            <span style="font-size:14px;">JMD $${price}</span>
+          </button>
+        </form>
+      `;
+    })
+    .join('');
+
+  return htmlResponse(`
+    <h2 class="title">PIN Set Successfully!</h2>
+    <p class="subtitle" style="color:#4CAF50;">Your permanent PIN is now active.</p>
     <div class="info-box">
       <p><span class="label">Courier:</span> <span class="value">${esc(courier.name)}</span></p>
       <p><span class="label">Balance:</span> <span class="value" style="color:#FFD439;">JMD $${courier.balance.toFixed(2)}</span></p>
