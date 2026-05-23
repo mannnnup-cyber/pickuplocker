@@ -7,9 +7,9 @@ android {
     defaultConfig {
         applicationId "com.pickupjamaica.kiosk"
         minSdk rootProject.ext.minSdkVersion      // 22 = Android 5.1
-        targetSdk rootProject.ext.targetSdkVersion // 28 = Android 9
-        versionCode 2
-        versionName "2.0"
+        targetSdk rootProject.ext.targetSdkVersion // 29 = Android 10 (same as working Capacitor APK)
+        versionCode 3
+        versionName "2.1"
     }
 
     buildTypes {

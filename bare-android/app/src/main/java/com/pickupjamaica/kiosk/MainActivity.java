@@ -50,7 +50,7 @@ import javax.net.ssl.SSLContext;
  * - Landscape orientation lock
  * - Secret admin exit (5-tap top-left corner + PIN)
  * - Auto-start on boot (via BootReceiver)
- * - Crash protection with error screen
+ * - Crash protection with error screen (catches Throwable)
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -62,10 +62,11 @@ public class MainActivity extends AppCompatActivity {
     private static final int CONNECTIVITY_CHECK_MS = 3000;
 
     private WebView webView;
-    private Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Handler mainHandler;
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean isShowingOfflinePage = false;
     private int reconnectAttempts = 0;
+    private boolean isDestroyed = false;
 
     // Secret exit: tap top-left 5x within 3 seconds
     private static final int SECRET_TAP_COUNT = 5;
@@ -79,8 +80,11 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Catch Throwable (not just Exception) to handle NoClassDefFoundError etc.
         try {
             super.onCreate(savedInstanceState);
+
+            mainHandler = new Handler(Looper.getMainLooper());
 
             // Keep screen on (24/7 kiosk)
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -94,8 +98,13 @@ public class MainActivity extends AppCompatActivity {
             // Enable TLS 1.2 on Android 5.x for Vercel CDN compatibility
             enableTLS12();
 
-            // Create and configure WebView
-            webView = new WebView(this);
+            // Create and configure WebView — wrap each step in its own try/catch
+            webView = createWebViewSafely();
+            if (webView == null) {
+                showErrorScreen("Failed to create WebView. The app cannot continue.");
+                return;
+            }
+
             setContentView(webView);
 
             // Fullscreen immersive (after setContentView so decorView exists)
@@ -107,9 +116,26 @@ public class MainActivity extends AppCompatActivity {
             // Register network connectivity monitoring
             registerConnectivityMonitoring();
 
-        } catch (Exception e) {
-            Log.e(TAG, "FATAL: onCreate crashed — " + e.getMessage(), e);
-            showErrorScreen("App failed to start: " + e.getMessage());
+            Log.i(TAG, "Kiosk started successfully — loading " + KIOSK_URL);
+
+        } catch (Throwable t) {
+            // Catch Throwable to handle Error subclasses (NoClassDefFoundError, etc.)
+            Log.e(TAG, "FATAL: onCreate crashed — " + t.getClass().getSimpleName() + ": " + t.getMessage(), t);
+            showErrorScreen("App failed to start: " + t.getClass().getSimpleName() + " — " + t.getMessage());
+        }
+    }
+
+    /**
+     * Creates a WebView safely, handling potential errors.
+     */
+    private WebView createWebViewSafely() {
+        try {
+            WebView wv = new WebView(this);
+            Log.i(TAG, "WebView created successfully");
+            return wv;
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to create WebView: " + t.getClass().getSimpleName() + " — " + t.getMessage(), t);
+            return null;
         }
     }
 
@@ -128,11 +154,21 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        isDestroyed = true;
         super.onDestroy();
         unregisterConnectivityMonitoring();
-        mainHandler.removeCallbacksAndMessages(null);
+        if (mainHandler != null) {
+            mainHandler.removeCallbacksAndMessages(null);
+        }
         if (webView != null) {
-            webView.destroy();
+            try {
+                webView.stopLoading();
+                webView.loadUrl("about:blank");
+                webView.clearCache(true);
+                webView.destroy();
+            } catch (Throwable t) {
+                Log.w(TAG, "Error destroying WebView: " + t.getMessage());
+            }
             webView = null;
         }
     }
@@ -164,13 +200,13 @@ public class MainActivity extends AppCompatActivity {
             layout.addView(title);
             layout.addView(errorMsg);
             setContentView(layout);
-        } catch (Exception e2) {
-            Log.e(TAG, "Even error screen failed: " + e2.getMessage());
+        } catch (Throwable t2) {
+            Log.e(TAG, "Even error screen failed: " + t2.getMessage());
         }
     }
 
     // ============================================
-    // TLS 1.2 ENABLEMENT — Critical for Android 5.x
+    // TLS 1.2 ENABLEMENT — Critical for Android 5.1
     // ============================================
 
     private void enableTLS12() {
@@ -181,8 +217,8 @@ public class MainActivity extends AppCompatActivity {
                 sc.init(null, null, null);
                 SSLContext.setDefault(sc);
                 Log.i(TAG, "TLS 1.2 enabled for Android 5.x");
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to enable TLS 1.2: " + e.getMessage());
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to enable TLS 1.2: " + t.getMessage());
             }
         }
     }
@@ -212,8 +248,8 @@ public class MainActivity extends AppCompatActivity {
                         | View.SYSTEM_UI_FLAG_FULLSCREEN;
                 decorView.setSystemUiVisibility(uiOptions);
             }
-        } catch (Exception e) {
-            Log.w(TAG, "hideSystemUI failed: " + e.getMessage());
+        } catch (Throwable t) {
+            Log.w(TAG, "hideSystemUI failed: " + t.getMessage());
         }
     }
 
@@ -227,35 +263,55 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        WebSettings settings = webView.getSettings();
+        try {
+            WebSettings settings = webView.getSettings();
 
-        // Core settings
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
+            // Core settings
+            settings.setJavaScriptEnabled(true);
+            settings.setDomStorageEnabled(true);
+            settings.setAllowFileAccess(true);
+            settings.setAllowContentAccess(true);
+            // Mixed content (HTTP from HTTPS) — needed for some CDN resources
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            }
 
-        // Mixed content (HTTP from HTTPS)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            // Cache: network first, cache fallback
+            settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+            // Zoom: disabled for kiosk
+            settings.setBuiltInZoomControls(false);
+            settings.setDisplayZoomControls(false);
+
+            // User agent — identify as the kiosk app
+            String userAgent = settings.getUserAgentString();
+            settings.setUserAgentString(userAgent + " PickupKiosk/2.1");
+
+            // WebView debugging — safely check BuildConfig
+            try {
+                boolean isDebug = false;
+                try {
+                    isDebug = BuildConfig.DEBUG;
+                } catch (Throwable ignored) {
+                    // BuildConfig might not exist in some build configurations
+                    isDebug = false;
+                }
+                WebView.setWebContentsDebuggingEnabled(isDebug);
+            } catch (Throwable t) {
+                Log.w(TAG, "Could not set WebView debugging: " + t.getMessage());
+            }
+
+            // Custom clients
+            webView.setWebViewClient(new KioskWebViewClient());
+            webView.setWebChromeClient(new KioskWebChromeClient());
+
+            // Load the kiosk URL
+            webView.loadUrl(KIOSK_URL);
+
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to configure WebView: " + t.getClass().getSimpleName() + " — " + t.getMessage(), t);
+            showErrorScreen("WebView configuration failed: " + t.getMessage());
         }
-
-        // Cache: network first, cache fallback
-        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-
-        // Zoom: disabled for kiosk
-        settings.setBuiltInZoomControls(false);
-        settings.setDisplayZoomControls(false);
-
-        // WebView debugging: only in debug builds
-        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
-
-        // Custom clients
-        webView.setWebViewClient(new KioskWebViewClient());
-        webView.setWebChromeClient(new KioskWebChromeClient());
-
-        // Load the kiosk URL
-        webView.loadUrl(KIOSK_URL);
     }
 
     // ============================================
@@ -267,6 +323,8 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onPageFinished(WebView view, String url) {
             super.onPageFinished(view, url);
+            if (url == null) return;
+
             if (OFFLINE_URL.equals(url)) {
                 isShowingOfflinePage = true;
                 Log.w(TAG, "Showing offline page — server unreachable");
@@ -279,8 +337,8 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-            if (request.isForMainFrame()) {
-                Log.e(TAG, "Main frame error (code " + error.getErrorCode() + ")");
+            if (request != null && request.isForMainFrame()) {
+                Log.e(TAG, "Main frame error");
                 if (!isShowingOfflinePage) showOfflinePage();
             }
         }
@@ -293,7 +351,10 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            if (request == null) return false;
             String url = request.getUrl().toString();
+            if (url == null) return true;
+
             if (url.startsWith("https://pickuplocker.vercel.app") ||
                 url.startsWith("file:///android_asset/") ||
                 url.startsWith("https://api.dimepay.app")) {
@@ -311,6 +372,7 @@ public class MainActivity extends AppCompatActivity {
     private class KioskWebChromeClient extends WebChromeClient {
         @Override
         public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+            if (consoleMessage == null) return true;
             switch (consoleMessage.messageLevel()) {
                 case ERROR:
                     Log.e(TAG, "JS: " + consoleMessage.message()
@@ -333,11 +395,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void showOfflinePage() {
         isShowingOfflinePage = true;
-        if (webView != null) {
+        if (webView != null && mainHandler != null) {
             mainHandler.post(() -> {
-                if (webView != null) {
-                    webView.loadUrl(OFFLINE_URL);
-                    Log.i(TAG, "Loaded offline page — will retry connection");
+                if (webView != null && !isDestroyed) {
+                    try {
+                        webView.loadUrl(OFFLINE_URL);
+                        Log.i(TAG, "Loaded offline page — will retry connection");
+                    } catch (Throwable t) {
+                        Log.e(TAG, "Failed to load offline page: " + t.getMessage());
+                    }
                 }
             });
         }
@@ -355,9 +421,11 @@ public class MainActivity extends AppCompatActivity {
         }
         reconnectAttempts++;
         Log.i(TAG, "Reconnect attempt " + reconnectAttempts + "/" + MAX_RECONNECT_ATTEMPTS);
-        mainHandler.postDelayed(() -> {
-            if (isShowingOfflinePage) checkAndReload();
-        }, RECONNECT_DELAY_MS);
+        if (mainHandler != null) {
+            mainHandler.postDelayed(() -> {
+                if (isShowingOfflinePage && !isDestroyed) checkAndReload();
+            }, RECONNECT_DELAY_MS);
+        }
     }
 
     private void checkAndReload() {
@@ -367,9 +435,15 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         Log.i(TAG, "Network detected — reloading kiosk page");
-        if (webView != null) {
+        if (webView != null && mainHandler != null) {
             mainHandler.post(() -> {
-                if (webView != null) webView.loadUrl(KIOSK_URL);
+                if (webView != null && !isDestroyed) {
+                    try {
+                        webView.loadUrl(KIOSK_URL);
+                    } catch (Throwable t) {
+                        Log.e(TAG, "Failed to reload: " + t.getMessage());
+                    }
+                }
             });
         }
     }
@@ -388,19 +462,24 @@ public class MainActivity extends AppCompatActivity {
 
             NetworkRequest request = new NetworkRequest.Builder()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
                 .build();
 
             networkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
                 public void onAvailable(Network network) {
                     Log.i(TAG, "Network became available");
-                    if (isShowingOfflinePage) {
+                    if (isShowingOfflinePage && mainHandler != null) {
                         mainHandler.postDelayed(() -> {
-                            if (isShowingOfflinePage && webView != null) {
+                            if (isShowingOfflinePage && webView != null && !isDestroyed) {
                                 reconnectAttempts = 0;
                                 mainHandler.post(() -> {
-                                    if (webView != null) webView.loadUrl(KIOSK_URL);
+                                    if (webView != null && !isDestroyed) {
+                                        try {
+                                            webView.loadUrl(KIOSK_URL);
+                                        } catch (Throwable t) {
+                                            Log.e(TAG, "Failed to reload on reconnect: " + t.getMessage());
+                                        }
+                                    }
                                 });
                             }
                         }, CONNECTIVITY_CHECK_MS);
@@ -414,15 +493,22 @@ public class MainActivity extends AppCompatActivity {
 
                 @Override
                 public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+                    if (caps == null) return;
                     boolean hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                         && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-                    if (hasInternet && isShowingOfflinePage) {
+                    if (hasInternet && isShowingOfflinePage && mainHandler != null) {
                         Log.i(TAG, "Validated internet — reloading kiosk");
                         mainHandler.postDelayed(() -> {
-                            if (isShowingOfflinePage && webView != null) {
+                            if (isShowingOfflinePage && webView != null && !isDestroyed) {
                                 reconnectAttempts = 0;
                                 mainHandler.post(() -> {
-                                    if (webView != null) webView.loadUrl(KIOSK_URL);
+                                    if (webView != null && !isDestroyed) {
+                                        try {
+                                            webView.loadUrl(KIOSK_URL);
+                                        } catch (Throwable t) {
+                                            Log.e(TAG, "Failed to reload: " + t.getMessage());
+                                        }
+                                    }
                                 });
                             }
                         }, CONNECTIVITY_CHECK_MS);
@@ -433,9 +519,9 @@ public class MainActivity extends AppCompatActivity {
             cm.registerNetworkCallback(request, networkCallback);
             Log.i(TAG, "Network monitoring registered");
         } catch (SecurityException e) {
-            Log.e(TAG, "Cannot register network callback: " + e.getMessage());
-        } catch (Exception e) {
-            Log.e(TAG, "Network monitoring failed: " + e.getMessage());
+            Log.e(TAG, "Cannot register network callback (SecurityException): " + e.getMessage());
+        } catch (Throwable t) {
+            Log.e(TAG, "Network monitoring failed: " + t.getClass().getSimpleName() + " — " + t.getMessage());
         }
     }
 
@@ -444,8 +530,8 @@ public class MainActivity extends AppCompatActivity {
             try {
                 ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
                 if (cm != null) cm.unregisterNetworkCallback(networkCallback);
-            } catch (Exception e) {
-                Log.w(TAG, "Error unregistering network callback: " + e.getMessage());
+            } catch (Throwable t) {
+                Log.w(TAG, "Error unregistering network callback: " + t.getMessage());
             }
         }
     }
@@ -463,6 +549,8 @@ public class MainActivity extends AppCompatActivity {
             NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
             return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         } catch (SecurityException e) {
+            return true; // Assume available if we can't check
+        } catch (Throwable t) {
             return true;
         }
     }
@@ -487,25 +575,29 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
         if (ev.getAction() == MotionEvent.ACTION_DOWN) {
-            float density = getResources().getDisplayMetrics().density;
-            float hitAreaPx = SECRET_TAP_AREA_DP * density;
-            float x = ev.getRawX();
-            float y = ev.getRawY();
+            try {
+                float density = getResources().getDisplayMetrics().density;
+                float hitAreaPx = SECRET_TAP_AREA_DP * density;
+                float x = ev.getRawX();
+                float y = ev.getRawY();
 
-            if (x < hitAreaPx && y < hitAreaPx) {
-                long now = System.currentTimeMillis();
-                if (now - lastSecretTapTime > SECRET_TAP_TIMEOUT_MS) {
-                    secretTapCount = 1;
-                } else {
-                    secretTapCount++;
-                }
-                lastSecretTapTime = now;
+                if (x < hitAreaPx && y < hitAreaPx) {
+                    long now = System.currentTimeMillis();
+                    if (now - lastSecretTapTime > SECRET_TAP_TIMEOUT_MS) {
+                        secretTapCount = 1;
+                    } else {
+                        secretTapCount++;
+                    }
+                    lastSecretTapTime = now;
 
-                if (secretTapCount >= SECRET_TAP_COUNT) {
-                    secretTapCount = 0;
-                    Log.i(TAG, "Secret exit triggered");
-                    showAdminDialog();
+                    if (secretTapCount >= SECRET_TAP_COUNT) {
+                        secretTapCount = 0;
+                        Log.i(TAG, "Secret exit triggered");
+                        showAdminDialog();
+                    }
                 }
+            } catch (Throwable t) {
+                Log.w(TAG, "Touch handler error: " + t.getMessage());
             }
         }
         return super.dispatchTouchEvent(ev);
@@ -550,8 +642,8 @@ public class MainActivity extends AppCompatActivity {
                 .setNegativeButton("Cancel", null)
                 .setCancelable(true)
                 .show();
-        } catch (Exception e) {
-            Log.e(TAG, "Admin dialog failed: " + e.getMessage());
+        } catch (Throwable t) {
+            Log.e(TAG, "Admin dialog failed: " + t.getMessage());
         }
     }
 
@@ -571,14 +663,16 @@ public class MainActivity extends AppCompatActivity {
                 .setNegativeButton("Cancel", null)
                 .setCancelable(true)
                 .show();
-        } catch (Exception e) {
-            Log.e(TAG, "Admin options dialog failed: " + e.getMessage());
+        } catch (Throwable t) {
+            Log.e(TAG, "Admin options dialog failed: " + t.getMessage());
         }
     }
 
     private void closeApp() {
         unregisterConnectivityMonitoring();
-        mainHandler.removeCallbacksAndMessages(null);
+        if (mainHandler != null) {
+            mainHandler.removeCallbacksAndMessages(null);
+        }
         finishAffinity();
         System.exit(0);
     }
@@ -588,8 +682,8 @@ public class MainActivity extends AppCompatActivity {
             Intent intent = new Intent(Settings.ACTION_SETTINGS);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to open Settings: " + e.getMessage());
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to open Settings: " + t.getMessage());
         }
     }
 
@@ -597,8 +691,12 @@ public class MainActivity extends AppCompatActivity {
         isShowingOfflinePage = false;
         reconnectAttempts = 0;
         if (webView != null) {
-            webView.clearCache(true);
-            webView.loadUrl(KIOSK_URL);
+            try {
+                webView.clearCache(true);
+                webView.loadUrl(KIOSK_URL);
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to reload kiosk: " + t.getMessage());
+            }
         }
     }
 }
