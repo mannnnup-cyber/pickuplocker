@@ -17,7 +17,7 @@
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
-            android:theme="@style/Theme.PickupKiosk.Splash">
+            android:theme="@style/Theme.PickupKiosk">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
