@@ -1,0 +1,7 @@
+ext {
+    minSdkVersion = 22    // Android 5.1
+    compileSdkVersion = 33
+    targetSdkVersion = 33
+    androidxAppCompatVersion = '1.6.1'
+    androidxCoreVersion = '1.9.0'
+}

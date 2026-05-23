@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Main app theme -->
+    <style name="Theme.PickupKiosk" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">@color/pickup_black</item>
+        <item name="colorPrimaryDark">@color/pickup_black</item>
+        <item name="colorAccent">@color/pickup_gold</item>
+        <item name="android:windowBackground">@color/pickup_black</item>
+        <item name="android:statusBarColor">@color/pickup_black</item>
+        <item name="android:navigationBarColor">@color/pickup_black</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+
+    <!-- Splash screen theme (shown before activity loads) -->
+    <style name="Theme.PickupKiosk.Splash" parent="Theme.PickupKiosk">
+        <item name="android:windowBackground">@drawable/splash_screen</item>
+    </style>
+
+</resources>

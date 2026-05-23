@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Pickup Jamaica Brand Colors -->
+    <color name="pickup_gold">#FFD439</color>
+    <color name="pickup_gold_dark">#E6C035</color>
+    <color name="pickup_black">#111111</color>
+    <color name="pickup_dark">#1A1A2E</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+</resources>
