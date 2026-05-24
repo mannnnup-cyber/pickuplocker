@@ -7,33 +7,40 @@ android {
     defaultConfig {
         applicationId "com.pickupjamaica.kiosk"
         minSdk rootProject.ext.minSdkVersion      // 22 = Android 5.1
-        targetSdk rootProject.ext.targetSdkVersion // 29 = Android 10 (same as working Capacitor APK)
+        targetSdk rootProject.ext.targetSdkVersion // 29 = Android 10
         versionCode 4
         versionName "3.0"
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('pickup-jamaica.keystore')
+            storePassword 'pickup2024'
+            keyAlias 'pickupjamaica'
+            keyPassword 'pickup2024'
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
         debug {
             debuggable true
         }
     }
 
-    // Enable BuildConfig generation
     buildFeatures {
         buildConfig true
     }
 
-    // Java 11 compatibility
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
     }
 
-    // Suppress lint warnings for WebView
     lintOptions {
         abortOnError false
         checkReleaseBuilds false
@@ -41,7 +48,6 @@ android {
 }
 
 dependencies {
-    // Minimal dependencies — just appcompat for Theme.AppCompat
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.core:core:$androidxCoreVersion"
 }
