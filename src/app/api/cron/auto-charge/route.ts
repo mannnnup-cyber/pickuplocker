@@ -123,6 +123,18 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
+        // Skip if manually paid and within grace period
+        if (order.manuallyPaidAt && order.manualPaymentGraceUntil) {
+          const now = new Date();
+          const graceDeadline = new Date(order.manualPaymentGraceUntil);
+          if (now <= graceDeadline) {
+            // Grace period still active - skip auto-charge
+            results.chargesSkipped++;
+            continue;
+          }
+          // Grace period expired - auto-charge can proceed for new fees
+        }
+
         // Check if customer has auto-charge enabled cards
         const autoChargeCards = order.customer?.savedPaymentMethods || [];
         if (autoChargeCards.length === 0) {

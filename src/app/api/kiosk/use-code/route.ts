@@ -244,16 +244,38 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
   const storageCalc = getStorageCalculation(new Date(storageStart || new Date()));
   const storageFee = storageCalc.storageFee;
 
+  // Check manual payment grace period
+  let feeOwed = storageFee;
+  let graceExpired = false;
+
+  if (order?.manuallyPaidAt && order?.manualPaymentGraceUntil) {
+    const now = new Date();
+    const graceDeadline = new Date(order.manualPaymentGraceUntil);
+    
+    if (now <= graceDeadline) {
+      // Within grace period - no additional fee needed
+      feeOwed = 0;
+    } else {
+      // Grace period expired - calculate NEW fees since manual payment
+      graceExpired = true;
+      const newFeeCalc = getStorageCalculation(new Date(order.manuallyPaidAt));
+      feeOwed = newFeeCalc.storageFee;
+    }
+  }
+
   // Check if payment is required
-  if (storageFee > 0 && !paymentMethod) {
+  if (feeOwed > 0 && !paymentMethod) {
     return NextResponse.json({
       success: true,
       requiresPayment: true,
       orderNo: expressOrder?.orderNo || order?.orderNumber,
       boxName,
-      storageFee,
+      storageFee: feeOwed,
       storageDays: storageCalc.totalDays,
-      message: `Storage fee of JMD $${storageFee} is required`,
+      graceExpired,
+      message: graceExpired 
+        ? `Grace period expired. Additional storage fee of JMD $${feeOwed} is required`
+        : `Storage fee of JMD $${feeOwed} is required`,
     });
   }
 
@@ -288,12 +310,12 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
   }
 
   // Record payment if applicable
-  if (storageFee > 0 && paymentMethod && order) {
+  if (feeOwed > 0 && paymentMethod && order) {
     await db.payment.create({
       data: {
         orderId: order.id,
         userId: order.customerId,
-        amount: storageFee,
+        amount: feeOwed,
         method: paymentMethod as 'CASH' | 'CARD' | 'ONLINE',
         status: 'COMPLETED',
         paidAt: new Date(),
@@ -320,7 +342,7 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
         status: 'PICKED_UP',
         pickUpAt: new Date(),
         storageDays: storageCalc.totalDays,
-        storageFee,
+        storageFee: feeOwed > 0 ? feeOwed : storageFee,
       },
     });
 

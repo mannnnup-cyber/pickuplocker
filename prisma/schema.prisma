@@ -263,6 +263,11 @@ model Order {
   abandonedAt     DateTime?
   abandonedReason String?
   
+  // Manual payment tracking
+  manuallyPaidAt       DateTime?      // When manual payment was recorded
+  manualPaymentGraceUntil DateTime?   // Grace period deadline (manuallyPaidAt + 24h)
+  manualPayment        ManualPayment? // Back-relation (virtual, no FK column needed)
+  
   // Notes
   notes           String?
   
@@ -645,4 +650,36 @@ model LockerSync {
   updatedAt       DateTime @updatedAt
   
   @@map("locker_syncs")
+}
+
+// Manual Payment (in-office payment with grace period)
+model ManualPayment {
+  id              String   @id @default(cuid())
+  orderId         String   @unique
+  order           Order    @relation(fields: [orderId], references: [id])
+  
+  // Payment details
+  amount          Float             // Amount actually collected
+  originalAmount  Float             // Amount before discount
+  discount        Float    @default(0)  // Discount applied
+  discountReason  String?           // Why discount was given
+  method          String            // CASH, CARD, BANK_TRANSFER, OTHER
+  staffName       String            // Who accepted the payment
+  staffId         String?           // User ID of staff (if logged in)
+  notes           String?           // Additional notes
+  receiptNumber   String   @unique  // Auto-generated receipt # RCP-YYYYMMDD-XXXX
+  
+  // Grace period
+  graceUntil      DateTime          // When grace period expires (manuallyPaidAt + 24h)
+  
+  // Open box option
+  openBoxNow      Boolean  @default(false)  // Did staff open box immediately?
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([orderId])
+  @@index([receiptNumber])
+  @@map("manual_payments")
 }
