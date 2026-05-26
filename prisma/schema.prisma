@@ -45,6 +45,7 @@ enum PaymentMethod {
   CARD
   MOBILE_MONEY
   ONLINE
+  MANUAL_OFFICE  // In-office manual payment (cash/card/bank transfer recorded by staff)
 }
 
 // Box status
@@ -104,6 +105,7 @@ enum TransactionType {
   REFUND               // Money returned to customer
   ADJUSTMENT           // Manual balance adjustment
   COURIER_PAYMENT      // Courier paid for drop-off
+  MANUAL_PAYMENT       // In-office manual payment by staff
 }
 
 // Main User model
@@ -679,7 +681,34 @@ model ManualPayment {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   
+  // Relations
+  graceExtensions GracePeriodExtension[]
+  
   @@index([orderId])
   @@index([receiptNumber])
   @@map("manual_payments")
+}
+
+// Grace Period Extension (audit log when staff extends a grace period)
+model GracePeriodExtension {
+  id                String   @id @default(cuid())
+  manualPaymentId   String
+  manualPayment     ManualPayment @relation(fields: [manualPaymentId], references: [id])
+  
+  // Extension details
+  previousGraceUntil DateTime         // Previous grace period deadline
+  newGraceUntil      DateTime         // New extended grace period deadline
+  extensionHours     Int              // How many hours extended
+  reason             String           // Why the grace period was extended
+  
+  // Who extended
+  extendedByName     String           // Name of staff who extended
+  extendedById       String?          // User ID of staff (if logged in)
+  
+  // Timestamps
+  createdAt          DateTime @default(now())
+  
+  @@index([manualPaymentId])
+  @@index([createdAt])
+  @@map("grace_period_extensions")
 }
