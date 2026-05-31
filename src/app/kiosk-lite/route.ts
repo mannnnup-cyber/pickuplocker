@@ -14,6 +14,9 @@ function esc(str: string): string {
 // Shared CSS - Android 5.1 compatible (no CSS Grid, webkit prefixes)
 const SHARED_CSS = `
   * { -webkit-box-sizing: border-box; box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+  }
   body {
     font-family: Arial, Helvetica, sans-serif;
     background: -webkit-linear-gradient(135deg, #111111 0%, #1a1a2e 100%);
@@ -25,28 +28,104 @@ const SHARED_CSS = `
   .container {
     max-width: 800px;
     margin: 0 auto;
-    padding: 20px;
+    padding: 15px 20px;
+    min-height: 100vh;
+    display: -webkit-flex;
+    display: flex;
+    -webkit-flex-direction: column;
+    flex-direction: column;
   }
   .header {
     text-align: center;
-    padding: 20px 0;
+    padding: 12px 0;
     border-bottom: 3px solid #FFD439;
-    margin-bottom: 25px;
+    margin-bottom: 20px;
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
+  }
+  .header-inner {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-align-items: center;
+    align-items: center;
+    -webkit-justify-content: center;
+    justify-content: center;
+    gap: 12px;
+  }
+  .header-logo {
+    height: 44px;
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
+    width: auto;
   }
   .header h1 {
-    font-size: 32px;
-    color: #FFD439;
+    font-size: 30px;
+    color: #ffffff;
     letter-spacing: 3px;
+    line-height: 1.1;
+  }
+  .header h1 .brand-gold {
+    color: #FFD439;
   }
   .header p {
     color: #999999;
-    margin-top: 5px;
-    font-size: 14px;
+    margin-top: 3px;
+    font-size: 13px;
+  }
+  .home-brand {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-align-items: center;
+    align-items: center;
+    -webkit-justify-content: center;
+    justify-content: center;
+    margin-bottom: 25px;
+  }
+  .home-brand-logo {
+    width: 90px;
+    height: auto;
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
+  }
+  .home-brand-text {
+    margin-left: 15px;
+  }
+  .home-brand-text h1 {
+    font-size: 52px;
+    color: #ffffff;
+    letter-spacing: 5px;
+    line-height: 1;
+    margin: 0;
+  }
+  .home-brand-text h1 .brand-gold {
+    color: #FFD439;
+  }
+  .home-brand-text p {
+    color: #666666;
+    font-size: 13px;
+    margin-top: 2px;
+    letter-spacing: 1px;
+  }
+  .content {
+    -webkit-flex: 1;
+    flex: 1;
+  }
+  .content-centered {
+    -webkit-flex: 1;
+    flex: 1;
+    display: -webkit-flex;
+    display: flex;
+    -webkit-flex-direction: column;
+    flex-direction: column;
+    -webkit-justify-content: center;
+    justify-content: center;
+    -webkit-align-items: center;
+    align-items: center;
   }
   .title {
     text-align: center;
     font-size: 26px;
-    margin-bottom: 20px;
+    margin-bottom: 15px;
     color: #FFD439;
     font-weight: bold;
   }
@@ -54,17 +133,17 @@ const SHARED_CSS = `
     text-align: center;
     font-size: 16px;
     color: #999999;
-    margin-bottom: 20px;
+    margin-bottom: 15px;
   }
   .btn {
     display: block;
     width: 100%;
     padding: 22px 20px;
-    margin: 12px 0;
+    margin: 10px 0;
     font-size: 22px;
     font-weight: bold;
     border: none;
-    border-radius: 10px;
+    border-radius: 12px;
     cursor: pointer;
     text-decoration: none;
     text-align: center;
@@ -107,6 +186,74 @@ const SHARED_CSS = `
     text-decoration: none;
     -webkit-tap-highlight-color: rgba(0,0,0,0);
   }
+  /* ---- Home screen hero buttons ---- */
+  .hero-btn {
+    display: block;
+    width: 100%;
+    max-width: 420px;
+    padding: 0;
+    margin: 12px auto;
+    border: none;
+    border-radius: 16px;
+    cursor: pointer;
+    text-decoration: none;
+    text-align: center;
+    -webkit-appearance: none;
+    appearance: none;
+    -webkit-tap-highlight-color: rgba(0,0,0,0);
+    -webkit-transition: -webkit-transform 0.1s ease;
+    transition: transform 0.1s ease;
+  }
+  .hero-btn:active {
+    -webkit-transform: scale(0.97);
+    transform: scale(0.97);
+  }
+  .hero-btn-dropoff {
+    background: #FFD439;
+    min-height: 140px;
+  }
+  .hero-btn-pickup {
+    background: #ffffff;
+    min-height: 140px;
+  }
+  .hero-btn-icon {
+    font-size: 44px;
+    display: block;
+    margin-bottom: 4px;
+    line-height: 1;
+  }
+  .hero-btn-dropoff .hero-btn-icon { color: #111111; }
+  .hero-btn-pickup .hero-btn-icon { color: #111111; }
+  .hero-btn-label {
+    font-size: 30px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    display: block;
+    line-height: 1.2;
+  }
+  .hero-btn-dropoff .hero-btn-label { color: #111111; }
+  .hero-btn-pickup .hero-btn-label { color: #111111; }
+  .hero-btn-hint {
+    font-size: 13px;
+    color: #666666;
+    display: block;
+    margin-top: 4px;
+  }
+  .home-tagline {
+    text-align: center;
+    color: #666666;
+    font-size: 14px;
+    margin-top: 20px;
+    letter-spacing: 1px;
+  }
+  .divider {
+    text-align: center;
+    margin: 20px 0 10px;
+    color: #444444;
+    font-size: 13px;
+    letter-spacing: 4px;
+  }
+  /* ---- Form elements ---- */
   .form-group {
     margin-bottom: 20px;
   }
@@ -269,11 +416,13 @@ const SHARED_CSS = `
   }
   .footer {
     text-align: center;
-    margin-top: 40px;
-    padding-top: 15px;
+    padding: 15px 0;
     border-top: 1px solid #333333;
     font-size: 12px;
     color: #555555;
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
+    margin-top: 15px;
   }
   .spinner {
     display: inline-block;
@@ -292,6 +441,13 @@ const SHARED_CSS = `
     .btn { font-size: 18px; padding: 18px 15px; }
     .title { font-size: 22px; }
     .code-display { font-size: 36px; letter-spacing: 6px; }
+    .hero-btn { min-height: 110px; max-width: 100%; }
+    .hero-btn-label { font-size: 24px; }
+    .hero-btn-icon { font-size: 36px; }
+    .header-logo { width: 40px; height: 40px; }
+    .header h1 { font-size: 24px; }
+    .home-brand-logo { width: 60px; }
+    .home-brand-text h1 { font-size: 36px; letter-spacing: 3px; }
   }
 `;
 
@@ -403,7 +559,24 @@ const KIOSK_JS = `
   }
 `;
 
-function renderPage(content: string, extraHead: string = ''): string {
+// Shared header HTML with real Pickup logo
+const HEADER_HTML = `
+  <div class="header">
+    <div class="header-inner">
+      <img src="/logo-icon.png" alt="Pickup Logo" class="header-logo">
+      <div>
+        <h1>PICK<span class="brand-gold">UP</span></h1>
+        <p>Smart Locker System <span id="kiosk-clock" style="margin-left:10px;"></span><span id="kiosk-countdown"></span></p>
+      </div>
+    </div>
+  </div>`;
+
+// Shared footer HTML
+const FOOTER_HTML = `
+  <div class="footer">Pickup Jamaica | UTech Campus</div>`;
+
+function renderPage(content: string, centered: boolean = false, extraHead: string = ''): string {
+  const contentClass = centered ? 'content-centered' : 'content';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -417,11 +590,11 @@ function renderPage(content: string, extraHead: string = ''): string {
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      <h1>PICKUP</h1>
-      <p>Smart Locker System <span id="kiosk-clock" style="margin-left:10px;"></span><span id="kiosk-countdown"></span></p>
+    ${HEADER_HTML}
+    <div class="${contentClass}">
+      ${content}
     </div>
-    ${content}
+    ${FOOTER_HTML}
   </div>
   <script>${KIOSK_JS}</script>
 </body>
@@ -441,24 +614,36 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get('error');
   const msg = searchParams.get('msg');
 
-  // ---- HOME SCREEN ----
+  // ---- HOME SCREEN (centered, full logo, big hero buttons) ----
   if (!action) {
     return new NextResponse(renderPage(`
-      <h2 class="title">Welcome</h2>
-      <p class="subtitle">What would you like to do?</p>
-      <form action="/api/kiosk-action" method="POST">
+      <div class="home-brand">
+        <img src="/logo-icon.png" alt="Pickup" class="home-brand-logo">
+        <div class="home-brand-text">
+          <h1>PICK<span class="brand-gold">UP</span></h1>
+          <p>Smart Locker</p>
+        </div>
+      </div>
+      <form action="/api/kiosk-action" method="POST" style="width:100%;max-width:420px;">
         <input type="hidden" name="flow" value="dropoff">
         <input type="hidden" name="step" value="1">
-        <button type="submit" class="btn btn-primary">DROP-OFF</button>
+        <button type="submit" class="hero-btn hero-btn-dropoff">
+          <span class="hero-btn-icon">&#128230;</span>
+          <span class="hero-btn-label">DROP-OFF</span>
+          <span class="hero-btn-hint">Deposit a package</span>
+        </button>
       </form>
-      <form action="/api/kiosk-action" method="POST">
+      <form action="/api/kiosk-action" method="POST" style="width:100%;max-width:420px;">
         <input type="hidden" name="flow" value="pickup">
         <input type="hidden" name="step" value="1">
-        <button type="submit" class="btn btn-secondary">PICKUP</button>
+        <button type="submit" class="hero-btn hero-btn-pickup">
+          <span class="hero-btn-icon">&#128273;</span>
+          <span class="hero-btn-label">PICKUP</span>
+          <span class="hero-btn-hint">Collect your package</span>
+        </button>
       </form>
-      <p style="text-align:center; margin-top:30px; color:#666; font-size:12px;">Available 24/7</p>
-      <div class="footer">Pickup Jamaica | UTech Campus</div>
-    `), { headers: HTML_HEADERS });
+      <p class="home-tagline">Available 24/7</p>
+    `, true), { headers: HTML_HEADERS });
   }
 
   // ---- DROP-OFF OPTIONS ----
