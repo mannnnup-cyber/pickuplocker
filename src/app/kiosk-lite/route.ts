@@ -37,73 +37,57 @@ const SHARED_CSS = `
   }
   .header {
     text-align: center;
-    padding: 12px 0;
-    border-bottom: 3px solid #F9C710;
-    margin-bottom: 20px;
+    padding: 15px 0;
     -webkit-flex-shrink: 0;
     flex-shrink: 0;
   }
-  .header-inner {
-    display: -webkit-flex;
-    display: flex;
-    -webkit-align-items: center;
-    align-items: center;
-    -webkit-justify-content: center;
-    justify-content: center;
-    gap: 12px;
-  }
   .header-logo {
-    height: 44px;
+    height: 50px;
     -webkit-flex-shrink: 0;
     flex-shrink: 0;
     width: auto;
   }
-  .header h1 {
-    font-size: 30px;
-    color: #ffffff;
-    letter-spacing: 3px;
-    line-height: 1.1;
-  }
-  .header h1 .brand-gold {
-    color: #F9C710;
-  }
-  .header p {
-    color: #999999;
-    margin-top: 3px;
-    font-size: 13px;
-  }
-  .home-brand {
-    display: -webkit-flex;
-    display: flex;
-    -webkit-align-items: center;
-    align-items: center;
-    -webkit-justify-content: center;
-    justify-content: center;
-    margin-bottom: 25px;
-  }
-  .home-brand-logo {
-    width: 90px;
+  .home-icon-logo {
+    width: 140px;
+    max-width: 50%;
     height: auto;
-    -webkit-flex-shrink: 0;
-    flex-shrink: 0;
+    margin-bottom: 20px;
   }
-  .home-brand-text {
-    margin-left: 15px;
+  .home-gold-band {
+    background: #FFD439;
+    padding: 20px;
+    text-align: center;
+    margin-bottom: 20px;
+    border-radius: 12px;
   }
-  .home-brand-text h1 {
-    font-size: 52px;
-    color: #ffffff;
-    letter-spacing: 5px;
-    line-height: 1;
+  .home-gold-band-logo {
+    max-width: 280px;
+    width: 80%;
+    height: auto;
+  }
+  .home-white-section {
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 25px 20px;
+    text-align: center;
+    margin-bottom: 20px;
+    max-width: 420px;
+    width: 100%;
+  }
+  .home-white-section h2 {
+    color: #111111;
+    font-size: 32px;
+    font-weight: bold;
     margin: 0;
+    letter-spacing: 1px;
   }
-  .home-brand-text h1 .brand-gold {
-    color: #F9C710;
+  .home-white-section h2 .brand-gold {
+    color: #FFD439;
   }
-  .home-brand-text p {
+  .home-white-section p {
     color: #666666;
-    font-size: 13px;
-    margin-top: 2px;
+    font-size: 14px;
+    margin-top: 5px;
     letter-spacing: 1px;
   }
   .content {
@@ -126,7 +110,7 @@ const SHARED_CSS = `
     text-align: center;
     font-size: 26px;
     margin-bottom: 15px;
-    color: #F9C710;
+    color: #FFD439;
     font-weight: bold;
   }
   .subtitle {
@@ -153,16 +137,16 @@ const SHARED_CSS = `
     min-height: 48px;
   }
   .btn-primary {
-    background: #F9C710;
+    background: #FFD439;
     color: #111111;
   }
   .btn-primary:hover, .btn-primary:active {
-    background: #d9ae0e;
+    background: #e6c035;
   }
   .btn-secondary {
     background: #333333;
     color: #ffffff;
-    border: 2px solid #F9C710;
+    border: 2px solid #FFD439;
   }
   .btn-secondary:hover, .btn-secondary:active {
     background: #444444;
@@ -209,7 +193,7 @@ const SHARED_CSS = `
     transform: scale(0.97);
   }
   .hero-btn-dropoff {
-    background: #F9C710;
+    background: #FFD439;
     min-height: 140px;
   }
   .hero-btn-pickup {
@@ -261,7 +245,7 @@ const SHARED_CSS = `
     display: block;
     margin-bottom: 8px;
     font-size: 16px;
-    color: #F9C710;
+    color: #FFD439;
     font-weight: bold;
   }
   .form-group input {
@@ -280,7 +264,7 @@ const SHARED_CSS = `
   }
   .form-group input:focus {
     outline: none;
-    border-color: #F9C710;
+    border-color: #FFD439;
   }
   .info-box {
     background: #1a1a1a;
@@ -303,13 +287,13 @@ const SHARED_CSS = `
   .code-display {
     text-align: center;
     font-size: 48px;
-    color: #F9C710;
+    color: #FFD439;
     font-weight: bold;
     padding: 25px;
     background: #1a1a1a;
     border-radius: 10px;
     margin: 15px 0;
-    border: 2px solid #F9C710;
+    border: 2px solid #FFD439;
     letter-spacing: 10px;
   }
   .success-icon {
@@ -379,7 +363,7 @@ const SHARED_CSS = `
     margin: 10px 0;
   }
   .option-card h3 {
-    color: #F9C710;
+    color: #FFD439;
     font-size: 18px;
     margin-bottom: 5px;
   }
@@ -392,7 +376,7 @@ const SHARED_CSS = `
     padding: 15px;
     border-radius: 8px;
     margin: 10px 0;
-    border: 1px solid #F9C710;
+    border: 1px solid #FFD439;
   }
   .qr-container {
     text-align: center;
@@ -406,7 +390,7 @@ const SHARED_CSS = `
     max-width: 250px;
   }
   #kiosk-clock {
-    color: #F9C710;
+    color: #FFD439;
     font-weight: bold;
   }
   #kiosk-countdown {
@@ -429,7 +413,7 @@ const SHARED_CSS = `
     width: 40px;
     height: 40px;
     border: 4px solid #333333;
-    border-top: 4px solid #F9C710;
+    border-top: 4px solid #FFD439;
     border-radius: 50%;
     -webkit-animation: spin 1s linear infinite;
     animation: spin 1s linear infinite;
@@ -444,10 +428,11 @@ const SHARED_CSS = `
     .hero-btn { min-height: 110px; max-width: 100%; }
     .hero-btn-label { font-size: 24px; }
     .hero-btn-icon { font-size: 36px; }
-    .header-logo { height: 36px; width: auto; }
-    .header h1 { font-size: 24px; }
-    .home-brand-logo { width: 60px; }
-    .home-brand-text h1 { font-size: 36px; letter-spacing: 3px; }
+    .header-logo { height: 40px; width: auto; }
+    .home-icon-logo { width: 100px; }
+    .home-gold-band { padding: 15px; }
+    .home-gold-band-logo { max-width: 200px; }
+    .home-white-section h2 { font-size: 24px; }
   }
 `;
 
@@ -488,7 +473,7 @@ const KIOSK_JS = `
     if (remainingSeconds <= 15) {
       el.style.color = '#ff6b6b';
     } else if (remainingSeconds <= 30) {
-      el.style.color = '#F9C710';
+      el.style.color = '#FFD439';
     }
   }
 
@@ -559,16 +544,10 @@ const KIOSK_JS = `
   }
 `;
 
-// Shared header HTML with real Pickup logo
+// Shared header HTML with icon logo only (matching brand guide)
 const HEADER_HTML = `
   <div class="header">
-    <div class="header-inner">
-      <img src="/logo-icon.png" alt="Pickup Logo" class="header-logo">
-      <div>
-        <h1>PICK<span class="brand-gold">UP</span></h1>
-        <p>Smart Locker System <span id="kiosk-clock" style="margin-left:10px;"></span><span id="kiosk-countdown"></span></p>
-      </div>
-    </div>
+    <img src="/logo-icon.png" alt="Pickup Logo" class="header-logo">
   </div>`;
 
 // Shared footer HTML
@@ -617,12 +596,13 @@ export async function GET(request: NextRequest) {
   // ---- HOME SCREEN (centered, full logo, big hero buttons) ----
   if (!action) {
     return new NextResponse(renderPage(`
-      <div class="home-brand">
-        <img src="/logo-icon.png" alt="Pickup" class="home-brand-logo">
-        <div class="home-brand-text">
-          <h1>PICK<span class="brand-gold">UP</span></h1>
-          <p>Smart Locker</p>
-        </div>
+      <img src="/logo-icon.png" alt="Pickup" class="home-icon-logo">
+      <div class="home-gold-band">
+        <img src="/pickup-full-logo.png" alt="Pickup Smart Locker" class="home-gold-band-logo">
+      </div>
+      <div class="home-white-section">
+        <h2>Hello, <span class="brand-gold">Pickup!</span></h2>
+        <p>Smart Locker</p>
       </div>
       <form action="/api/kiosk-action" method="POST" style="width:100%;max-width:420px;">
         <input type="hidden" name="flow" value="dropoff">
