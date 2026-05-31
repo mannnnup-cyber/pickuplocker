@@ -6,6 +6,13 @@ export const metadata: Metadata = {
   title: "Pickup Jamaica - Smart Locker System",
   description:
     "Pickup Jamaica Smart Locker System — Admin dashboard for managing lockers, drop-offs, and payments.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/favicon-192.png", sizes: "192x192", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({

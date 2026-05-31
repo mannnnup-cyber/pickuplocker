@@ -78,12 +78,21 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-10">
-          <h1 className="text-5xl font-extrabold tracking-tight text-[#FFD439]">
-            PICKUP
-          </h1>
-          <p className="text-sm font-semibold tracking-[0.35em] text-[#FFD439]/70 mt-1">
-            JAMAICA
-          </p>
+          <div className="flex items-center justify-center gap-3 mb-3">
+            <img
+              src="/logo-icon.png"
+              alt="Pickup Logo"
+              className="h-16 w-16 object-contain"
+            />
+            <div>
+              <h1 className="text-4xl font-extrabold tracking-tight">
+                <span className="text-white">PICK</span><span className="text-[#FFD439]">UP</span>
+              </h1>
+              <p className="text-sm font-semibold tracking-[0.35em] text-[#FFD439]/70 mt-0.5">
+                JAMAICA
+              </p>
+            </div>
+          </div>
           <p className="text-xs text-gray-500 mt-3">
             Smart Locker System — Admin Dashboard
           </p>

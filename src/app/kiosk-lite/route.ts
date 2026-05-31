@@ -36,59 +36,81 @@ const SHARED_CSS = `
     flex-direction: column;
   }
   .header {
-    text-align: center;
     padding: 15px 0;
     -webkit-flex-shrink: 0;
     flex-shrink: 0;
   }
+  .header-inner {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-align-items: center;
+    align-items: center;
+    -webkit-justify-content: center;
+    justify-content: center;
+    gap: 12px;
+  }
   .header-logo {
-    height: 50px;
+    height: 64px;
+    width: 64px;
     -webkit-flex-shrink: 0;
     flex-shrink: 0;
-    width: auto;
+    -o-object-fit: contain;
+    object-fit: contain;
   }
-  .home-icon-logo {
-    width: 140px;
-    max-width: 50%;
-    height: auto;
-    margin-bottom: 20px;
-  }
-  .home-gold-band {
-    background: #FFD439;
-    padding: 20px;
-    text-align: center;
-    margin-bottom: 20px;
-    border-radius: 12px;
-  }
-  .home-gold-band-logo {
-    max-width: 280px;
-    width: 80%;
-    height: auto;
-  }
-  .home-white-section {
-    background: #ffffff;
-    border-radius: 12px;
-    padding: 25px 20px;
-    text-align: center;
-    margin-bottom: 20px;
-    max-width: 420px;
-    width: 100%;
-  }
-  .home-white-section h2 {
-    color: #111111;
-    font-size: 32px;
+  .header-text h1 {
+    font-size: 28px;
     font-weight: bold;
-    margin: 0;
+    text-transform: uppercase;
     letter-spacing: 1px;
+    margin: 0;
+    color: #ffffff;
   }
-  .home-white-section h2 .brand-gold {
+  .header-text h1 .brand-gold {
     color: #FFD439;
   }
-  .home-white-section p {
-    color: #666666;
-    font-size: 14px;
-    margin-top: 5px;
-    letter-spacing: 1px;
+  .header-text p {
+    font-size: 12px;
+    color: #999999;
+    margin: 2px 0 0 0;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .home-brand-area {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-align-items: center;
+    align-items: center;
+    -webkit-justify-content: center;
+    justify-content: center;
+    gap: 16px;
+    margin-bottom: 30px;
+  }
+  .home-logo {
+    height: 80px;
+    width: 80px;
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
+    -o-object-fit: contain;
+    object-fit: contain;
+  }
+  .home-brand-text h1 {
+    font-size: 40px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin: 0;
+    color: #ffffff;
+    line-height: 1;
+  }
+  .home-brand-text h1 .brand-gold {
+    color: #FFD439;
+  }
+  .home-brand-text p {
+    font-size: 13px;
+    color: #999999;
+    margin: 4px 0 0 0;
+    letter-spacing: 3px;
+    text-transform: uppercase;
   }
   .content {
     -webkit-flex: 1;
@@ -428,11 +450,12 @@ const SHARED_CSS = `
     .hero-btn { min-height: 110px; max-width: 100%; }
     .hero-btn-label { font-size: 24px; }
     .hero-btn-icon { font-size: 36px; }
-    .header-logo { height: 40px; width: auto; }
-    .home-icon-logo { width: 100px; }
-    .home-gold-band { padding: 15px; }
-    .home-gold-band-logo { max-width: 200px; }
-    .home-white-section h2 { font-size: 24px; }
+    .header-logo { height: 48px; width: 48px; }
+    .header-text h1 { font-size: 22px; }
+    .header-text p { font-size: 10px; }
+    .home-logo { height: 60px; width: 60px; }
+    .home-brand-text h1 { font-size: 30px; }
+    .home-brand-text p { font-size: 11px; }
   }
 `;
 
@@ -544,10 +567,16 @@ const KIOSK_JS = `
   }
 `;
 
-// Shared header HTML with icon logo only (matching brand guide)
+// Shared header HTML matching deployed Vercel version (logo + PICK UP text side by side)
 const HEADER_HTML = `
   <div class="header">
-    <img src="/logo-icon.png" alt="Pickup Logo" class="header-logo">
+    <div class="header-inner">
+      <img src="/logo-icon.png" alt="Pickup Logo" class="header-logo">
+      <div class="header-text">
+        <h1>PICK<span class="brand-gold">UP</span></h1>
+        <p>Smart Locker System</p>
+      </div>
+    </div>
   </div>`;
 
 // Shared footer HTML
@@ -564,6 +593,9 @@ function renderPage(content: string, centered: boolean = false, extraHead: strin
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="format-detection" content="telephone=no">
   <title>Pickup - Smart Locker</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <link rel="icon" href="/favicon-192.png" sizes="192x192" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <style>${SHARED_CSS}</style>
   ${extraHead}
 </head>
@@ -596,13 +628,12 @@ export async function GET(request: NextRequest) {
   // ---- HOME SCREEN (centered, full logo, big hero buttons) ----
   if (!action) {
     return new NextResponse(renderPage(`
-      <img src="/logo-icon.png" alt="Pickup" class="home-icon-logo">
-      <div class="home-gold-band">
-        <img src="/pickup-full-logo.png" alt="Pickup Smart Locker" class="home-gold-band-logo">
-      </div>
-      <div class="home-white-section">
-        <h2>Hello, <span class="brand-gold">Pickup!</span></h2>
-        <p>Smart Locker</p>
+      <div class="home-brand-area">
+        <img src="/logo-icon.png" alt="Pickup Logo" class="home-logo">
+        <div class="home-brand-text">
+          <h1>PICK<span class="brand-gold">UP</span></h1>
+          <p>Jamaica</p>
+        </div>
       </div>
       <form action="/api/kiosk-action" method="POST" style="width:100%;max-width:420px;">
         <input type="hidden" name="flow" value="dropoff">
