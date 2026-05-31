@@ -38,7 +38,7 @@ const SHARED_CSS = `
   .header {
     text-align: center;
     padding: 12px 0;
-    border-bottom: 3px solid #FFD439;
+    border-bottom: 3px solid #F9C710;
     margin-bottom: 20px;
     -webkit-flex-shrink: 0;
     flex-shrink: 0;
@@ -65,7 +65,7 @@ const SHARED_CSS = `
     line-height: 1.1;
   }
   .header h1 .brand-gold {
-    color: #FFD439;
+    color: #F9C710;
   }
   .header p {
     color: #999999;
@@ -98,7 +98,7 @@ const SHARED_CSS = `
     margin: 0;
   }
   .home-brand-text h1 .brand-gold {
-    color: #FFD439;
+    color: #F9C710;
   }
   .home-brand-text p {
     color: #666666;
@@ -126,7 +126,7 @@ const SHARED_CSS = `
     text-align: center;
     font-size: 26px;
     margin-bottom: 15px;
-    color: #FFD439;
+    color: #F9C710;
     font-weight: bold;
   }
   .subtitle {
@@ -153,16 +153,16 @@ const SHARED_CSS = `
     min-height: 48px;
   }
   .btn-primary {
-    background: #FFD439;
+    background: #F9C710;
     color: #111111;
   }
   .btn-primary:hover, .btn-primary:active {
-    background: #e6c035;
+    background: #d9ae0e;
   }
   .btn-secondary {
     background: #333333;
     color: #ffffff;
-    border: 2px solid #FFD439;
+    border: 2px solid #F9C710;
   }
   .btn-secondary:hover, .btn-secondary:active {
     background: #444444;
@@ -209,7 +209,7 @@ const SHARED_CSS = `
     transform: scale(0.97);
   }
   .hero-btn-dropoff {
-    background: #FFD439;
+    background: #F9C710;
     min-height: 140px;
   }
   .hero-btn-pickup {
@@ -261,7 +261,7 @@ const SHARED_CSS = `
     display: block;
     margin-bottom: 8px;
     font-size: 16px;
-    color: #FFD439;
+    color: #F9C710;
     font-weight: bold;
   }
   .form-group input {
@@ -280,7 +280,7 @@ const SHARED_CSS = `
   }
   .form-group input:focus {
     outline: none;
-    border-color: #FFD439;
+    border-color: #F9C710;
   }
   .info-box {
     background: #1a1a1a;
@@ -303,13 +303,13 @@ const SHARED_CSS = `
   .code-display {
     text-align: center;
     font-size: 48px;
-    color: #FFD439;
+    color: #F9C710;
     font-weight: bold;
     padding: 25px;
     background: #1a1a1a;
     border-radius: 10px;
     margin: 15px 0;
-    border: 2px solid #FFD439;
+    border: 2px solid #F9C710;
     letter-spacing: 10px;
   }
   .success-icon {
@@ -379,7 +379,7 @@ const SHARED_CSS = `
     margin: 10px 0;
   }
   .option-card h3 {
-    color: #FFD439;
+    color: #F9C710;
     font-size: 18px;
     margin-bottom: 5px;
   }
@@ -392,7 +392,7 @@ const SHARED_CSS = `
     padding: 15px;
     border-radius: 8px;
     margin: 10px 0;
-    border: 1px solid #FFD439;
+    border: 1px solid #F9C710;
   }
   .qr-container {
     text-align: center;
@@ -406,7 +406,7 @@ const SHARED_CSS = `
     max-width: 250px;
   }
   #kiosk-clock {
-    color: #FFD439;
+    color: #F9C710;
     font-weight: bold;
   }
   #kiosk-countdown {
@@ -429,7 +429,7 @@ const SHARED_CSS = `
     width: 40px;
     height: 40px;
     border: 4px solid #333333;
-    border-top: 4px solid #FFD439;
+    border-top: 4px solid #F9C710;
     border-radius: 50%;
     -webkit-animation: spin 1s linear infinite;
     animation: spin 1s linear infinite;
@@ -444,7 +444,7 @@ const SHARED_CSS = `
     .hero-btn { min-height: 110px; max-width: 100%; }
     .hero-btn-label { font-size: 24px; }
     .hero-btn-icon { font-size: 36px; }
-    .header-logo { width: 40px; height: 40px; }
+    .header-logo { height: 36px; width: auto; }
     .header h1 { font-size: 24px; }
     .home-brand-logo { width: 60px; }
     .home-brand-text h1 { font-size: 36px; letter-spacing: 3px; }
@@ -488,7 +488,7 @@ const KIOSK_JS = `
     if (remainingSeconds <= 15) {
       el.style.color = '#ff6b6b';
     } else if (remainingSeconds <= 30) {
-      el.style.color = '#FFD439';
+      el.style.color = '#F9C710';
     }
   }
 
