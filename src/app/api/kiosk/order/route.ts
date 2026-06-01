@@ -45,25 +45,7 @@ export async function POST(request: NextRequest) {
     // Clean phone number
     const cleanPhone = recipientPhone.replace(/[^0-9+]/g, '');
 
-    // Get first available device
-    const device = await db.device.findFirst({
-      where: { status: 'ONLINE' },
-      include: {
-        boxes: {
-          where: { status: 'AVAILABLE', size: boxSize },
-          take: 1,
-        },
-      },
-    });
-
-    if (!device || device.boxes.length === 0) {
-      return NextResponse.json({
-        success: false,
-        error: 'No available lockers for this box size. Please try a different size.',
-      }, { status: 400 });
-    }
-
-    // Get Bestwond credentials
+    // Get Bestwond credentials (from device or global settings)
     const config = await getConfigAsync();
     if (!config.appId || !config.appSecret) {
       return NextResponse.json({
@@ -72,34 +54,35 @@ export async function POST(request: NextRequest) {
       }, { status: 500 });
     }
 
-    // Generate order numbers
-    const orderNumber = generateOrderNumber();
-    const saveCode = generateTrackingCode(); // 6-digit save code
-    const pickCode = generateTrackingCode(); // 6-digit pickup code
+    // Find the device - prefer ONLINE, but also accept any device
+    // The Bestwond API will handle the actual box allocation
+    let device = await db.device.findFirst({
+      where: { status: 'ONLINE' },
+    });
 
-    // Create order via Bestwond Express API
-    let boxName = device.boxes[0].boxNumber.toString().padStart(2, '0');
-    let bestwondOrderNo = orderNumber;
-
-    try {
-      const bestwondResult = await setSaveOrderWithCredentials(
-        device.deviceId,
-        orderNumber,
-        boxSize as 'S' | 'M' | 'L' | 'XL',
-        config
-      );
-
-      if (bestwondResult.code === 0 && bestwondResult.data) {
-        // Use Bestwond's codes if provided
-        boxName = bestwondResult.data.box_name || boxName;
-        bestwondOrderNo = bestwondResult.data.order_no || orderNumber;
-      }
-    } catch (bestwondError) {
-      console.error('Bestwond order creation error:', bestwondError);
-      // Continue with local order creation
+    // If no ONLINE device, try any device with a deviceId matching Bestwond config
+    if (!device) {
+      device = await db.device.findFirst({
+        where: { deviceId: config.deviceId },
+      });
     }
 
-    // Handle courier drop-off
+    // If still no device, try any device at all
+    if (!device) {
+      device = await db.device.findFirst();
+    }
+
+    if (!device) {
+      return NextResponse.json({
+        success: false,
+        error: 'No locker device found. Please contact support.',
+      }, { status: 500 });
+    }
+
+    // The device ID to use for Bestwond API calls
+    const bestwondDeviceId = device.deviceId || config.deviceId;
+
+    // Handle courier validation BEFORE calling Bestwond API
     let courier: Awaited<ReturnType<typeof db.courier.findUnique>> = null;
     let courierBalance = 0;
 
@@ -142,6 +125,65 @@ export async function POST(request: NextRequest) {
       courierBalance = courier.balance - boxPrice;
     }
 
+    // Generate order numbers
+    const orderNumber = generateOrderNumber();
+    const saveCode = generateTrackingCode(); // 6-digit save code
+    const pickCode = generateTrackingCode(); // 6-digit pickup code
+
+    // Call Bestwond Express API to create the order and allocate a box
+    // The Bestwond API is the SOURCE OF TRUTH for box availability
+    let boxName = '';
+    let bestwondOrderNo = orderNumber;
+    let bestwondSaveCode = saveCode;
+    let bestwondPickCode = pickCode;
+    let bestwondSuccess = false;
+
+    try {
+      console.log(`[Kiosk Order] Calling Bestwond setSaveOrder: device=${bestwondDeviceId}, order=${orderNumber}, size=${boxSize}`);
+
+      const bestwondResult = await setSaveOrderWithCredentials(
+        bestwondDeviceId,
+        orderNumber,
+        boxSize as 'S' | 'M' | 'L' | 'XL',
+        config
+      );
+
+      console.log(`[Kiosk Order] Bestwond response: code=${bestwondResult.code}, msg=${bestwondResult.msg}`, 
+        bestwondResult.data ? `box_name=${bestwondResult.data.box_name}` : 'no data');
+
+      if (bestwondResult.code === 0 && bestwondResult.data) {
+        // Bestwond successfully allocated a box
+        boxName = bestwondResult.data.box_name || '';
+        bestwondOrderNo = bestwondResult.data.order_no || orderNumber;
+        bestwondSaveCode = bestwondResult.data.save_code || saveCode;
+        bestwondPickCode = bestwondResult.data.pick_code || pickCode;
+        bestwondSuccess = true;
+      } else {
+        // Bestwond API returned an error (e.g., no boxes available for this size)
+        const errorMsg = bestwondResult.msg || 'Bestwond API error';
+        console.error(`[Kiosk Order] Bestwond API error: ${errorMsg}`);
+
+        // Return a user-friendly error
+        if (errorMsg.includes('no box') || errorMsg.includes('full') || errorMsg.includes('no available')) {
+          return NextResponse.json({
+            success: false,
+            error: 'No available lockers for this box size. Please try a different size.',
+          }, { status: 400 });
+        }
+
+        return NextResponse.json({
+          success: false,
+          error: `Locker allocation failed: ${errorMsg}. Please try again.`,
+        }, { status: 400 });
+      }
+    } catch (bestwondError) {
+      console.error('[Kiosk Order] Bestwond API exception:', bestwondError);
+      return NextResponse.json({
+        success: false,
+        error: 'Failed to communicate with locker system. Please try again.',
+      }, { status: 500 });
+    }
+
     // Find or create customer
     let customer = await db.user.findFirst({
       where: { phone: cleanPhone },
@@ -158,18 +200,46 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Get the box
-    const box = device.boxes[0];
+    // Try to find or create the box record in our local DB
+    // The box may not exist if sync hasn't run, so we upsert it
+    const boxNumber = parseInt(boxName, 10) || 0;
+    let box: { id: string; boxNumber: number; status: string; size: string | null } | null = null;
+
+    if (boxNumber > 0) {
+      try {
+        box = await db.box.upsert({
+          where: {
+            deviceId_boxNumber: {
+              deviceId: device.id,
+              boxNumber: boxNumber,
+            },
+          },
+          update: {
+            status: 'RESERVED',
+            size: boxSize,
+          },
+          create: {
+            deviceId: device.id,
+            boxNumber: boxNumber,
+            status: 'RESERVED',
+            size: boxSize,
+          },
+        });
+      } catch (boxError) {
+        console.error('[Kiosk Order] Error upserting box:', boxError);
+        // Continue without a box record - the Bestwond order is already created
+      }
+    }
 
     // Create Express Order record
     const expressOrder = await db.expressOrder.create({
       data: {
         orderNo: bestwondOrderNo,
-        deviceId: device.deviceId,
+        deviceId: bestwondDeviceId,
         boxName,
         boxSize,
-        saveCode,
-        pickCode,
+        saveCode: bestwondSaveCode,
+        pickCode: bestwondPickCode,
         status: 'CREATED',
         customerName: senderName || 'Customer',
         customerPhone: cleanPhone,
@@ -181,13 +251,13 @@ export async function POST(request: NextRequest) {
     const order = await db.order.create({
       data: {
         orderNumber: bestwondOrderNo,
-        trackingCode: pickCode,
+        trackingCode: bestwondPickCode,
         customerId: customer.id,
         customerName: senderName || customer.name || 'Customer',
         customerPhone: cleanPhone,
         deviceId: device.id,
-        boxId: box.id,
-        boxNumber: parseInt(boxName),
+        boxId: box?.id,
+        boxNumber: boxNumber || undefined,
         courierId: courier?.id,
         courierName: courier?.name,
         packageSize: boxSize,
@@ -196,17 +266,19 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Mark box as reserved
-    await db.box.update({
-      where: { id: box.id },
-      data: { status: 'RESERVED' },
-    });
-
-    // Update device available count
-    await db.device.update({
-      where: { id: device.id },
-      data: { availableBoxes: { decrement: 1 } },
-    });
+    // Update device available count (best effort)
+    try {
+      await db.device.update({
+        where: { id: device.id },
+        data: {
+          availableBoxes: { decrement: 1 },
+          // If device was not ONLINE, update it since Bestwond API worked
+          ...(device.status !== 'ONLINE' ? { status: 'ONLINE', lastHeartbeat: new Date() } : {}),
+        },
+      });
+    } catch (deviceError) {
+      console.error('[Kiosk Order] Error updating device:', deviceError);
+    }
 
     // Deduct from courier balance if applicable
     if (courier) {
@@ -227,7 +299,7 @@ export async function POST(request: NextRequest) {
       data: {
         userId: customer.id,
         action: 'KIOSK_ORDER_CREATED',
-        description: `Kiosk order ${bestwondOrderNo} created. Box: ${boxName}, Size: ${boxSize}`,
+        description: `Kiosk order ${bestwondOrderNo} created. Box: ${boxName}, Size: ${boxSize}, SaveCode: ${bestwondSaveCode}`,
         orderId: order.id,
       },
     });
@@ -235,8 +307,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       orderNo: bestwondOrderNo,
-      saveCode,
-      pickCode,
+      saveCode: bestwondSaveCode,
+      pickCode: bestwondPickCode,
       boxName,
       boxSize,
       deviceName: device.name,
