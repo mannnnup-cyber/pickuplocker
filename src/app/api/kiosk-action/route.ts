@@ -1330,18 +1330,23 @@ async function handleOpenAfterPayment(formData: FormData): Promise<NextResponse>
 
 // Hash PIN for verification — must match the hashing in /api/courier/pin and /api/courier/login
 function hashPin(pin: string, phone: string): string {
+  const secret = process.env.NEXTAUTH_SECRET
+  if (!secret) {
+    throw new Error("NEXTAUTH_SECRET environment variable is required")
+  }
   return crypto
-    .createHmac('sha256', process.env.NEXTAUTH_SECRET || 'pickup-secret-key')
+    .createHmac('sha256', secret)
     .update(`${phone}:${pin}`)
     .digest('hex');
 }
 
 async function handleCourierAuth(formData: FormData): Promise<NextResponse> {
-  const pin = formData.get('pin') as string;
-  const phone = formData.get('phone') as string;
+  try {
+    const pin = formData.get('pin') as string;
+    const phone = formData.get('phone') as string;
 
-  if (!pin || !/^\d{4}$/.test(pin)) {
-    return htmlResponse(`
+    if (!pin || !/^\d{4}$/.test(pin)) {
+      return htmlResponse(`
       <h2 class="title">Invalid PIN</h2>
       <p class="error-msg">Please enter a valid 4-digit courier PIN.</p>
       <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
@@ -1486,6 +1491,19 @@ async function handleCourierAuth(formData: FormData): Promise<NextResponse> {
     </div>
     <a href="/kiosk-lite" class="btn btn-back" style="margin-top:20px; display:inline-block;">Cancel</a>
   `);
+  } catch (error) {
+    console.error('[Courier Auth] Error:', error);
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    return htmlResponse(`
+      <h2 class="title">Login Error</h2>
+      <p class="error-msg">Something went wrong during login. Please try again.</p>
+      <div class="info-box">
+        <p style="text-align:center; font-size:14px; color:#999;">${esc(errorMsg)}</p>
+      </div>
+      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+    `);
+  }
 }
 
 // ============================================
@@ -1587,7 +1605,8 @@ async function handleCourierSetPin(formData: FormData): Promise<NextResponse> {
 // DROP-OFF: Courier drop-off
 // ============================================
 async function handleCourierDropoff(formData: FormData): Promise<NextResponse> {
-  const courierId = formData.get('courierId') as string;
+  try {
+    const courierId = formData.get('courierId') as string;
   const boxSize = formData.get('boxSize') as string;
 
   if (!courierId || !boxSize) {
@@ -1814,6 +1833,19 @@ async function handleCourierDropoff(formData: FormData): Promise<NextResponse> {
     </div>
     <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
   `);
+  } catch (error) {
+    console.error('[Courier Drop-Off] Error:', error);
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    return htmlResponse(`
+      <h2 class="title">Drop-Off Error</h2>
+      <p class="error-msg">Something went wrong processing your drop-off. Please try again.</p>
+      <div class="info-box">
+        <p style="text-align:center; font-size:14px; color:#999;">${esc(errorMsg)}</p>
+      </div>
+      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+      <a href="/kiosk-lite?action=courier-login" class="btn btn-back" style="margin-top:15px; display:inline-block;">Try Again</a>
+    `);
+  }
 }
 
 // ============================================
