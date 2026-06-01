@@ -628,13 +628,6 @@ export async function GET(request: NextRequest) {
   // ---- HOME SCREEN (centered, full logo, big hero buttons) ----
   if (!action) {
     return new NextResponse(renderPage(`
-      <div class="home-brand-area">
-        <img src="/logo-icon.png" alt="Pickup Logo" class="home-logo">
-        <div class="home-brand-text">
-          <h1>PICK<span class="brand-gold">UP</span></h1>
-          <p>Jamaica</p>
-        </div>
-      </div>
       <form action="/api/kiosk-action" method="POST" style="width:100%;max-width:420px;">
         <input type="hidden" name="flow" value="dropoff">
         <input type="hidden" name="step" value="1">

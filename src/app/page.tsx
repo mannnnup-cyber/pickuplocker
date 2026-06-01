@@ -713,9 +713,9 @@ export default function KioskPage() {
       <header className="p-6">
         <div className="flex items-center justify-center gap-3">
           <img 
-            src="/pickup-icon-logo.png" 
+            src="/logo-icon.png" 
             alt="Pickup Logo" 
-            className="h-14 w-auto object-contain"
+            className="h-20 w-auto object-contain"
           />
           <div>
             <h1 className="text-3xl font-bold text-white uppercase tracking-tight" style={{ fontFamily: "Montserrat, sans-serif" }}>
