@@ -209,7 +209,10 @@ export async function GET(request: NextRequest) {
     const testEmail = searchParams.get('test');
     
     // Verify cron secret
-    const cronSecret = process.env.CRON_SECRET || 'pickup-cron-2024';
+    const cronSecret = process.env.CRON_SECRET;
+    if (!cronSecret) {
+      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+    }
     if (secret !== cronSecret && !testEmail) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

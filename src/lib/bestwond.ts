@@ -122,8 +122,8 @@ export function verifyWebhookSignature(payload: string, signature: string): bool
   const config = getConfig();
   
   if (!config.appSecret) {
-    console.warn('Bestwond app secret not configured, skipping webhook signature verification');
-    return true; // Allow in development
+    console.error('Bestwond app secret not configured - webhook verification failed');
+    return false; // Reject unsigned webhooks in production
   }
   
   // Bestwond signs webhooks with SHA512(payload + appSecret)

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/prisma';
+import { db as prisma } from '@/lib/db';
 import { sendSMS } from '@/lib/textbee';
 
 // GET SMS queue (pending, failed, sent messages)

@@ -11,8 +11,12 @@ import crypto from 'crypto';
 
 // Hash PIN for storage
 function hashPin(pin: string, phone: string): string {
+  const secret = process.env.NEXTAUTH_SECRET
+  if (!secret) {
+    throw new Error("NEXTAUTH_SECRET environment variable is required")
+  }
   return crypto
-    .createHmac('sha256', process.env.NEXTAUTH_SECRET || 'pickup-secret-key')
+    .createHmac('sha256', secret)
     .update(`${phone}:${pin}`)
     .digest('hex');
 }

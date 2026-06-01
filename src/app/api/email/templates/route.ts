@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/prisma';
+import { db as prisma } from '@/lib/db';
 
 // Default email templates
 const DEFAULT_TEMPLATES = [

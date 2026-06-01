@@ -3,7 +3,10 @@ import { cookies } from "next/headers"
 import { jwtVerify } from "jose"
 
 const getSecretKey = () => {
-  const secret = process.env.AUTH_SECRET || "pickup-locker-secret-key-change-in-production"
+  const secret = process.env.AUTH_SECRET
+  if (!secret) {
+    throw new Error("AUTH_SECRET environment variable is required")
+  }
   return new TextEncoder().encode(secret)
 }
 

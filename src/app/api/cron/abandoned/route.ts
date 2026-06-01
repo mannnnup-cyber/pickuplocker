@@ -23,7 +23,11 @@ export async function GET(request: NextRequest) {
     const secret = searchParams.get('secret');
     
     // Verify cron secret to prevent unauthorized access
-    const cronSecret = process.env.CRON_SECRET || 'pickup-cron-2024';
+    const cronSecret = process.env.CRON_SECRET;
+    if (!cronSecret) {
+      console.error('CRON_SECRET environment variable is not set');
+      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+    }
     if (secret !== cronSecret) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

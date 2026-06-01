@@ -1,7 +1,7 @@
 // Email Notification System using Resend
 import { Resend } from 'resend';
 import { getSetting } from './settings';
-import prisma from './prisma';
+import { db } from './db';
 
 interface EmailConfig {
   apiKey: string;
@@ -49,13 +49,13 @@ function getResendClient(apiKey: string) {
 
 // Get system user for notifications
 async function getSystemUser() {
-  let systemUser = await prisma.user.findFirst({
+  let systemUser = await db.user.findFirst({
     where: { email: 'system@pickupja.com' }
   });
   
   if (!systemUser) {
     try {
-      systemUser = await prisma.user.create({
+      systemUser = await db.user.create({
         data: {
           email: 'system@pickupja.com',
           name: 'System',
@@ -63,7 +63,7 @@ async function getSystemUser() {
         }
       });
     } catch {
-      systemUser = await prisma.user.findFirst({
+      systemUser = await db.user.findFirst({
         where: { email: 'system@pickupja.com' }
       });
     }
@@ -86,7 +86,7 @@ async function saveEmailNotification(
     const systemUser = await getSystemUser();
     if (!systemUser) return;
 
-    await prisma.notification.create({
+    await db.notification.create({
       data: {
         userId: systemUser.id,
         type: 'EMAIL',
@@ -186,7 +186,7 @@ export async function sendTemplateEmail(
     }
 
     // Get template from database
-    const template = await prisma.emailTemplate.findUnique({
+    const template = await db.emailTemplate.findUnique({
       where: { key: templateKey }
     });
 
@@ -338,7 +338,7 @@ export async function sendDropoffCodeEmail(
 // Get email history from notifications
 export async function getEmailHistory(limit: number = 50) {
   try {
-    const notifications = await prisma.notification.findMany({
+    const notifications = await db.notification.findMany({
       where: { type: 'EMAIL' },
       orderBy: { createdAt: 'desc' },
       take: limit,
@@ -366,13 +366,13 @@ export async function getEmailStats() {
     today.setHours(0, 0, 0, 0);
 
     const [sentToday, totalSent, totalFailed] = await Promise.all([
-      prisma.notification.count({
+      db.notification.count({
         where: { type: 'EMAIL', status: 'SENT', sentAt: { gte: today } }
       }),
-      prisma.notification.count({
+      db.notification.count({
         where: { type: 'EMAIL', status: 'SENT' }
       }),
-      prisma.notification.count({
+      db.notification.count({
         where: { type: 'EMAIL', status: 'FAILED' }
       }),
     ]);

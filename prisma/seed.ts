@@ -3,23 +3,31 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-  // Create the device with correct Bestwond credentials
+  // Create the device - credentials from environment variables
+  const bestwondAppId = process.env.BESTWOND_APP_ID || '';
+  const bestwondAppSecret = process.env.BESTWOND_APP_SECRET || '';
+  const bestwondDeviceId = process.env.BESTWOND_DEVICE_ID || '2100018247';
+
+  if (!bestwondAppId || !bestwondAppSecret) {
+    console.warn('WARNING: BESTWOND_APP_ID and BESTWOND_APP_SECRET not set. Device will be created without API credentials.');
+  }
+
   const device1 = await prisma.device.upsert({
-    where: { deviceId: '2100018247' },
+    where: { deviceId: bestwondDeviceId },
     update: {
-      bestwondAppId: 'bw_86b83996147111f',
-      bestwondAppSecret: '86b83aa4147111f18bd500163e198b20',
+      bestwondAppId,
+      bestwondAppSecret,
     },
     create: {
-      deviceId: '2100018247',
+      deviceId: bestwondDeviceId,
       name: 'Pickup Locker - Jamaica',
       location: 'Jamaica',
       description: 'Primary smart locker in Jamaica',
       totalBoxes: 36,
       availableBoxes: 28,
       status: 'ONLINE',
-      bestwondAppId: 'bw_86b83996147111f',
-      bestwondAppSecret: '86b83aa4147111f18bd500163e198b20',
+      bestwondAppId,
+      bestwondAppSecret,
     },
   });
 
@@ -124,10 +132,10 @@ async function main() {
 
   // Create admin user
   await prisma.user.upsert({
-    where: { email: 'admin@dirtyhand.com' },
+    where: { email: 'admin@pickupja.com' },
     update: {},
     create: {
-      email: 'admin@dirtyhand.com',
+      email: 'admin@pickupja.com',
       name: 'Admin User',
       role: 'ADMIN',
     },
@@ -183,10 +191,6 @@ async function main() {
         { key: 'brand_name', value: 'Pickup', description: 'Brand name for display' },
         { key: 'contact_phone', value: '876-XXX-XXXX', description: 'Contact phone number' },
         { key: 'contact_email', value: 'support@pickupja.com', description: 'Contact email address' },
-        // Bestwond settings
-        { key: 'bestwond_appId', value: 'bw_86b83996147111f', description: 'Bestwond App ID' },
-        { key: 'bestwond_appSecret', value: '86b83aa4147111f18bd500163e198b20', description: 'Bestwond App Secret' },
-        { key: 'bestwond_deviceId', value: '2100018247', description: 'Bestwond Device ID' },
       ],
     });
   }
@@ -200,7 +204,7 @@ async function main() {
           key: 'pickup_notification',
           name: 'Pickup Notification',
           description: 'Sent when a package is stored in the locker',
-          template: 'Hi {{customerName}}! Your package is ready for pickup.\n\n📦 Tracking Code: {{trackingCode}}\n📍 Location: {{location}}\n⏰ Free pickup until: {{expiryDate}}\n\nVisit pickupja.com and enter your code to collect.\n\n{{signature}}',
+          template: 'Hi {{customerName}}! Your package is ready for pickup.\n\nTracking Code: {{trackingCode}}\nLocation: {{location}}\nFree pickup until: {{expiryDate}}\n\nVisit pickupja.com and enter your code to collect.\n\n{{signature}}',
           variables: JSON.stringify(['customerName', 'trackingCode', 'location', 'expiryDate', 'signature']),
           isActive: true,
         },
@@ -239,7 +243,7 @@ async function main() {
   console.log('  - 3 Couriers (Knutsford Express, ZipMail, Dirty Hand Designs)');
   console.log('  - 3 Users (2 customers, 1 admin)');
   console.log('  - 2 Sample orders');
-  console.log('  - 11 System settings (including Bestwond credentials)');
+  console.log('  - System settings');
   console.log('  - 4 SMS templates');
 }
 

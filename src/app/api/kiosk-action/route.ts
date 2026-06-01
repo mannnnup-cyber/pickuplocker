@@ -768,7 +768,7 @@ async function handleBuyCreatePayment(formData: FormData): Promise<NextResponse>
 
   let paymentId = '';
   let qrCodeDataUrl = '';
-  let isDemoMode = true;
+  let isDemoMode = false; // Never allow demo mode - require real payment
   let displayAmount = amount;
 
   if (effectiveClientId && effectiveSecretKey) {
@@ -869,48 +869,24 @@ async function handleBuyCreatePayment(formData: FormData): Promise<NextResponse>
         qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
       }
     } catch (dimepayError) {
-      console.error('DimePay SDK error, falling back to demo:', dimepayError);
+      console.error('DimePay SDK error:', dimepayError);
+      // Do NOT fall back to demo mode - show error to user
+      return htmlResponse(`
+        <h2 class="title">Payment Unavailable</h2>
+        <p class="subtitle">We're unable to process payments right now. Please try again later or contact support.</p>
+        <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Go Back</a>
+      `);
     }
   }
 
-  // Demo mode fallback
-  if (isDemoMode) {
-    paymentId = `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-    const demoPaymentUrl = `https://pickuplocker.vercel.app/pay/${paymentId}`;
-    qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
-
-    // Store demo payment in DB
-    await db.setting.upsert({
-      where: { key: `demo_payment_${paymentId}` },
-      create: {
-        key: `demo_payment_${paymentId}`,
-        value: JSON.stringify({
-          saveCode,
-          pickCode,
-          boxSize,
-          phone: cleanPhone,
-          email: email || undefined,
-          customerId: customer.id,
-          amount,
-          createdAt: Date.now(),
-          status: 'PENDING',
-        }),
-        description: `Demo Payment: ${paymentId}`,
-      },
-      update: {
-        value: JSON.stringify({
-          saveCode,
-          pickCode,
-          boxSize,
-          phone: cleanPhone,
-          email: email || undefined,
-          customerId: customer.id,
-          amount,
-          createdAt: Date.now(),
-          status: 'PENDING',
-        }),
-      },
-    });
+  // If DimePay is not configured at all, show error instead of demo mode
+  if (!effectiveClientId || !effectiveSecretKey) {
+    console.error('DimePay not configured - cannot process payment');
+    return htmlResponse(`
+      <h2 class="title">Payment Unavailable</h2>
+      <p class="subtitle">Payment gateway is not configured. Please contact support.</p>
+      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Go Back</a>
+    `);
   }
 
   // Show QR code page with AJAX polling (QR stays visible while checking payment)
@@ -921,7 +897,7 @@ async function handleBuyCreatePayment(formData: FormData): Promise<NextResponse>
   return htmlResponse(
     `
     <h2 class="title">Scan to Pay</h2>
-    <p class="subtitle">${isDemoMode ? '[DEMO MODE] ' : ''}JMD $${displayAmount} for ${boxSize} Box</p>
+    <p class="subtitle">JMD $${displayAmount} for ${boxSize} Box</p>
     ${qrImg}
     <div class="info-box">
       <p style="text-align:center;">Scan the QR code with your phone to complete payment.</p>

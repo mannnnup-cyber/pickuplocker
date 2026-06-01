@@ -52,7 +52,7 @@
   },
   "crons": [
     {
-      "path": "/api/cron/storage-notifications?key=pickup-cron-2024",
+      "path": "/api/cron/storage-notifications",
       "schedule": "0 9 * * *"
     }
   ]

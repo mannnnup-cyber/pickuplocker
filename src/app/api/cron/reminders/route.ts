@@ -16,7 +16,7 @@ import { sendStorageFeeNotification, sendOverdueReminder } from '@/lib/textbee';
  */
 
 // Simple auth for cron jobs
-const CRON_SECRET = process.env.CRON_SECRET || 'pickup-cron-secret-2025';
+const CRON_SECRET = process.env.CRON_SECRET;
 
 export async function GET(request: NextRequest) {
   try {
@@ -24,6 +24,11 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const secret = searchParams.get('secret');
     
+    if (!CRON_SECRET) {
+      console.error('CRON_SECRET environment variable is not set');
+      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+    }
+
     if (secret !== CRON_SECRET) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -157,6 +162,10 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const { secret, orderId } = body;
   
+  if (!CRON_SECRET) {
+    return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+  }
+
   if (secret !== CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
