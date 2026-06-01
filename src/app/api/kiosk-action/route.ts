@@ -792,8 +792,8 @@ async function handleBuyCreatePayment(formData: FormData): Promise<NextResponse>
           description: `Drop-off Credit - ${boxSize} Box`,
           customerPhone: cleanPhone,
           customerEmail: email || undefined,
-          redirectUrl: `https://pickuplocker.vercel.app/kiosk?payment=success`,
-          webhookUrl: `https://pickuplocker.vercel.app/api/webhooks/dimepay`,
+          redirectUrl: `https://pickupja.com/kiosk?payment=success`,
+          webhookUrl: `https://pickupja.com/api/webhooks/dimepay`,
           passFeeToCustomer: config.passFeeToCustomer,
           metadata: {
             type: 'dropoff_credit',
@@ -865,7 +865,7 @@ async function handleBuyCreatePayment(formData: FormData): Promise<NextResponse>
         });
 
         // Generate QR code from SDK payment URL
-        const paymentUrl = `https://pickuplocker.vercel.app/pay/${orderId}`;
+        const paymentUrl = `https://pickupja.com/pay/${orderId}`;
         qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
       }
     } catch (dimepayError) {
@@ -1961,7 +1961,7 @@ async function handlePayStorageFee(formData: FormData): Promise<NextResponse> {
 
   // Create demo payment for storage fee
   const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-  const paymentUrl = `https://pickuplocker.vercel.app/pay/${paymentId}`;
+  const paymentUrl = `https://pickupja.com/pay/${paymentId}`;
   const qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
 
   // Store in DB
@@ -2040,7 +2040,7 @@ async function handlePayStorageFeeQR(formData: FormData, request: NextRequest): 
   // Create QR payment for storage fee
   const storageFee = amount || order.storageFee || 0;
   const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-  const paymentUrl = `https://pickuplocker.vercel.app/pay/${paymentId}`;
+  const paymentUrl = `https://pickupja.com/pay/${paymentId}`;
   const qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
 
   // Store payment session

@@ -629,7 +629,7 @@ export default function KioskPage() {
       if (data.success) {
         if (data.requirePinSetup) {
           // First-time login - need to set PIN
-          setError(`Welcome ${data.courierName}! Please visit pickuplocker.vercel.app/courier/pin?courierId=${data.courierId} to set your PIN.`)
+          setError(`Welcome ${data.courierName}! Please visit pickupja.com/courier/pin?courierId=${data.courierId} to set your PIN.`)
         } else {
           // Login successful
           setCourierSession({

@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
     // Send temp PIN via SMS if generated
     if (tempPin && phone) {
       try {
-        const message = `Welcome to Pickup! Your temporary login PIN is ${tempPin}. Use this to set your permanent PIN at pickuplocker.vercel.app/courier/pin?courierId=${courier.id}`;
+        const message = `Welcome to Pickup! Your temporary login PIN is ${tempPin}. Use this to set your permanent PIN at pickupja.com/courier/pin?courierId=${courier.id}`;
         await sendSMS(phone, message);
       } catch (smsError) {
         console.error('Failed to send temp PIN SMS:', smsError);
@@ -286,7 +286,7 @@ export async function PUT(request: NextRequest) {
       // Send new temp PIN via SMS
       if (courier.phone) {
         try {
-          const message = `Your new temporary PIN is ${newTempPin}. Use this to set your permanent PIN at pickuplocker.vercel.app/courier/pin?courierId=${id}`;
+          const message = `Your new temporary PIN is ${newTempPin}. Use this to set your permanent PIN at pickupja.com/courier/pin?courierId=${id}`;
           await sendSMS(courier.phone, message);
         } catch (smsError) {
           console.error('Failed to send temp PIN SMS:', smsError);

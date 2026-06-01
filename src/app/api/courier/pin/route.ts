@@ -202,7 +202,7 @@ export async function PUT(request: NextRequest) {
 
     // Send SMS
     const message = adminInitiated
-      ? `Your temporary PIN is ${tempPin}. Use this to set your permanent PIN at pickuplocker.vercel.app/courier/pin or at the kiosk. Valid for 24 hours.`
+      ? `Your temporary PIN is ${tempPin}. Use this to set your permanent PIN at pickupja.com/courier/pin or at the kiosk. Valid for 24 hours.`
       : `Your PIN reset request. Temporary PIN: ${tempPin}. Use this to set your new PIN. Valid for 24 hours.`;
 
     try {

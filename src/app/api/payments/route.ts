@@ -185,8 +185,8 @@ export async function POST(request: NextRequest) {
         description: description || `Storage Fee Payment`,
         customerEmail,
         customerPhone,
-        redirectUrl: `${process.env.NEXTAUTH_URL || 'https://pickuplocker.vercel.app'}/dashboard?payment=success`,
-        webhookUrl: `${process.env.NEXTAUTH_URL || 'https://pickuplocker.vercel.app'}/api/webhooks/dimepay`,
+        redirectUrl: `${process.env.NEXTAUTH_URL || 'https://pickupja.com'}/dashboard?payment=success`,
+        webhookUrl: `${process.env.NEXTAUTH_URL || 'https://pickupja.com'}/api/webhooks/dimepay`,
         passFeeToCustomer,
       }, config);
 

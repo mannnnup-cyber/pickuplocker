@@ -122,7 +122,7 @@ export async function GET() {
       message: hasSdkCredentials 
         ? 'Ready for SDK/Widget integration. Use initPayment() with the SDK config.'
         : 'Using Direct API mode. Consider switching to SDK credentials for embedded widget.',
-      note: 'Webhook URL: https://pickuplocker.vercel.app/api/webhooks/dimepay'
+      note: 'Webhook URL: https://pickupja.com/api/webhooks/dimepay'
     });
 
     const allTestsPassed = results.tests.every((t: {success: boolean}) => t.success);

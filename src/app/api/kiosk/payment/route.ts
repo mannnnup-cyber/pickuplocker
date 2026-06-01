@@ -380,7 +380,7 @@ async function createDropoffPayment(boxSize: string, phone: string, email?: stri
 
     try {
       // Always use production URL for QR codes (users scan with their phones)
-      const baseUrl = 'https://pickuplocker.vercel.app';
+      const baseUrl = 'https://pickupja.com';
       const orderId = `DROPOFF-${Date.now()}`;
 
       // Create SDK config
@@ -502,7 +502,7 @@ async function createDropoffPayment(boxSize: string, phone: string, email?: stri
   // Demo mode fallback
   console.log('[Kiosk Payment] Using demo mode - no valid DimePay credentials');
   const paymentId = `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-  const demoPaymentUrl = `https://pickuplocker.vercel.app/pay/${paymentId}`;
+  const demoPaymentUrl = `https://pickupja.com/pay/${paymentId}`;
 
   // Generate QR code
   let qrCodeDataUrl: string | undefined;
@@ -575,7 +575,7 @@ async function createStorageFeePayment(orderId: string, amount: number, phone?: 
   }
 
   const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-  const demoPaymentUrl = `https://pickuplocker.vercel.app/pay/${paymentId}`;
+  const demoPaymentUrl = `https://pickupja.com/pay/${paymentId}`;
 
   let qrCodeDataUrl: string | undefined;
   try {

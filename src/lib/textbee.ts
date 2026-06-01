@@ -506,7 +506,7 @@ export async function sendDropoffConfirmation(
   location: string,
   freeDays: number = 3
 ): Promise<SMSResult> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
   return sendTemplateSMS(phone, 'dropoff_confirmation', {
     customerName,
     pickCode,
@@ -526,7 +526,7 @@ export async function sendFreePickupReminder(
   pickCode: string,
   location: string
 ): Promise<SMSResult> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
   return sendTemplateSMS(phone, 'free_pickup_reminder', {
     customerName,
     pickCode,
@@ -547,7 +547,7 @@ export async function sendStorageFeeApplied(
   fee: number,
   paymentRef: string
 ): Promise<SMSResult> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
   return sendTemplateSMS(phone, 'storage_fee_applied', {
     customerName,
     pickCode,

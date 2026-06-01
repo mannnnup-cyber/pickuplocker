@@ -271,7 +271,7 @@ export async function createSDKPayment(
       };
     }
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
     
     let finalAmount = data.amount;
     let originalAmount = data.amount;
@@ -346,7 +346,7 @@ export async function createStorageFeePayment(
   },
   config: DimePaySDKConfig
 ): Promise<DimePayResponse<PaymentResult & { sdkConfig: SDKInitConfig }>> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
   
   return createSDKPayment({
     amount: Math.round(data.amount * 100),
@@ -381,7 +381,7 @@ export async function createCourierTopupPayment(
   },
   config: DimePaySDKConfig
 ): Promise<DimePayResponse<PaymentResult & { sdkConfig: SDKInitConfig }>> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
   
   return createSDKPayment({
     amount: Math.round(data.amount * 100),
@@ -697,7 +697,7 @@ export async function tokenizeCard(
 
     const baseUrl = config.baseUrl || DIMEPAY_BASE_URL;
     const reference = `TOKENIZE-${Date.now()}`;
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickuplocker.vercel.app';
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
 
     // Create an SDK payment with tokenization flag
     // The QR page will include tokenize: true so DimePay returns a card token

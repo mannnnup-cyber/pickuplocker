@@ -5788,7 +5788,7 @@ function CouriersContent() {
                       {pinStatus.hasTempPin ? 'Regenerate Temporary PIN' : 'Generate Temporary PIN'}
                     </p>
                     <p className="text-sm text-gray-600">
-                      A new 4-digit temporary PIN will be sent to the courier's phone via SMS. They can use it to set their permanent PIN at the kiosk or at pickuplocker.vercel.app/courier/pin. The temp PIN expires in 24 hours.
+                      A new 4-digit temporary PIN will be sent to the courier's phone via SMS. They can use it to set their permanent PIN at the kiosk or at pickupja.com/courier/pin. The temp PIN expires in 24 hours.
                     </p>
                     <div className="flex gap-2">
                       <Button
@@ -5848,7 +5848,7 @@ function CouriersContent() {
               {/* Info Box */}
               <div className="bg-blue-50 rounded-md p-3">
                 <p className="text-xs text-blue-700">
-                  Couriers can also set or change their PIN at pickuplocker.vercel.app/courier/pin using their phone number and temporary PIN.
+                  Couriers can also set or change their PIN at pickupja.com/courier/pin using their phone number and temporary PIN.
                 </p>
               </div>
             </div>
