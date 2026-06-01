@@ -82,7 +82,7 @@ export default function LoginPage() {
             <img
               src="/logo-icon.png"
               alt="Pickup Logo"
-              className="h-16 w-16 object-contain"
+              className="h-16 w-auto object-contain"
             />
             <div>
               <h1 className="text-4xl font-extrabold tracking-tight">

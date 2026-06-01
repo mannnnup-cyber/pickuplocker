@@ -50,8 +50,8 @@ const SHARED_CSS = `
     gap: 12px;
   }
   .header-logo {
-    height: 64px;
-    width: 64px;
+    height: 56px;
+    width: auto;
     -webkit-flex-shrink: 0;
     flex-shrink: 0;
     -o-object-fit: contain;
@@ -86,8 +86,8 @@ const SHARED_CSS = `
     margin-bottom: 30px;
   }
   .home-logo {
-    height: 80px;
-    width: 80px;
+    height: 110px;
+    width: auto;
     -webkit-flex-shrink: 0;
     flex-shrink: 0;
     -o-object-fit: contain;
@@ -450,10 +450,10 @@ const SHARED_CSS = `
     .hero-btn { min-height: 110px; max-width: 100%; }
     .hero-btn-label { font-size: 24px; }
     .hero-btn-icon { font-size: 36px; }
-    .header-logo { height: 48px; width: 48px; }
+    .header-logo { height: 44px; width: auto; }
     .header-text h1 { font-size: 22px; }
     .header-text p { font-size: 10px; }
-    .home-logo { height: 60px; width: 60px; }
+    .home-logo { height: 80px; width: auto; }
     .home-brand-text h1 { font-size: 30px; }
     .home-brand-text p { font-size: 11px; }
   }

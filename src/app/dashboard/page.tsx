@@ -978,17 +978,15 @@ function DashboardContent({ onNavigate }: { onNavigate: (tab: string) => void })
                 </Button>
                 <Button 
                   size="sm" 
-                  variant="outline"
                   onClick={() => onNavigate('express')}
-                  className="border-white text-white hover:bg-white hover:text-[#111111]"
+                  className="bg-transparent border-2 border-[#FFD439] text-[#FFD439] hover:bg-[#FFD439] hover:text-[#111111] font-bold"
                 >
                   <Key className="mr-1 h-3 w-3" /> Express Code
                 </Button>
                 <Button 
                   size="sm" 
-                  variant="outline"
                   onClick={() => onNavigate('devices')}
-                  className="border-white text-white hover:bg-white hover:text-[#111111]"
+                  className="bg-transparent border-2 border-[#FFD439] text-[#FFD439] hover:bg-[#FFD439] hover:text-[#111111] font-bold"
                 >
                   <Lock className="mr-1 h-3 w-3" /> Open Box
                 </Button>
