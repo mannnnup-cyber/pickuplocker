@@ -35,12 +35,14 @@ export async function POST(request: NextRequest) {
     clearSettingsCache();
 
     // Also try to create/update device in database
+    let deviceId: string | null = null;
     try {
       const existingDevice = await db.device.findFirst({
         where: { deviceId: deviceNumber },
       });
 
       if (existingDevice) {
+        deviceId = existingDevice.id;
         await db.device.update({
           where: { id: existingDevice.id },
           data: {
@@ -51,7 +53,7 @@ export async function POST(request: NextRequest) {
           },
         });
       } else {
-        await db.device.create({
+        const newDevice = await db.device.create({
           data: {
             deviceId: deviceNumber,
             name: name || `Locker ${deviceNumber}`,
@@ -62,6 +64,31 @@ export async function POST(request: NextRequest) {
             availableBoxes: 36,
           },
         });
+        deviceId = newDevice.id;
+      }
+
+      // Initialize boxes if device has no boxes yet
+      if (deviceId) {
+        const existingBoxes = await db.box.count({
+          where: { deviceId: deviceId },
+        });
+
+        if (existingBoxes === 0) {
+          // Create 36 boxes matching the standard locker layout
+          // Boxes 1-10: S, 11-20: M, 21-30: L, 31-36: XL
+          for (let i = 1; i <= 36; i++) {
+            const size = i <= 10 ? 'S' : i <= 20 ? 'M' : i <= 30 ? 'L' : 'XL';
+            await db.box.create({
+              data: {
+                deviceId: deviceId,
+                boxNumber: i,
+                status: 'AVAILABLE',
+                size: size,
+              },
+            });
+          }
+          console.log(`[Configure] Created 36 boxes for device ${deviceNumber}`);
+        }
       }
     } catch (dbError) {
       console.log('Note: Could not update database device table, but settings saved');

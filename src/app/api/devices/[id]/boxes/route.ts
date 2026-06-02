@@ -132,14 +132,11 @@ export async function GET(
             // box is available if order_no is null, occupied otherwise
             const newStatus = bwBox.order_no ? 'OCCUPIED' : 'AVAILABLE';
             
-            // Map box size
-            const sizeMap: Record<string, string> = {
-              'S': 'SMALL',
-              'M': 'MEDIUM', 
-              'L': 'LARGE',
-              'XL': 'EXTRA_LARGE'
-            };
-            const newSize = bwBox.box_size ? (sizeMap[bwBox.box_size] || 'MEDIUM') : 'MEDIUM';
+            // Map box size - keep as S/M/L/XL (matches DB schema and allocation logic)
+            const validSizes = ['S', 'M', 'L', 'XL'];
+            const newSize = bwBox.box_size && validSizes.includes(bwBox.box_size.toUpperCase()) 
+              ? bwBox.box_size.toUpperCase() 
+              : 'M';
 
             // Update database
             const result = await db.box.updateMany({

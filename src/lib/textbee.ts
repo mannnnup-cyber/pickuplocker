@@ -2,7 +2,7 @@
 // Documentation: https://textbee.dev/
 
 import { getTextbeeConfig, getSetting } from './settings';
-import prisma from './prisma';
+import { db } from './db';
 
 interface TextBeeConfig {
   apiKey: string;
@@ -79,13 +79,13 @@ function processTemplate(template: string, variables: Record<string, string | nu
 
 // Get system user for notifications
 async function getSystemUser() {
-  let systemUser = await prisma.user.findFirst({
+  let systemUser = await db.user.findFirst({
     where: { email: 'system@pickupja.com' }
   });
   
   if (!systemUser) {
     try {
-      systemUser = await prisma.user.create({
+      systemUser = await db.user.create({
         data: {
           email: 'system@pickupja.com',
           name: 'System',
@@ -93,7 +93,7 @@ async function getSystemUser() {
         }
       });
     } catch {
-      systemUser = await prisma.user.findFirst({
+      systemUser = await db.user.findFirst({
         where: { email: 'system@pickupja.com' }
       });
     }
@@ -117,7 +117,7 @@ async function saveNotification(
     const systemUser = await getSystemUser();
     if (!systemUser) return;
 
-    await prisma.notification.create({
+    await db.notification.create({
       data: {
         userId: systemUser.id,
         type: 'SMS',
@@ -152,7 +152,7 @@ export async function sendTemplateSMS(
   }
 
   // Get template from database
-  const template = await prisma.smsTemplate.findUnique({
+  const template = await db.smsTemplate.findUnique({
     where: { key: templateKey }
   });
 
