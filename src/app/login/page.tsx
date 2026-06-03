@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Lock, User, KeyRound, Loader2 } from "lucide-react";
+import { Lock, User, KeyRound, Loader2, Home } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 
 type LoginTab = "credentials" | "pin";
@@ -266,8 +266,20 @@ export default function LoginPage() {
           )}
         </div>
 
+        {/* Back to Home link */}
+        <div className="text-center mt-6">
+          <button
+            type="button"
+            onClick={() => router.push("/")}
+            className="inline-flex items-center gap-2 text-sm text-gray-400 hover:text-[#FFD439] transition-colors"
+          >
+            <Home size={16} />
+            Back to Kiosk Home
+          </button>
+        </div>
+
         {/* Footer */}
-        <p className="text-center text-xs text-gray-600 mt-6">
+        <p className="text-center text-xs text-gray-600 mt-4">
           © {new Date().getFullYear()} Pickup Jamaica. All rights reserved.
         </p>
       </div>

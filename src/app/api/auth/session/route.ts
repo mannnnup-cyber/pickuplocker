@@ -5,7 +5,10 @@ import { jwtVerify } from "jose"
 const getSecretKey = () => {
   const secret = process.env.AUTH_SECRET
   if (!secret) {
-    throw new Error("AUTH_SECRET environment variable is required")
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("AUTH_SECRET environment variable is required in production")
+    }
+    return new TextEncoder().encode("dev-only-secret-key-change-in-production-please")
   }
   return new TextEncoder().encode(secret)
 }

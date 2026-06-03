@@ -2,18 +2,25 @@ import { NextRequest, NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { SignJWT } from "jose"
 
-// Get secret key for JWT signing - MUST be set in environment
+// Get secret key for JWT signing
+// Falls back to a development-only key with a console warning
 function getSecretKey() {
   const secret = process.env.AUTH_SECRET
   if (!secret) {
-    throw new Error("AUTH_SECRET environment variable is required")
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("AUTH_SECRET environment variable is required in production")
+    }
+    console.warn(
+      "⚠️ AUTH_SECRET not set — using development fallback. " +
+      "Set AUTH_SECRET in your environment for production!"
+    )
+    return new TextEncoder().encode("dev-only-secret-key-change-in-production-please")
   }
   return new TextEncoder().encode(secret)
 }
 
 // Admin credentials from environment variables
-// Format: ADMIN_USERNAME, ADMIN_PASSWORD, OPERATOR_USERNAME, OPERATOR_PASSWORD
-// Staff PINs from: STAFF_PIN_1, STAFF_PIN_1_NAME, STAFF_PIN_1_ROLE, etc.
+// Falls back to default admin account in development mode
 interface AdminUser {
   username: string
   password: string
@@ -34,6 +41,13 @@ function getAdminUsers(): AdminUser[] {
   const adminPass = process.env.ADMIN_PASSWORD
   if (adminPass) {
     admins.push({ username: adminUser, password: adminPass, role: "ADMIN" })
+  } else if (process.env.NODE_ENV !== "production") {
+    // Development fallback: default admin password
+    console.warn(
+      "⚠️ ADMIN_PASSWORD not set — using development default. " +
+      "Set ADMIN_PASSWORD in your environment for production!"
+    )
+    admins.push({ username: "admin", password: "pickup2024", role: "ADMIN" })
   }
 
   // Operator
@@ -57,6 +71,16 @@ function getStaffPins(): StaffPin[] {
     if (pin && name) {
       pins.push({ pin, name, role: role || "OPERATOR" })
     }
+  }
+
+  // Development fallback: default staff PINs
+  if (pins.length === 0 && process.env.NODE_ENV !== "production") {
+    console.warn(
+      "⚠️ No STAFF_PIN_* set — using development defaults. " +
+      "Set STAFF_PIN_1/STAFF_PIN_1_NAME in your environment for production!"
+    )
+    pins.push({ pin: "1111", name: "Staff", role: "OPERATOR" })
+    pins.push({ pin: "1234", name: "Admin", role: "ADMIN" })
   }
 
   return pins
@@ -133,9 +157,9 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error("Login error:", error)
-    if (error instanceof Error && error.message === "AUTH_SECRET environment variable is required") {
+    if (error instanceof Error && error.message.includes("AUTH_SECRET")) {
       return NextResponse.json(
-        { success: false, error: "Server configuration error" },
+        { success: false, error: "Server configuration error — AUTH_SECRET is missing. Please set it in your environment variables." },
         { status: 500 }
       )
     }
