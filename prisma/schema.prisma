@@ -112,13 +112,19 @@ enum TransactionType {
 model User {
   id            String   @id @default(cuid())
   email         String   @unique
+  username      String?  @unique  // For login (e.g., "admin", "staff1")
   phone         String?  @unique
   name          String?
-  password      String?
+  passwordHash  String?  // bcrypt hash of password
+  pinHash       String?  // bcrypt hash of staff PIN (for kiosk quick login)
   image         String?
   role          UserRole @default(CUSTOMER)
   isActive      Boolean  @default(true)
   emailVerified DateTime?
+  
+  // Security: account lockout
+  failedLoginAttempts Int      @default(0)
+  lockedUntil         DateTime?  // Account locked until this time
   
   // Subscription
   subscriptionPlan SubscriptionPlan @default(FREE)

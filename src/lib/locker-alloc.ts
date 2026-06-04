@@ -12,6 +12,10 @@
  *    - If Bestwond succeeds: update with its box assignment and codes
  *    - If Bestwond fails: still proceed — box can be opened manually or via direct API
  * 5. Create ExpressOrder + Order records in DB
+ *
+ * AUTO-INIT: If no device/boxes exist in the DB, automatically creates a default
+ * device with 36 boxes (10S + 10M + 10L + 6XL). This ensures the system works
+ * out of the box even without running seed.
  */
 
 import { db } from '@/lib/db';
@@ -27,6 +31,14 @@ export const BOX_PRICES: Record<string, number> = {
 };
 
 export type BoxSize = 'S' | 'M' | 'L' | 'XL';
+
+// Default box layout for a 36-box device
+const DEFAULT_BOX_LAYOUT = [
+  { size: 'S', count: 10 },   // Boxes 1-10
+  { size: 'M', count: 10 },   // Boxes 11-20
+  { size: 'L', count: 10 },   // Boxes 21-30
+  { size: 'XL', count: 6 },   // Boxes 31-36
+];
 
 // Result of a successful locker allocation
 export interface LockerAllocationResult {
@@ -58,6 +70,63 @@ export interface LockerAllocationError {
 }
 
 /**
+ * Auto-initialize a default device with boxes if none exist.
+ * This ensures the kiosk works out of the box without requiring seed.
+ */
+async function ensureDeviceAndBoxesExist(): Promise<void> {
+  try {
+    const deviceCount = await db.device.count();
+
+    if (deviceCount > 0) {
+      return; // Device already exists
+    }
+
+    console.log('[Locker Alloc] No devices found — auto-initializing default device with 36 boxes...');
+
+    // Get Bestwond credentials from env
+    const bestwondAppId = process.env.BESTWOND_APP_ID || '';
+    const bestwondAppSecret = process.env.BESTWOND_APP_SECRET || '';
+    const bestwondDeviceId = process.env.BESTWOND_DEVICE_ID || '2100018247';
+
+    // Create default device
+    const device = await db.device.create({
+      data: {
+        deviceId: bestwondDeviceId,
+        name: 'Pickup Locker - Jamaica',
+        location: 'Jamaica',
+        description: 'Primary smart locker in Jamaica (auto-initialized)',
+        totalBoxes: 36,
+        availableBoxes: 36,
+        status: 'ONLINE',
+        bestwondAppId: bestwondAppId || null,
+        bestwondAppSecret: bestwondAppSecret || null,
+      },
+    });
+
+    // Create all 36 boxes
+    let boxNumber = 1;
+    for (const { size, count } of DEFAULT_BOX_LAYOUT) {
+      for (let i = 0; i < count; i++) {
+        await db.box.create({
+          data: {
+            deviceId: device.id,
+            boxNumber,
+            status: 'AVAILABLE',
+            size,
+          },
+        });
+        boxNumber++;
+      }
+    }
+
+    console.log(`[Locker Alloc] Auto-init complete: device "${device.name}" (${device.id}) with 36 boxes created`);
+  } catch (error) {
+    console.error('[Locker Alloc] Auto-init failed:', error);
+    // Don't throw — the allocation might still work if another process created the device
+  }
+}
+
+/**
  * Allocate a locker from the database.
  *
  * This function:
@@ -80,6 +149,9 @@ export async function allocateLocker(
       statusCode: 400,
     };
   }
+
+  // Step 0: Auto-initialize device and boxes if DB is empty
+  await ensureDeviceAndBoxesExist();
 
   // Step 1: Find a device with available boxes
   let device = await db.device.findFirst({
@@ -121,29 +193,30 @@ export async function allocateLocker(
   }
 
   if (!device || device.boxes.length === 0) {
-    // No available boxes at all — try ANY available box regardless of size
-    device = await db.device.findFirst({
-      include: {
-        boxes: {
-          where: { status: 'AVAILABLE' },
-          orderBy: { boxNumber: 'asc' },
-          take: 1,
-        },
-      },
+    // No available boxes of this size — check if any boxes exist at all
+    const totalAvailable = await db.box.count({
+      where: { status: 'AVAILABLE' },
     });
 
-    if (!device || device.boxes.length === 0) {
+    if (totalAvailable === 0) {
       return {
         success: false,
-        error: `No available lockers for ${boxSize} size. All lockers may be occupied or not yet configured. Please try a different size or contact support.`,
+        error: `All lockers are currently occupied. Please try again later or contact support.`,
         statusCode: 400,
       };
     }
 
-    // Found a box but wrong size — still report no match for this size
+    // Some boxes available but not in this size
+    const availableSizes = await db.box.findMany({
+      where: { status: 'AVAILABLE' },
+      select: { size: true },
+      distinct: ['size'],
+    });
+    const sizeList = availableSizes.map(b => b.size).filter(Boolean).join(', ');
+
     return {
       success: false,
-      error: `No available ${boxSize} lockers. Available sizes may differ — please try another size.`,
+      error: `No ${boxSize} lockers available. Available sizes: ${sizeList || 'none'}. Please try another size.`,
       statusCode: 400,
     };
   }
@@ -244,6 +317,9 @@ export async function getAvailableBoxCounts(): Promise<Record<string, number>> {
   const counts: Record<string, number> = { S: 0, M: 0, L: 0, XL: 0 };
 
   try {
+    // Auto-init if no boxes exist
+    await ensureDeviceAndBoxesExist();
+
     const availableBoxes = await db.box.findMany({
       where: { status: 'AVAILABLE' },
       select: { size: true },

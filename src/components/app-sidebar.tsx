@@ -18,6 +18,7 @@ import {
   Mail,
   Zap,
   Activity,
+  UserCog,
 } from "lucide-react"
 
 import {
@@ -50,6 +51,7 @@ const navItems = [
   { title: "Activity", tab: "activity", icon: Activity },
   { title: "Orders", tab: "orders", icon: Package },
   { title: "Customers", tab: "customers", icon: Users },
+  { title: "Staff", tab: "staff", icon: UserCog },
   { title: "Couriers", tab: "couriers", icon: Truck },
   { title: "Payments", tab: "payments", icon: CreditCard },
   { title: "SMS & Alerts", tab: "sms", icon: MessageSquare },

@@ -32,6 +32,9 @@ import {
   Zap,
   Copy,
   Key,
+  UserCog,
+  Trash2,
+  Unlock,
 } from "lucide-react"
 
 import { Suspense } from "react"
@@ -7753,6 +7756,7 @@ function PageContent() {
         <TabsContent value="activity" className="mt-0"><ActivityContent /></TabsContent>
         <TabsContent value="orders" className="mt-0"><OrdersContent /></TabsContent>
         <TabsContent value="customers" className="mt-0"><CustomersContent /></TabsContent>
+        <TabsContent value="staff" className="mt-0"><StaffContent /></TabsContent>
         <TabsContent value="couriers" className="mt-0"><CouriersContent /></TabsContent>
         <TabsContent value="payments" className="mt-0"><PaymentsContent /></TabsContent>
         <TabsContent value="sms" className="mt-0"><SMSContent /></TabsContent>
@@ -7760,6 +7764,323 @@ function PageContent() {
         <TabsContent value="settings" className="mt-0"><SettingsContent /></TabsContent>
       </Tabs>
     </AppLayout>
+  )
+}
+
+// Staff User Management content
+interface StaffUser {
+  id: string
+  email: string
+  username: string | null
+  name: string | null
+  phone: string | null
+  role: string
+  isActive: boolean
+  hasPassword: boolean
+  hasPin: boolean
+  failedLoginAttempts: number
+  lockedUntil: string | null
+  lastLoginAt: string | null
+  createdAt: string
+}
+
+function StaffContent() {
+  const [users, setUsers] = React.useState<StaffUser[]>([])
+  const [loading, setLoading] = React.useState(true)
+  const [addDialog, setAddDialog] = React.useState(false)
+  const [editDialog, setEditDialog] = React.useState(false)
+  const [deleteDialog, setDeleteDialog] = React.useState(false)
+  const [selectedUser, setSelectedUser] = React.useState<StaffUser | null>(null)
+  const [formError, setFormError] = React.useState("")
+  const [formSuccess, setFormSuccess] = React.useState("")
+  const [newUser, setNewUser] = React.useState({ username: '', name: '', email: '', password: '', pin: '', role: 'OPERATOR', phone: '' })
+  const [editForm, setEditForm] = React.useState({ newPassword: '', newPin: '', role: '', isActive: true, name: '', phone: '' })
+
+  const fetchUsers = React.useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch('/api/users')
+      const data = await res.json()
+      if (data.users) setUsers(data.users)
+    } catch (error) {
+      console.error('Failed to fetch staff users:', error)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  React.useEffect(() => { fetchUsers() }, [fetchUsers])
+
+  const handleAddUser = async () => {
+    setFormError("")
+    setFormSuccess("")
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newUser),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setAddDialog(false)
+        setNewUser({ username: '', name: '', email: '', password: '', pin: '', role: 'OPERATOR', phone: '' })
+        setFormSuccess("User created successfully!")
+        fetchUsers()
+      } else {
+        setFormError(data.error || "Failed to create user")
+      }
+    } catch { setFormError("Failed to create user") }
+  }
+
+  const handleUpdateUser = async () => {
+    if (!selectedUser) return
+    setFormError("")
+    setFormSuccess("")
+    try {
+      const body: Record<string, unknown> = {}
+      if (editForm.name) body.name = editForm.name
+      if (editForm.phone) body.phone = editForm.phone
+      if (editForm.role) body.role = editForm.role
+      if (editForm.newPassword) body.newPassword = editForm.newPassword
+      if (editForm.newPin) body.newPin = editForm.newPin
+      body.isActive = editForm.isActive
+
+      const res = await fetch(`/api/users/${selectedUser.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setEditDialog(false)
+        setSelectedUser(null)
+        setFormSuccess("User updated successfully!")
+        fetchUsers()
+      } else {
+        setFormError(data.error || "Failed to update user")
+      }
+    } catch { setFormError("Failed to update user") }
+  }
+
+  const handleUnlockUser = async (user: StaffUser) => {
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resetLockout: true }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setFormSuccess(`Unlocked ${user.username || user.email}`)
+        fetchUsers()
+      }
+    } catch { setFormError("Failed to unlock user") }
+  }
+
+  const handleDeleteUser = async () => {
+    if (!selectedUser) return
+    setFormError("")
+    try {
+      const res = await fetch(`/api/users/${selectedUser.id}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (data.success) {
+        setDeleteDialog(false)
+        setSelectedUser(null)
+        setFormSuccess("User deleted successfully!")
+        fetchUsers()
+      } else {
+        setFormError(data.error || "Failed to delete user")
+      }
+    } catch { setFormError("Failed to delete user") }
+  }
+
+  const openEditDialog = (user: StaffUser) => {
+    setSelectedUser(user)
+    setEditForm({ newPassword: '', newPin: '', role: user.role, isActive: user.isActive, name: user.name || '', phone: user.phone || '' })
+    setFormError("")
+    setEditDialog(true)
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-[#111111] uppercase tracking-tight" style={{ fontFamily: "'Montserrat', sans-serif" }}>Staff Management</h2>
+          <p className="text-gray-500 text-sm">Manage admin and operator accounts for dashboard access</p>
+        </div>
+        <Button onClick={() => { setFormError(""); setAddDialog(true) }} className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold">
+          <Plus className="mr-2 h-4 w-4" /> Add Staff
+        </Button>
+      </div>
+
+      {formSuccess && (
+        <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm flex items-center justify-between">
+          {formSuccess}
+          <button onClick={() => setFormSuccess("")} className="text-green-500 hover:text-green-700">x</button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-center py-12 text-gray-500">Loading staff users...</div>
+      ) : users.length === 0 ? (
+        <Card className="bg-white border-gray-200">
+          <CardContent className="py-12 text-center">
+            <UserCog className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+            <p className="text-gray-500">No staff users found. Add your first staff member above.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {users.map(user => (
+            <Card key={user.id} className={`bg-white border-gray-200 shadow-sm ${!user.isActive ? 'opacity-60' : ''}`}>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-10 w-10 bg-[#FFD439]">
+                      <AvatarFallback className="text-[#111111] font-bold text-sm">
+                        {(user.name || user.username || '??').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <p className="font-semibold text-[#111111]">{user.name || user.username || 'Unnamed'}</p>
+                      <p className="text-xs text-gray-500">@{user.username || user.email}</p>
+                    </div>
+                  </div>
+                  <Badge className={user.role === 'ADMIN' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}>
+                    {user.role}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500">Status</span>
+                  <div className="flex items-center gap-2">
+                    {user.lockedUntil && new Date(user.lockedUntil) > new Date() && (
+                      <Badge className="bg-red-100 text-red-700 cursor-pointer" onClick={() => handleUnlockUser(user)}>
+                        <Unlock className="mr-1 h-3 w-3" /> Locked
+                      </Badge>
+                    )}
+                    <Badge className={user.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}>
+                      {user.isActive ? 'Active' : 'Disabled'}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500">Password</span>
+                  <Badge className={user.hasPassword ? 'bg-green-50 text-green-600' : 'bg-gray-50 text-gray-400'}>
+                    {user.hasPassword ? 'Set' : 'Not set'}
+                  </Badge>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500">PIN</span>
+                  <Badge className={user.hasPin ? 'bg-green-50 text-green-600' : 'bg-gray-50 text-gray-400'}>
+                    {user.hasPin ? 'Set' : 'Not set'}
+                  </Badge>
+                </div>
+                {user.lastLoginAt && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500">Last login</span>
+                    <span className="text-xs text-gray-400">{new Date(user.lastLoginAt).toLocaleDateString()}</span>
+                  </div>
+                )}
+              </CardContent>
+              <CardFooter className="pt-3 gap-2">
+                <Button size="sm" variant="outline" className="flex-1 border-gray-300" onClick={() => openEditDialog(user)}>
+                  Edit
+                </Button>
+                <Button size="sm" variant="outline" className="border-red-200 text-red-600 hover:bg-red-50" onClick={() => { setSelectedUser(user); setDeleteDialog(true) }}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </CardFooter>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Add User Dialog */}
+      <Dialog open={addDialog} onOpenChange={setAddDialog}>
+        <DialogContent className="bg-white">
+          <DialogHeader>
+            <DialogTitle>Add Staff Member</DialogTitle>
+            <DialogDescription>Create a new admin or operator account for dashboard access.</DialogDescription>
+          </DialogHeader>
+          {formError && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded text-sm">{formError}</div>}
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div><Label>Username *</Label><Input value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} placeholder="e.g. staff1" /></div>
+              <div><Label>Role *</Label>
+                <Select value={newUser.role} onValueChange={v => setNewUser({...newUser, role: v})}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="ADMIN">Admin</SelectItem><SelectItem value="OPERATOR">Operator</SelectItem></SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div><Label>Full Name *</Label><Input value={newUser.name} onChange={e => setNewUser({...newUser, name: e.target.value})} placeholder="John Smith" /></div>
+            <div><Label>Email *</Label><Input type="email" value={newUser.email} onChange={e => setNewUser({...newUser, email: e.target.value})} placeholder="staff@pickupja.com" /></div>
+            <div className="grid grid-cols-2 gap-4">
+              <div><Label>Password</Label><Input type="password" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} placeholder="For username login" /></div>
+              <div><Label>PIN</Label><Input type="password" inputMode="numeric" maxLength={6} value={newUser.pin} onChange={e => setNewUser({...newUser, pin: e.target.value})} placeholder="4-6 digit PIN" /></div>
+            </div>
+            <div><Label>Phone</Label><Input value={newUser.phone} onChange={e => setNewUser({...newUser, phone: e.target.value})} placeholder="876-555-0000" /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddDialog(false)}>Cancel</Button>
+            <Button className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold" onClick={handleAddUser}>Create User</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit User Dialog */}
+      <Dialog open={editDialog} onOpenChange={setEditDialog}>
+        <DialogContent className="bg-white">
+          <DialogHeader>
+            <DialogTitle>Edit Staff Member</DialogTitle>
+            <DialogDescription>Update {selectedUser?.name || selectedUser?.username}&apos;s account settings.</DialogDescription>
+          </DialogHeader>
+          {formError && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded text-sm">{formError}</div>}
+          {selectedUser && (
+            <div className="space-y-4">
+              <div><Label>Full Name</Label><Input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} /></div>
+              <div><Label>Role</Label>
+                <Select value={editForm.role} onValueChange={v => setEditForm({...editForm, role: v})}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="ADMIN">Admin</SelectItem><SelectItem value="OPERATOR">Operator</SelectItem></SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><Label>New Password</Label><Input type="password" value={editForm.newPassword} onChange={e => setEditForm({...editForm, newPassword: e.target.value})} placeholder="Leave blank to keep" /></div>
+                <div><Label>New PIN</Label><Input type="password" inputMode="numeric" maxLength={6} value={editForm.newPin} onChange={e => setEditForm({...editForm, newPin: e.target.value})} placeholder="Leave blank to keep" /></div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Label>Account Active</Label>
+                <Button size="sm" variant={editForm.isActive ? "default" : "outline"} className={editForm.isActive ? "bg-green-600" : ""} onClick={() => setEditForm({...editForm, isActive: !editForm.isActive})}>
+                  {editForm.isActive ? "Active" : "Disabled"}
+                </Button>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditDialog(false)}>Cancel</Button>
+            <Button className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold" onClick={handleUpdateUser}>Save Changes</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete User Dialog */}
+      <Dialog open={deleteDialog} onOpenChange={setDeleteDialog}>
+        <DialogContent className="bg-white">
+          <DialogHeader>
+            <DialogTitle>Delete Staff Member</DialogTitle>
+            <DialogDescription>Are you sure you want to delete {selectedUser?.name || selectedUser?.username}? This action cannot be undone.</DialogDescription>
+          </DialogHeader>
+          {formError && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded text-sm">{formError}</div>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialog(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDeleteUser}>Delete User</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   )
 }
 

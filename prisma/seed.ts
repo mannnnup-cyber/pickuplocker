@@ -1,15 +1,20 @@
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  // Create the device - credentials from environment variables
+  console.log('🌱 Seeding database...');
+
+  // ============================================
+  // Create Device + Boxes
+  // ============================================
   const bestwondAppId = process.env.BESTWOND_APP_ID || '';
   const bestwondAppSecret = process.env.BESTWOND_APP_SECRET || '';
   const bestwondDeviceId = process.env.BESTWOND_DEVICE_ID || '2100018247';
 
   if (!bestwondAppId || !bestwondAppSecret) {
-    console.warn('WARNING: BESTWOND_APP_ID and BESTWOND_APP_SECRET not set. Device will be created without API credentials.');
+    console.warn('⚠️ BESTWOND_APP_ID and BESTWOND_APP_SECRET not set. Device will be created without API credentials.');
   }
 
   const device1 = await prisma.device.upsert({
@@ -45,7 +50,78 @@ async function main() {
     });
   }
 
-  // Create sample couriers
+  // ============================================
+  // Create Admin + Staff Users (with hashed credentials)
+  // ============================================
+  const SALT_ROUNDS = 10;
+
+  // Admin user — can login with username+password or PIN
+  const adminPassword = process.env.ADMIN_PASSWORD || 'pickup2024';
+  const adminPasswordHash = await bcrypt.hash(adminPassword, SALT_ROUNDS);
+  const adminPinHash = await bcrypt.hash('1234', SALT_ROUNDS);
+
+  await prisma.user.upsert({
+    where: { email: 'admin@pickupja.com' },
+    update: {
+      passwordHash: adminPasswordHash,
+      pinHash: adminPinHash,
+    },
+    create: {
+      email: 'admin@pickupja.com',
+      username: 'admin',
+      name: 'Admin User',
+      passwordHash: adminPasswordHash,
+      pinHash: adminPinHash,
+      role: 'ADMIN',
+      isActive: true,
+    },
+  });
+
+  // Staff user — can login with PIN only
+  const staff1PinHash = await bcrypt.hash('1111', SALT_ROUNDS);
+
+  await prisma.user.upsert({
+    where: { email: 'staff1@pickupja.com' },
+    update: {
+      pinHash: staff1PinHash,
+    },
+    create: {
+      email: 'staff1@pickupja.com',
+      username: 'staff1',
+      name: 'Staff Member',
+      pinHash: staff1PinHash,
+      role: 'OPERATOR',
+      isActive: true,
+    },
+  });
+
+  // Operator user — can login with username+password
+  const opUsername = process.env.OPERATOR_USERNAME || 'operator';
+  const opPassword = process.env.OPERATOR_PASSWORD || 'operator2024';
+  const opPasswordHash = await bcrypt.hash(opPassword, SALT_ROUNDS);
+  const opPinHash = await bcrypt.hash('5678', SALT_ROUNDS);
+
+  await prisma.user.upsert({
+    where: { email: 'operator@pickupja.com' },
+    update: {
+      username: opUsername,
+      passwordHash: opPasswordHash,
+      pinHash: opPinHash,
+    },
+    create: {
+      email: 'operator@pickupja.com',
+      username: opUsername,
+      name: 'Operator User',
+      passwordHash: opPasswordHash,
+      pinHash: opPinHash,
+      role: 'OPERATOR',
+      isActive: true,
+    },
+  });
+
+  // ============================================
+  // Create Couriers
+  // ============================================
   const courier1 = await prisma.courier.upsert({
     where: { code: 'KE' },
     update: {},
@@ -107,7 +183,9 @@ async function main() {
     },
   });
 
-  // Create sample customers
+  // ============================================
+  // Create Sample Customers
+  // ============================================
   const customer1 = await prisma.user.upsert({
     where: { email: 'john.brown@email.com' },
     update: {},
@@ -130,18 +208,9 @@ async function main() {
     },
   });
 
-  // Create admin user
-  await prisma.user.upsert({
-    where: { email: 'admin@pickupja.com' },
-    update: {},
-    create: {
-      email: 'admin@pickupja.com',
-      name: 'Admin User',
-      role: 'ADMIN',
-    },
-  });
-
-  // Create sample orders
+  // ============================================
+  // Create Sample Orders
+  // ============================================
   const existingOrders = await prisma.order.count();
   if (existingOrders === 0) {
     await prisma.order.createMany({
@@ -178,7 +247,9 @@ async function main() {
     });
   }
 
-  // Create system settings
+  // ============================================
+  // Create System Settings
+  // ============================================
   const existingSettings = await prisma.setting.count();
   if (existingSettings === 0) {
     await prisma.setting.createMany({
@@ -195,7 +266,9 @@ async function main() {
     });
   }
 
-  // Create SMS templates
+  // ============================================
+  // Create SMS Templates
+  // ============================================
   const existingSmsTemplates = await prisma.smsTemplate.count();
   if (existingSmsTemplates === 0) {
     await prisma.smsTemplate.createMany({
@@ -236,15 +309,17 @@ async function main() {
     });
   }
 
-  console.log('Seed completed successfully!');
-  console.log('Created:');
-  console.log('  - 1 Device (Pickup Locker - Jamaica)');
-  console.log('  - 36 Boxes');
-  console.log('  - 3 Couriers (Knutsford Express, ZipMail, Dirty Hand Designs)');
-  console.log('  - 3 Users (2 customers, 1 admin)');
-  console.log('  - 2 Sample orders');
-  console.log('  - System settings');
-  console.log('  - 4 SMS templates');
+  console.log('✅ Seed completed successfully!');
+  console.log('');
+  console.log('📋 Created:');
+  console.log('  Device: Pickup Locker - Jamaica (36 boxes)');
+  console.log('  Users (DB-authenticated):');
+  console.log('    👤 admin / pickup2024  (ADMIN) — PIN: 1234');
+  console.log('    👤 staff1              (OPERATOR) — PIN: 1111');
+  console.log('    👤 operator / operator2024 (OPERATOR) — PIN: 5678');
+  console.log('  Couriers: Knutsford Express, ZipMail, Dirty Hand Designs');
+  console.log('  Customers: John Brown, Sarah Jones');
+  console.log('  Sample orders + Settings + SMS Templates');
 }
 
 main()
