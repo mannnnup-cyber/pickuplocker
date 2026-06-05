@@ -1,17 +1,41 @@
 import { NextRequest, NextResponse } from "next/server"
+import { cookies } from "next/headers"
+import { jwtVerify } from "jose"
 import bcrypt from "bcryptjs"
 import { db } from "@/lib/db"
 
-// One-time setup endpoint: pushes schema + seeds database
-// Call GET /api/setup to run it (protected by CRON_SECRET or setup key)
+// One-time setup endpoint: seeds database
+// Auth: either logged-in admin cookie OR ?key=CRON_SECRET/AUTH_SECRET
+async function isAuthorized(request: NextRequest): Promise<boolean> {
+  // Method 1: Check admin session cookie
+  try {
+    const secret = process.env.AUTH_SECRET
+    if (secret) {
+      const cookieStore = await cookies()
+      const token = cookieStore.get("auth_token")?.value
+      if (token) {
+        const { payload } = await jwtVerify(token, new TextEncoder().encode(secret))
+        if (payload.role === "ADMIN") return true
+      }
+    }
+  } catch {
+    // Cookie auth failed, try key method
+  }
+
+  // Method 2: Check setup key
+  const setupKey = request.nextUrl.searchParams.get("key")
+  const cronSecret = process.env.CRON_SECRET || process.env.AUTH_SECRET
+  if (cronSecret && setupKey === cronSecret) return true
+
+  return false
+}
+
 export async function GET(request: NextRequest) {
   try {
-    // Security: require a setup key or CRON_SECRET
-    const setupKey = request.nextUrl.searchParams.get("key")
-    const cronSecret = process.env.CRON_SECRET || process.env.AUTH_SECRET
-    if (!cronSecret || setupKey !== cronSecret) {
+    const authorized = await isAuthorized(request)
+    if (!authorized) {
       return NextResponse.json(
-        { error: "Unauthorized. Provide ?key=YOUR_CRON_SECRET or ?key=YOUR_AUTH_SECRET" },
+        { error: "Unauthorized. Log in as admin first, or provide ?key=YOUR_SECRET" },
         { status: 401 }
       )
     }
