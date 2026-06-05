@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Lock, User, KeyRound, Loader2, Home } from "lucide-react";
+import { Lock, User, KeyRound, Loader2, Home, Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 
 type LoginTab = "credentials" | "pin";
@@ -15,6 +15,8 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [pin, setPin] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showPin, setShowPin] = useState(false);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -191,13 +193,22 @@ export default function LoginPage() {
                   />
                   <input
                     id="password"
-                    type="password"
+                    type={showPassword ? "text" : "password"}
                     autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Enter your password"
-                    className="w-full rounded-lg border border-gray-700 bg-[#111111] py-3 pl-10 pr-4 text-sm text-white placeholder:text-gray-600 focus:border-[#FFD439] focus:outline-none focus:ring-1 focus:ring-[#FFD439] transition-colors"
+                    className="w-full rounded-lg border border-gray-700 bg-[#111111] py-3 pl-10 pr-10 text-sm text-white placeholder:text-gray-600 focus:border-[#FFD439] focus:outline-none focus:ring-1 focus:ring-[#FFD439] transition-colors"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+                    tabIndex={-1}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
                 </div>
               </div>
 
@@ -239,14 +250,23 @@ export default function LoginPage() {
                   <input
                     ref={pinRef}
                     id="pin"
-                    type="password"
+                    type={showPin ? "text" : "password"}
                     inputMode="numeric"
                     maxLength={6}
                     value={pin}
                     onChange={(e) => setPin(e.target.value)}
                     placeholder="Enter your 4–6 digit PIN"
-                    className="w-full rounded-lg border border-gray-700 bg-[#111111] py-3 pl-10 pr-4 text-sm text-white placeholder:text-gray-600 focus:border-[#FFD439] focus:outline-none focus:ring-1 focus:ring-[#FFD439] transition-colors tracking-widest"
+                    className="w-full rounded-lg border border-gray-700 bg-[#111111] py-3 pl-10 pr-10 text-sm text-white placeholder:text-gray-600 focus:border-[#FFD439] focus:outline-none focus:ring-1 focus:ring-[#FFD439] transition-colors tracking-widest"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPin(!showPin)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+                    tabIndex={-1}
+                    aria-label={showPin ? "Hide PIN" : "Show PIN"}
+                  >
+                    {showPin ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
                 </div>
                 <p className="mt-2 text-xs text-gray-500">
                   Quick access for locker operators and delivery staff.
