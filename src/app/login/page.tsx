@@ -40,8 +40,12 @@ export default function LoginPage() {
 
     setIsLoading(true);
     try {
-      await login(username.trim(), password);
-      router.push("/dashboard");
+      const result = await login(username.trim(), password);
+      if (result.success) {
+        router.push("/dashboard");
+      } else {
+        setError(result.error || "Invalid username or password.");
+      }
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Invalid username or password.";
@@ -62,8 +66,12 @@ export default function LoginPage() {
 
     setIsLoading(true);
     try {
-      await loginWithPin(pin.trim());
-      router.push("/dashboard");
+      const result = await loginWithPin(pin.trim());
+      if (result.success) {
+        router.push("/dashboard");
+      } else {
+        setError(result.error || "Invalid PIN. Please try again.");
+      }
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Invalid PIN. Please try again.";
