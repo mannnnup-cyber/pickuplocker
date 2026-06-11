@@ -7737,6 +7737,507 @@ function EmailContent() {
   )
 }
 
+// ============ DIAGNOSTICS CONTENT ============
+interface BoxInfo {
+  id: string
+  boxNumber: number
+  size: string
+  status: string
+  lastUsedAt: string | null
+}
+interface DeviceGrid {
+  id: string
+  deviceId: string
+  name: string
+  location: string
+  status: string
+  totalBoxes: number
+  availableBoxes: number
+  boxes: BoxInfo[]
+}
+interface TestResult {
+  success: boolean
+  service: string
+  status: string
+  message: string
+  latency: number
+  details?: any
+}
+
+function DiagnosticsContent() {
+  const [devices, setDevices] = React.useState<DeviceGrid[]>([])
+  const [loading, setLoading] = React.useState(true)
+  const [testResults, setTestResults] = React.useState<Record<string, TestResult>>({})
+  const [testing, setTesting] = React.useState<Record<string, boolean>>({})
+  const [openingBox, setOpeningBox] = React.useState<string | null>(null)
+  const [testSmsPhone, setTestSmsPhone] = React.useState('')
+  const [testEmailAddr, setTestEmailAddr] = React.useState('')
+  const [testSmsResult, setTestSmsResult] = React.useState<string | null>(null)
+  const [testEmailResult, setTestEmailResult] = React.useState<string | null>(null)
+  const [overview, setOverview] = React.useState<any>(null)
+
+  const fetchBoxGrid = React.useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch('/api/diagnostics?action=box-grid')
+      const data = await res.json()
+      if (data.success) setDevices(data.devices)
+    } catch (error) {
+      console.error('Failed to fetch box grid:', error)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const fetchOverview = React.useCallback(async () => {
+    try {
+      const res = await fetch('/api/diagnostics')
+      const data = await res.json()
+      if (data.success) setOverview(data.overview)
+    } catch (error) {
+      console.error('Failed to fetch overview:', error)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    fetchBoxGrid()
+    fetchOverview()
+  }, [fetchBoxGrid, fetchOverview])
+
+  const runTest = async (testName: string, action: string) => {
+    setTesting(prev => ({ ...prev, [testName]: true }))
+    setTestResults(prev => ({ ...prev, [testName]: null as any }))
+    try {
+      const res = await fetch(`/api/diagnostics?action=${action}`)
+      const data = await res.json()
+      setTestResults(prev => ({ ...prev, [testName]: data }))
+    } catch (error) {
+      setTestResults(prev => ({
+        ...prev,
+        [testName]: {
+          success: false,
+          service: testName,
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Request failed',
+          latency: 0,
+        },
+      }))
+    } finally {
+      setTesting(prev => ({ ...prev, [testName]: false }))
+    }
+  }
+
+  const openBox = async (deviceId: string, boxNumber: number) => {
+    const key = `${deviceId}-${boxNumber}`
+    setOpeningBox(key)
+    try {
+      const res = await fetch('/api/diagnostics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'open-box', deviceId, boxNumber }),
+      })
+      const data = await res.json()
+      alert(data.success ? data.message : `Error: ${data.error || data.message}`)
+    } catch (error) {
+      alert(`Failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setOpeningBox(null)
+    }
+  }
+
+  const sendTestSms = async () => {
+    setTestSmsResult('Sending...')
+    try {
+      const res = await fetch('/api/diagnostics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send-test-sms', phone: testSmsPhone }),
+      })
+      const data = await res.json()
+      setTestSmsResult(data.success ? data.message : `Error: ${data.error}`)
+    } catch (error) {
+      setTestSmsResult(`Failed: ${error instanceof Error ? error.message : 'Unknown'}`)
+    }
+  }
+
+  const sendTestEmail = async () => {
+    setTestEmailResult('Sending...')
+    try {
+      const res = await fetch('/api/diagnostics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send-test-email', email: testEmailAddr }),
+      })
+      const data = await res.json()
+      setTestEmailResult(data.success ? data.message : `Error: ${data.error}`)
+    } catch (error) {
+      setTestEmailResult(`Failed: ${error instanceof Error ? error.message : 'Unknown'}`)
+    }
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'connected':
+      case 'healthy':
+      case 'configured':
+        return 'bg-green-100 text-green-800 border-green-300'
+      case 'degraded':
+        return 'bg-yellow-100 text-yellow-800 border-yellow-300'
+      case 'not_configured':
+        return 'bg-gray-100 text-gray-800 border-gray-300'
+      case 'error':
+      default:
+        return 'bg-red-100 text-red-800 border-red-300'
+    }
+  }
+
+  const getBoxStatusColor = (status: string) => {
+    switch (status) {
+      case 'AVAILABLE':
+        return 'bg-green-500 hover:bg-green-600'
+      case 'OCCUPIED':
+        return 'bg-red-500 hover:bg-red-600'
+      case 'RESERVED':
+        return 'bg-yellow-500 hover:bg-yellow-600'
+      case 'OFFLINE':
+        return 'bg-gray-400 hover:bg-gray-500'
+      default:
+        return 'bg-gray-300 hover:bg-gray-400'
+    }
+  }
+
+  const getBoxStatusIcon = (status: string) => {
+    switch (status) {
+      case 'AVAILABLE':
+        return '✓'
+      case 'OCCUPIED':
+        return '✕'
+      case 'RESERVED':
+        return '⏳'
+      case 'OFFLINE':
+        return '—'
+      default:
+        return '?'
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-[#111111] uppercase" style={{ fontFamily: "'Montserrat', sans-serif" }}>
+            Diagnostics & Debug
+          </h2>
+          <p className="text-sm text-gray-500 mt-1">Test hardware connections, open boxes, and diagnose system issues</p>
+        </div>
+        <Button
+          className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
+          onClick={() => { fetchBoxGrid(); fetchOverview(); }}
+        >
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Refresh All
+        </Button>
+      </div>
+
+      {/* System Overview */}
+      {overview && (
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-500 uppercase">Database</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-2">
+                <Badge className={getStatusColor(overview.database?.status || 'error')}>
+                  {overview.database?.status || 'Unknown'}
+                </Badge>
+                {overview.database?.orders !== undefined && (
+                  <span className="text-sm text-gray-600">{overview.database.orders} orders</span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-500 uppercase">Box Utilization</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-2">
+                <span className="text-2xl font-bold text-[#111111]">{overview.boxes?.utilizationPercent || 0}%</span>
+                <span className="text-sm text-gray-500">
+                  ({overview.boxes?.occupied || 0}/{overview.boxes?.total || 0} occupied)
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-500 uppercase">Environment</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-2">
+                <Badge className={getStatusColor(overview.environment?.status || 'error')}>
+                  {overview.environment?.status || 'Unknown'}
+                </Badge>
+                {overview.environment?.missing?.length > 0 && (
+                  <span className="text-xs text-red-600">{overview.environment.missing.length} missing</span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-500 uppercase">Box Status</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-2 flex-wrap">
+                {overview.boxes && (
+                  <>
+                    <Badge className="bg-green-100 text-green-800">{overview.boxes.available} free</Badge>
+                    <Badge className="bg-red-100 text-red-800">{overview.boxes.occupied} occupied</Badge>
+                    <Badge className="bg-yellow-100 text-yellow-800">{overview.boxes.reserved} reserved</Badge>
+                  </>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* API Connection Tests */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg font-bold text-[#111111] uppercase" style={{ fontFamily: "'Montserrat', sans-serif" }}>
+            API Connection Tests
+          </CardTitle>
+          <CardDescription>Test connectivity to external services</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[
+              { name: 'Bestwond', action: 'test-bestwond', icon: <Box className="h-5 w-5" /> },
+              { name: 'TextBee SMS', action: 'test-textbee', icon: <MessageSquare className="h-5 w-5" /> },
+              { name: 'DimePay', action: 'test-dimepay', icon: <CreditCard className="h-5 w-5" /> },
+              { name: 'Email (Resend)', action: 'test-email', icon: <Mail className="h-5 w-5" /> },
+              { name: 'Database', action: 'test-database', icon: <Database className="h-5 w-5" /> },
+            ].map(test => (
+              <Card key={test.name} className="border">
+                <CardContent className="pt-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      {test.icon}
+                      <span className="font-semibold text-[#111111]">{test.name}</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold"
+                      disabled={testing[test.name]}
+                      onClick={() => runTest(test.name, test.action)}
+                    >
+                      {testing[test.name] ? (
+                        <><RefreshCw className="mr-1 h-3 w-3 animate-spin" />Testing</>
+                      ) : 'Test'}
+                    </Button>
+                  </div>
+                  {testResults[test.name] && (
+                    <div className="mt-2 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Badge className={getStatusColor(testResults[test.name].status)}>
+                          {testResults[test.name].status}
+                        </Badge>
+                        <span className="text-xs text-gray-500">{testResults[test.name].latency}ms</span>
+                      </div>
+                      <p className="text-sm text-gray-600">{testResults[test.name].message}</p>
+                      {testResults[test.name].details && (
+                        <pre className="text-xs bg-gray-50 p-2 rounded mt-1 overflow-auto max-h-32">
+                          {JSON.stringify(testResults[test.name].details, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Box Grid */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-lg font-bold text-[#111111] uppercase" style={{ fontFamily: "'Montserrat', sans-serif" }}>
+                Box Grid — Live Status
+              </CardTitle>
+              <CardDescription>Click a box to open it (requires Bestwond connection)</CardDescription>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 text-xs">
+                <div className="w-3 h-3 rounded bg-green-500"></div><span>Available</span>
+                <div className="w-3 h-3 rounded bg-red-500"></div><span>Occupied</span>
+                <div className="w-3 h-3 rounded bg-yellow-500"></div><span>Reserved</span>
+                <div className="w-3 h-3 rounded bg-gray-400"></div><span>Offline</span>
+              </div>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <RefreshCw className="h-6 w-6 animate-spin text-gray-400" />
+              <span className="ml-2 text-gray-500">Loading box grid...</span>
+            </div>
+          ) : devices.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">No devices found</div>
+          ) : (
+            <div className="space-y-6">
+              {devices.map(device => (
+                <div key={device.id} className="border rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="font-semibold text-[#111111]">{device.name}</h3>
+                      <p className="text-sm text-gray-500">{device.location} — Device ID: {device.deviceId}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge className={device.status === 'ONLINE' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}>
+                        {device.status}
+                      </Badge>
+                      <span className="text-sm text-gray-500">{device.availableBoxes}/{device.totalBoxes} available</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-6 md:grid-cols-9 lg:grid-cols-12 gap-2">
+                    {device.boxes.map(box => {
+                      const key = `${device.id}-${box.boxNumber}`
+                      return (
+                        <button
+                          key={box.id}
+                          className={`
+                            relative flex flex-col items-center justify-center p-2 rounded-lg text-white text-xs font-bold
+                            transition-all duration-150 cursor-pointer
+                            ${getBoxStatusColor(box.status)}
+                            ${openingBox === key ? 'opacity-50' : ''}
+                          `}
+                          onClick={() => openBox(device.deviceId, box.boxNumber)}
+                          disabled={openingBox === key}
+                          title={`Box #${box.boxNumber} — ${box.size} — ${box.status}${box.lastUsedAt ? `\nLast used: ${new Date(box.lastUsedAt).toLocaleString()}` : ''}`}
+                        >
+                          <span className="text-base">{getBoxStatusIcon(box.status)}</span>
+                          <span className="text-[10px] mt-0.5">#{box.boxNumber}</span>
+                          <span className="text-[9px] opacity-80">{box.size}</span>
+                          {openingBox === key && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-lg">
+                              <RefreshCw className="h-4 w-4 animate-spin text-white" />
+                            </div>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Test SMS & Email */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg font-bold text-[#111111] uppercase" style={{ fontFamily: "'Montserrat', sans-serif" }}>
+              Send Test SMS
+            </CardTitle>
+            <CardDescription>Test TextBee SMS gateway with a real phone number</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-2">
+              <Input
+                placeholder="e.g. 18765551234"
+                value={testSmsPhone}
+                onChange={(e) => setTestSmsPhone(e.target.value)}
+                className="flex-1"
+              />
+              <Button
+                className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
+                onClick={sendTestSms}
+                disabled={!testSmsPhone}
+              >
+                <Send className="mr-2 h-4 w-4" />
+                Send
+              </Button>
+            </div>
+            {testSmsResult && (
+              <p className={`mt-2 text-sm ${testSmsResult.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+                {testSmsResult}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg font-bold text-[#111111] uppercase" style={{ fontFamily: "'Montserrat', sans-serif" }}>
+              Send Test Email
+            </CardTitle>
+            <CardDescription>Test Resend email delivery</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-2">
+              <Input
+                placeholder="e.g. test@example.com"
+                type="email"
+                value={testEmailAddr}
+                onChange={(e) => setTestEmailAddr(e.target.value)}
+                className="flex-1"
+              />
+              <Button
+                className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
+                onClick={sendTestEmail}
+                disabled={!testEmailAddr}
+              >
+                <Send className="mr-2 h-4 w-4" />
+                Send
+              </Button>
+            </div>
+            {testEmailResult && (
+              <p className={`mt-2 text-sm ${testEmailResult.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+                {testEmailResult}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Missing Environment Variables */}
+      {overview?.environment?.missing?.length > 0 && (
+        <Card className="border-yellow-300 bg-yellow-50">
+          <CardHeader>
+            <CardTitle className="text-lg font-bold text-yellow-800 uppercase flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5" />
+              Missing Environment Variables
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+              {overview.environment.missing.map((key: string) => (
+                <div key={key} className="flex items-center gap-2 text-sm text-yellow-700 bg-yellow-100 rounded p-2">
+                  <XCircle className="h-4 w-4 text-yellow-600 flex-shrink-0" />
+                  <code className="font-mono text-xs">{key}</code>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-sm text-yellow-700">
+              Add these variables in your Vercel project settings or .env.local file to enable the corresponding features.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
 // Main page content (uses useSearchParams)
 function PageContent() {
   const searchParams = useSearchParams()
@@ -7762,6 +8263,7 @@ function PageContent() {
         <TabsContent value="sms" className="mt-0"><SMSContent /></TabsContent>
         <TabsContent value="email" className="mt-0"><EmailContent /></TabsContent>
         <TabsContent value="settings" className="mt-0"><SettingsContent /></TabsContent>
+        <TabsContent value="diagnostics" className="mt-0"><DiagnosticsContent /></TabsContent>
       </Tabs>
     </AppLayout>
   )

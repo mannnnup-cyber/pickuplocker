@@ -19,6 +19,7 @@ import {
   Zap,
   Activity,
   UserCog,
+  Stethoscope,
 } from "lucide-react"
 
 import {
@@ -57,6 +58,7 @@ const navItems = [
   { title: "SMS & Alerts", tab: "sms", icon: MessageSquare },
   { title: "Email", tab: "email", icon: Mail },
   { title: "Settings", tab: "settings", icon: Settings },
+  { title: "Diagnostics", tab: "diagnostics", icon: Stethoscope },
 ]
 
 interface AppSidebarProps {
