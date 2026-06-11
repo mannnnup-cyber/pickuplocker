@@ -7,7 +7,7 @@ import {
 } from '@/lib/bestwond';
 import { sendSMS, getDeviceStatus as getTextBeeDeviceStatus } from '@/lib/textbee';
 import { isEmailEnabled, sendEmail } from '@/lib/email';
-import { getDimepayConfig } from '@/lib/dimepay';
+import { getDimepayConfig } from '@/lib/settings';
 
 // GET /api/diagnostics - Get system diagnostic data
 export async function GET(request: NextRequest) {
