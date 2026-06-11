@@ -184,8 +184,14 @@ export default function KioskPage() {
     setSecondsRemaining(10)
   }, [])
 
-  // Auto-timeout effect
+  // Auto-timeout effect (only active when not on home screen)
   useEffect(() => {
+    // Skip timeout logic entirely on home screen
+    if (view === "home") {
+      setShowTimeoutWarning(false)
+      return
+    }
+
     const checkTimeout = () => {
       const elapsed = Date.now() - lastActivity
       const remaining = AUTO_TIMEOUT_MS - elapsed
@@ -195,7 +201,7 @@ export default function KioskPage() {
         setSecondsRemaining(Math.ceil(remaining / 1000))
       }
       
-      if (elapsed >= AUTO_TIMEOUT_MS && view !== "home") {
+      if (elapsed >= AUTO_TIMEOUT_MS) {
         resetState()
       }
     }
