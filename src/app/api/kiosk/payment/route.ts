@@ -585,7 +585,7 @@ async function createDropoffPayment(boxSize: string, phone: string, email?: stri
   });
 }
 
-// Create storage fee payment - ALWAYS USES DEMO MODE
+// Create storage fee payment - Uses real DimePay if configured, otherwise demo mode
 async function createStorageFeePayment(orderId: string, amount: number, phone?: string) {
   console.log('[Kiosk Payment] createStorageFeePayment called:', { orderId, amount, phone });
 
@@ -596,6 +596,131 @@ async function createStorageFeePayment(orderId: string, amount: number, phone?: 
     }, { status: 400 });
   }
 
+  // Get order details for better payment context
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+  });
+
+  const customerPhone = phone || order?.customerPhone || '';
+  const cleanPhone = customerPhone.replace(/[^0-9+]/g, '');
+
+  // Check if DimePay is configured
+  const config = await getDimepayConfig();
+  const effectiveClientId = config.sandboxMode ? config.sandboxClientId : config.liveClientId;
+  const effectiveSecretKey = config.sandboxMode ? config.sandboxSecretKey : config.liveSecretKey;
+
+  console.log('[Kiosk Payment] Storage fee - DimePay config:', {
+    sandboxMode: config.sandboxMode,
+    hasClientId: !!effectiveClientId,
+    hasSecretKey: !!effectiveSecretKey,
+  });
+
+  // Use real DimePay SDK if credentials are configured
+  if (effectiveClientId && effectiveSecretKey) {
+    console.log('[Kiosk Payment] Storage fee - Using real DimePay SDK');
+
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
+      const paymentOrderId = `STORAGE-${orderId}-${Date.now()}`;
+
+      const sdkConfig: DimePaySDKConfig = {
+        clientId: effectiveClientId,
+        secretKey: effectiveSecretKey,
+        sandboxMode: config.sandboxMode,
+        passFeeToCustomer: config.passFeeToCustomer,
+        passFeeToCourier: config.passFeeToCourier,
+        feePercentage: config.feePercentage,
+        fixedFee: config.fixedFee,
+      };
+
+      const result = await createSDKPayment({
+        amount: Math.round(amount * 100), // Convert to cents
+        currency: 'JMD',
+        orderId: paymentOrderId,
+        description: `Storage Fee - Order ${order?.orderNumber || orderId}`,
+        customerPhone: cleanPhone || undefined,
+        customerEmail: order?.customerEmail || undefined,
+        redirectUrl: `${baseUrl}/kiosk?payment=success`,
+        webhookUrl: `${baseUrl}/api/webhooks/dimepay`,
+        passFeeToCustomer: config.passFeeToCustomer,
+        metadata: {
+          type: 'storage_fee',
+          orderId,
+          orderNumber: order?.orderNumber,
+          customerPhone: cleanPhone,
+        },
+      }, sdkConfig);
+
+      console.log('[Kiosk Payment] Storage fee - SDK Payment Result:', {
+        success: result.success,
+        amount: result.data?.amount,
+      });
+
+      if (result.success && result.data && result.data.sdkConfig) {
+        const paymentUrl = `${baseUrl}/pay/${paymentOrderId}`;
+
+        // Generate QR code
+        let qrCodeDataUrl: string | undefined;
+        try {
+          qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
+        } catch (qrError) {
+          console.error('[Kiosk Payment] QR generation error:', qrError);
+        }
+
+        // Store payment session in database
+        const paymentSessionData = {
+          amount: result.data.amount,
+          originalAmount: result.data.originalAmount,
+          feeAmount: result.data.feeAmount,
+          currency: result.data.currency,
+          description: `Storage Fee - Order ${order?.orderNumber || orderId}`,
+          reference: paymentOrderId,
+          sdkConfig: result.data.sdkConfig,
+          metadata: {
+            type: 'storage_fee',
+            orderId,
+            orderNumber: order?.orderNumber,
+            customerPhone: cleanPhone,
+          },
+          status: 'PENDING',
+          createdAt: Date.now(),
+        };
+
+        await db.setting.upsert({
+          where: { key: `sdk_payment_${paymentOrderId}` },
+          create: {
+            key: `sdk_payment_${paymentOrderId}`,
+            value: JSON.stringify(paymentSessionData),
+            description: `SDK Storage Fee Payment: ${paymentOrderId}`,
+          },
+          update: {
+            value: JSON.stringify(paymentSessionData),
+          }
+        });
+
+        return NextResponse.json({
+          success: true,
+          paymentId: paymentOrderId,
+          paymentUrl,
+          qrCodeDataUrl,
+          amount: result.data.amount,
+          originalAmount: result.data.originalAmount,
+          feeAmount: result.data.feeAmount,
+          message: `Scan QR to pay JMD $${result.data.amount} storage fee`,
+          isDemoMode: false,
+        });
+      } else {
+        console.error('[Kiosk Payment] Storage fee - DimePay SDK payment failed:', result.error);
+        // Fall through to demo mode
+      }
+    } catch (dimepayError) {
+      console.error('[Kiosk Payment] Storage fee - DimePay SDK error:', dimepayError);
+      // Fall through to demo mode
+    }
+  }
+
+  // Demo mode fallback
+  console.log('[Kiosk Payment] Storage fee - Using demo mode (no valid DimePay credentials)');
   const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
   const demoPaymentUrl = `https://pickupja.com/pay/${paymentId}`;
 
@@ -612,9 +737,10 @@ async function createStorageFeePayment(orderId: string, amount: number, phone?: 
     create: {
       key: `demo_payment_${paymentId}`,
       value: JSON.stringify({
+        orderId,
         saveCode: '',
         boxSize: '',
-        phone: phone || '',
+        phone: cleanPhone,
         amount,
         createdAt: Date.now(),
         status: 'PENDING',
@@ -623,9 +749,10 @@ async function createStorageFeePayment(orderId: string, amount: number, phone?: 
     },
     update: {
       value: JSON.stringify({
+        orderId,
         saveCode: '',
         boxSize: '',
-        phone: phone || '',
+        phone: cleanPhone,
         amount,
         createdAt: Date.now(),
         status: 'PENDING',
