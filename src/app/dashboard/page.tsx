@@ -4958,7 +4958,7 @@ function SettingsContent() {
                 </div>
                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
                   <p className="text-xs text-blue-800">
-                    <strong>Note:</strong> DimePay uses the same base URL (https://api.dimepay.com) for both environments. 
+                    <strong>Note:</strong> DimePay uses the same base URL (https://api.dimepay.app) for both environments. 
                     The environment is determined by which credentials are used based on the mode setting above.
                   </p>
                 </div>

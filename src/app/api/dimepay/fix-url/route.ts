@@ -79,7 +79,7 @@ export async function GET() {
         live_secretKey: 'Your live secret key',
         sandboxMode: 'true for testing, false for production'
       },
-      apiUrl: 'https://api.dimepay.com (same for both environments)'
+      apiUrl: 'https://api.dimepay.app (same for both environments)'
     });
   } catch (error) {
     console.error('Failed to get DimePay settings:', error);
