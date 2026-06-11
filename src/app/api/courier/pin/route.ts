@@ -169,9 +169,13 @@ export async function PUT(request: NextRequest) {
       });
     } else if (phone) {
       const cleanPhone = phone.replace(/[^0-9+]/g, '');
-      courier = await db.courier.findUnique({
-        where: { phone: cleanPhone }
-      });
+      // Try finding by flexible phone matching (handles 876-555-1000 vs 8765551000)
+      const allCouriers = await db.courier.findMany();
+      courier = allCouriers.find(c => {
+        if (!c.phone) return false;
+        const dbPhone = c.phone.replace(/[^0-9+]/g, '');
+        return dbPhone === cleanPhone || dbPhone === cleanPhone.replace(/^1/, '') || dbPhone === `1${cleanPhone}`;
+      }) || null;
     }
 
     if (!courier) {
@@ -246,9 +250,13 @@ export async function GET(request: NextRequest) {
       });
     } else if (phone) {
       const cleanPhone = phone.replace(/[^0-9+]/g, '');
-      courier = await db.courier.findUnique({
-        where: { phone: cleanPhone }
-      });
+      // Try finding by flexible phone matching
+      const allCouriers = await db.courier.findMany();
+      courier = allCouriers.find(c => {
+        if (!c.phone) return false;
+        const dbPhone = c.phone.replace(/[^0-9+]/g, '');
+        return dbPhone === cleanPhone || dbPhone === cleanPhone.replace(/^1/, '') || dbPhone === `1${cleanPhone}`;
+      }) || null;
     }
 
     if (!courier) {

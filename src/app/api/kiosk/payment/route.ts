@@ -242,13 +242,24 @@ export async function GET(request: NextRequest) {
           });
 
           if (existingCustomer) {
-            // Update email if it was placeholder and now we have real email
+            // Update email if it was placeholder and now we have real email - check for duplicates first
             if (demoData.email && existingCustomer.email.includes('@pickup.local')) {
-              await db.user.update({
-                where: { id: existingCustomer.id },
-                data: { email: demoData.email }
-              });
-              console.log('[Kiosk Payment] Updated customer email:', demoData.email);
+              try {
+                const emailTaken = await db.user.findFirst({
+                  where: { email: demoData.email, NOT: { id: existingCustomer.id } }
+                });
+                if (!emailTaken) {
+                  await db.user.update({
+                    where: { id: existingCustomer.id },
+                    data: { email: demoData.email }
+                  });
+                  console.log('[Kiosk Payment] Updated customer email:', demoData.email);
+                } else {
+                  console.log('[Kiosk Payment] Email already in use, skipping update:', demoData.email);
+                }
+              } catch (emailErr) {
+                console.error('[Kiosk Payment] Failed to update customer email:', emailErr);
+              }
             }
           } else if (demoData.email) {
             // Create new customer with real email
@@ -343,12 +354,23 @@ async function createDropoffPayment(boxSize: string, phone: string, email?: stri
     });
     console.log('[Kiosk Payment] Created customer:', customer.id);
   } else if (email && customer.email.includes('@pickup.local')) {
-    // Update with real email if we have one
-    customer = await db.user.update({
-      where: { id: customer.id },
-      data: { email }
-    });
-    console.log('[Kiosk Payment] Updated customer email:', email);
+    // Update with real email if we have one - but only if not already taken
+    try {
+      const existingWithEmail = await db.user.findFirst({
+        where: { email, NOT: { id: customer.id } }
+      });
+      if (!existingWithEmail) {
+        customer = await db.user.update({
+          where: { id: customer.id },
+          data: { email }
+        });
+        console.log('[Kiosk Payment] Updated customer email:', email);
+      } else {
+        console.log('[Kiosk Payment] Email already in use by another account, skipping update:', email);
+      }
+    } catch (emailError) {
+      console.error('[Kiosk Payment] Failed to update customer email:', emailError);
+    }
   }
 
   // Check if DimePay is configured
