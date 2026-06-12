@@ -362,7 +362,7 @@ function RecentActivity({ activities }: { activities: Array<{id: string; action:
   }
 
   return (
-    <Card className="bg-white border-gray-200 shadow-sm">
+    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
       <CardHeader>
         <CardTitle className="text-[#111111] uppercase">Recent Activity</CardTitle>
         <CardDescription className="text-gray-500">Latest events across all devices</CardDescription>
@@ -463,7 +463,7 @@ function SystemStatusCard() {
   }
 
   return (
-    <Card className="bg-white border-gray-200 shadow-sm">
+    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <div className="flex items-center gap-2">
           <CardTitle className="text-[#111111] uppercase text-base">System Status</CardTitle>
@@ -594,7 +594,7 @@ function LockerSyncWidget() {
   }
 
   return (
-    <Card className="bg-white border-gray-200 shadow-sm">
+    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-[#111111] uppercase text-base">Locker Sync</CardTitle>
         <div className="flex items-center gap-2">
@@ -747,7 +747,7 @@ function LockerDetailsCard() {
   }, [fetchLockerData])
 
   return (
-    <Card className="bg-white border-gray-200 shadow-sm">
+    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <div className="flex items-center gap-2">
           <CardTitle className="text-[#111111] uppercase text-base">Locker Details</CardTitle>
@@ -861,7 +861,7 @@ function LockerDetailsCard() {
 // Quick actions component
 function QuickActions({ onNavigate }: { onNavigate: (tab: string) => void }) {
   return (
-    <Card className="bg-white border-gray-200 shadow-sm">
+    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
       <CardHeader>
         <CardTitle className="text-[#111111] uppercase">Quick Actions</CardTitle>
         <CardDescription className="text-gray-500">Common operations</CardDescription>
@@ -1477,7 +1477,7 @@ function DevicesContent() {
       {loading ? (
         <div className="text-center py-8 text-gray-500">Loading devices...</div>
       ) : devices.length === 0 ? (
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardContent className="py-8 text-center text-gray-500">
             No devices found. Add your first locker device to get started.
           </CardContent>
@@ -1557,7 +1557,7 @@ function DevicesContent() {
 
       {/* Open Box Dialog */}
       <Dialog open={openBoxDialog} onOpenChange={setOpenBoxDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Open Box</DialogTitle>
             <DialogDescription className="text-gray-500">Select a box to open remotely via Bestwond API</DialogDescription>
@@ -1614,7 +1614,7 @@ function DevicesContent() {
           setDiscoverError(null);
         } 
       }}>
-        <DialogContent className="bg-white border-gray-200 max-w-lg">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Add New Device</DialogTitle>
             <DialogDescription className="text-gray-500">Enter your Bestwond credentials to discover devices linked to your account</DialogDescription>
@@ -1777,7 +1777,7 @@ function DevicesContent() {
 
       {/* Edit Device Dialog */}
       <Dialog open={editDeviceDialog} onOpenChange={setEditDeviceDialog}>
-        <DialogContent className="bg-white border-gray-200 max-w-lg">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Edit Device</DialogTitle>
             <DialogDescription className="text-gray-500">Update device information and API credentials</DialogDescription>
@@ -1831,7 +1831,7 @@ function DevicesContent() {
 
       {/* Delete Device Dialog */}
       <Dialog open={deleteDeviceDialog} onOpenChange={setDeleteDeviceDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Delete Device</DialogTitle>
             <DialogDescription className="text-gray-500">Are you sure you want to delete this device? This action cannot be undone.</DialogDescription>
@@ -1852,7 +1852,7 @@ function DevicesContent() {
 
       {/* View Boxes Dialog */}
       <Dialog open={viewBoxesDialog} onOpenChange={setViewBoxesDialog}>
-        <DialogContent className="bg-white border-gray-200 max-w-4xl max-h-[80vh] overflow-hidden">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-4xl max-h-[80vh] overflow-hidden">
           <DialogHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -1935,7 +1935,7 @@ function DevicesContent() {
 
       {/* Box Detail Dialog */}
       <Dialog open={boxDetailDialog} onOpenChange={setBoxDetailDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Box #{selectedBoxInfo?.boxNumber}</DialogTitle>
             <DialogDescription className="text-gray-500">
@@ -2014,7 +2014,7 @@ function DevicesContent() {
 
       {/* Box Logs Dialog */}
       <Dialog open={logsDialog} onOpenChange={setLogsDialog}>
-        <DialogContent className="bg-white border-gray-200 max-w-2xl max-h-[80vh] overflow-hidden">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-2xl max-h-[80vh] overflow-hidden">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Box Usage Logs</DialogTitle>
             <DialogDescription className="text-gray-500">{selectedDevice?.name} - Recent activity</DialogDescription>
@@ -2387,7 +2387,7 @@ function OrdersContent() {
         </Select>
       </div>
 
-      <Card className="bg-white border-gray-200 shadow-sm">
+      <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
         <CardContent className="p-0">
           {loading ? (
             <div className="text-center py-8 text-gray-500">Loading orders...</div>
@@ -2794,7 +2794,7 @@ function OrdersContent() {
 
       {/* Payment QR Code Dialog */}
       <Dialog open={paymentDialog} onOpenChange={setPaymentDialog}>
-        <DialogContent className="bg-white border-gray-200 max-w-md">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-md">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Pay Storage Fee</DialogTitle>
             <DialogDescription className="text-gray-500">
@@ -2863,7 +2863,7 @@ function CustomersContent() {
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
         <Input placeholder="Search customers..." className="pl-10 max-w-md border-gray-200 bg-white" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
       </div>
-      <Card className="bg-white border-gray-200 shadow-sm">
+      <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
         <CardContent className="p-0">
           {loading ? (
             <div className="text-center py-8 text-gray-500">Loading customers...</div>
@@ -3168,7 +3168,7 @@ function TransactionsContent() {
 
       {/* All Transactions Tab */}
       {activeTab === 'all' && (
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader><CardTitle className="text-[#111111] uppercase">All Transactions</CardTitle></CardHeader>
           <CardContent className="p-0">
             {loading ? (
@@ -3227,7 +3227,7 @@ function TransactionsContent() {
 
       {/* Payments In Tab */}
       {activeTab === 'payments_in' && (
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase">Customer Payments</CardTitle>
             <CardDescription>Drop-off payments and storage fees</CardDescription>
@@ -3278,7 +3278,7 @@ function TransactionsContent() {
 
       {/* Courier Account Tab */}
       {activeTab === 'courier' && (
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase">Courier Transactions</CardTitle>
             <CardDescription>Top-ups, deductions, and adjustments</CardDescription>
@@ -3344,7 +3344,7 @@ function TransactionsContent() {
             </Card>
           )}
 
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase">Unused Drop-off Credits</CardTitle>
               <CardDescription className="text-gray-500">
@@ -3615,7 +3615,7 @@ function ExpressContent() {
       {loading ? (
         <div className="text-center py-8 text-gray-500">Loading devices...</div>
       ) : devices.length === 0 ? (
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardContent className="py-8 text-center text-gray-500">
             No devices found. Add a device first to use Express storage.
           </CardContent>
@@ -3623,7 +3623,7 @@ function ExpressContent() {
       ) : (
         <div className="grid gap-6 lg:grid-cols-2">
           {/* Left Column - Create Order */}
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
                 <Package className="h-5 w-5" />
@@ -3733,7 +3733,7 @@ function ExpressContent() {
           </Card>
 
           {/* Right Column - Open with Code */}
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
                 <Lock className="h-5 w-5" />
@@ -3858,7 +3858,7 @@ function ExpressContent() {
       )}
 
       {/* Order Lookup Section */}
-      <Card className="bg-white border-gray-200 shadow-sm">
+      <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
         <CardHeader>
           <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
             <Search className="h-5 w-5" />
@@ -4013,7 +4013,7 @@ function ExpressContent() {
       </Card>
 
       {/* How It Works */}
-      <Card className="bg-white border-gray-200 shadow-sm">
+      <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
         <CardHeader>
           <CardTitle className="text-[#111111] uppercase">How Express Storage Works</CardTitle>
         </CardHeader>
@@ -4201,7 +4201,7 @@ function SettingsContent() {
 
       <div className="grid gap-6">
         {/* Business Settings */}
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
               <Shield className="h-5 w-5" />
@@ -4285,7 +4285,7 @@ function SettingsContent() {
         </Card>
 
         {/* Storage Fees */}
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
               <Clock className="h-5 w-5" />
@@ -4372,7 +4372,7 @@ function SettingsContent() {
         </Card>
 
         {/* Bestwond Locker API */}
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
               <Lock className="h-5 w-5" />
@@ -4493,7 +4493,7 @@ function SettingsContent() {
         </Card>
 
         {/* TextBee SMS API */}
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
               <MessageSquare className="h-5 w-5" />
@@ -4591,7 +4591,7 @@ function SettingsContent() {
         </Card>
 
         {/* Email Notifications */}
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
               <Mail className="h-5 w-5" />
@@ -4756,7 +4756,7 @@ function SettingsContent() {
         </Card>
 
         {/* DimePay Payment API */}
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
               <CreditCard className="h-5 w-5" />
@@ -5059,7 +5059,7 @@ function SettingsContent() {
         </Card>
 
         {/* Notifications */}
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader>
             <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
               <MessageSquare className="h-5 w-5" />
@@ -5423,7 +5423,7 @@ function CouriersContent() {
       {loading ? (
         <div className="text-center py-8 text-gray-500">Loading couriers...</div>
       ) : (
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <Table>
             <TableHeader>
               <TableRow className="border-gray-200">
@@ -5513,7 +5513,7 @@ function CouriersContent() {
 
       {/* Add Courier Dialog */}
       <Dialog open={addDialog} onOpenChange={setAddDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Add New Courier</DialogTitle>
             <DialogDescription className="text-gray-500">Register a new courier partner</DialogDescription>
@@ -5557,7 +5557,7 @@ function CouriersContent() {
 
       {/* Add Funds Dialog */}
       <Dialog open={addFundsDialog} onOpenChange={setAddFundsDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Add Funds to Prepaid Account</DialogTitle>
             <DialogDescription className="text-gray-500">{selectedCourier?.name} - Current Balance: {formatCurrency(selectedCourier?.balance || 0)}</DialogDescription>
@@ -5579,7 +5579,7 @@ function CouriersContent() {
 
       {/* Courier Top-up Dialog */}
       <Dialog open={topupDialog} onOpenChange={setTopupDialog}>
-        <DialogContent className="bg-white border-gray-200 max-w-md">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-md">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Top-up Courier Account</DialogTitle>
             <DialogDescription className="text-gray-500">
@@ -5631,7 +5631,7 @@ function CouriersContent() {
 
       {/* Edit Courier Dialog */}
       <Dialog open={editDialog} onOpenChange={setEditDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Edit Courier</DialogTitle>
             <DialogDescription className="text-gray-500">Update courier information</DialogDescription>
@@ -5698,7 +5698,7 @@ function CouriersContent() {
 
       {/* Delete Courier Dialog */}
       <Dialog open={deleteDialog} onOpenChange={setDeleteDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Delete Courier</DialogTitle>
             <DialogDescription className="text-gray-500">
@@ -5721,7 +5721,7 @@ function CouriersContent() {
 
       {/* PIN Management Dialog */}
       <Dialog open={pinDialog} onOpenChange={setPinDialog}>
-        <DialogContent className="bg-white border-gray-200 max-w-md">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-md">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase flex items-center gap-2">
               <Lock className="h-5 w-5" />
@@ -6222,7 +6222,7 @@ function SMSContent() {
 
       {/* Stats Cards */}
       <div className="grid gap-4 md:grid-cols-5">
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Sent Today</CardTitle>
           </CardHeader>
@@ -6231,7 +6231,7 @@ function SMSContent() {
             <p className="text-xs text-gray-500">${smsStats.todayCost} JMD</p>
           </CardContent>
         </Card>
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Total (TextBee)</CardTitle>
           </CardHeader>
@@ -6239,7 +6239,7 @@ function SMSContent() {
             <p className="text-2xl font-bold text-green-600">{smsStats.textBeeTotal}</p>
           </CardContent>
         </Card>
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Failed</CardTitle>
           </CardHeader>
@@ -6247,7 +6247,7 @@ function SMSContent() {
             <p className="text-2xl font-bold text-red-600">{smsStats.totalFailed}</p>
           </CardContent>
         </Card>
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Total Cost</CardTitle>
           </CardHeader>
@@ -6256,7 +6256,7 @@ function SMSContent() {
             <p className="text-xs text-gray-500">JMD</p>
           </CardContent>
         </Card>
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Device</CardTitle>
           </CardHeader>
@@ -6283,7 +6283,7 @@ function SMSContent() {
 
         {/* History Tab */}
         <TabsContent value="history">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase">Recent Messages</CardTitle>
             </CardHeader>
@@ -6325,7 +6325,7 @@ function SMSContent() {
 
         {/* Templates Tab */}
         <TabsContent value="templates">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
@@ -6392,7 +6392,7 @@ function SMSContent() {
 
         {/* Queue Tab */}
         <TabsContent value="queue">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase">SMS Queue</CardTitle>
               <CardDescription>View and manage pending, failed, and sent messages</CardDescription>
@@ -6454,7 +6454,7 @@ function SMSContent() {
         <TabsContent value="marketing">
           <div className="space-y-6">
             <div className="grid gap-4 md:grid-cols-3">
-              <Card className="bg-white border-gray-200 shadow-sm">
+              <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs font-medium text-gray-600 uppercase">Total Campaigns</CardTitle>
                 </CardHeader>
@@ -6462,7 +6462,7 @@ function SMSContent() {
                   <p className="text-2xl font-bold text-[#111111]">{marketingStats.totalCampaigns}</p>
                 </CardContent>
               </Card>
-              <Card className="bg-white border-gray-200 shadow-sm">
+              <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs font-medium text-gray-600 uppercase">Total Sent</CardTitle>
                 </CardHeader>
@@ -6470,7 +6470,7 @@ function SMSContent() {
                   <p className="text-2xl font-bold text-green-600">{marketingStats.totalSent}</p>
                 </CardContent>
               </Card>
-              <Card className="bg-white border-gray-200 shadow-sm">
+              <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs font-medium text-gray-600 uppercase">Recipients</CardTitle>
                 </CardHeader>
@@ -6480,7 +6480,7 @@ function SMSContent() {
               </Card>
             </div>
 
-            <Card className="bg-white border-gray-200 shadow-sm">
+            <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
               <CardHeader>
                 <CardTitle className="text-[#111111] uppercase">Send Marketing SMS</CardTitle>
                 <CardDescription>Broadcast SMS to customer segments</CardDescription>
@@ -6504,7 +6504,7 @@ function SMSContent() {
                     <SelectTrigger className="border-gray-200">
                       <SelectValue placeholder="Select target audience" />
                     </SelectTrigger>
-                    <SelectContent className="bg-white">
+                    <SelectContent className="bg-white text-gray-900">
                       {marketingSegments.map((segment) => (
                         <SelectItem key={segment.id} value={segment.id}>
                           {segment.name} ({segment.count})
@@ -6578,7 +6578,7 @@ function SMSContent() {
               </CardContent>
             </Card>
 
-            <Card className="bg-white border-gray-200 shadow-sm">
+            <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
               <CardHeader>
                 <CardTitle className="text-[#111111] uppercase">Campaign History</CardTitle>
                 <CardDescription>View past marketing campaigns</CardDescription>
@@ -6637,7 +6637,7 @@ function SMSContent() {
 
         {/* Settings Tab */}
         <TabsContent value="settings">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase">SMS Settings</CardTitle>
             </CardHeader>
@@ -6683,7 +6683,7 @@ function SMSContent() {
 
       {/* Test SMS Dialog */}
       <Dialog open={testDialog} onOpenChange={setTestDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Send Test SMS</DialogTitle>
             <DialogDescription className="text-gray-500">Send a test message via TextBee</DialogDescription>
@@ -6716,7 +6716,7 @@ function SMSContent() {
 
       {/* Edit/Create Template Dialog */}
       <Dialog open={templateDialog} onOpenChange={setTemplateDialog}>
-        <DialogContent className="bg-white border-gray-200 max-w-2xl">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-2xl">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">
               {editingTemplate?.id ? 'Edit Template' : 'Create New Template'}
@@ -6949,7 +6949,7 @@ function ActivityContent() {
       </div>
 
       {/* Order Lookup Card */}
-      <Card className="bg-white border-gray-200 shadow-sm">
+      <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
         <CardHeader>
           <CardTitle className="text-[#111111] uppercase flex items-center gap-2">
             <Search className="h-5 w-5" />
@@ -7052,7 +7052,7 @@ function ActivityContent() {
         </TabsList>
 
         <TabsContent value="occupied" className="mt-4">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase">Currently Occupied Boxes</CardTitle>
               <CardDescription>Boxes with packages stored (from Bestwond lockers)</CardDescription>
@@ -7099,7 +7099,7 @@ function ActivityContent() {
         </TabsContent>
 
         <TabsContent value="logs" className="mt-4">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase">Activity History</CardTitle>
               <CardDescription>Historical box activity from Bestwond lockers</CardDescription>
@@ -7370,7 +7370,7 @@ function EmailContent() {
 
       {/* Stats Cards */}
       <div className="grid gap-4 md:grid-cols-4">
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Sent Today</CardTitle>
           </CardHeader>
@@ -7378,7 +7378,7 @@ function EmailContent() {
             <p className="text-2xl font-bold text-[#111111]">{emailStats.sentToday}</p>
           </CardContent>
         </Card>
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Total Sent</CardTitle>
           </CardHeader>
@@ -7386,7 +7386,7 @@ function EmailContent() {
             <p className="text-2xl font-bold text-green-600">{emailStats.totalSent}</p>
           </CardContent>
         </Card>
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Failed</CardTitle>
           </CardHeader>
@@ -7394,7 +7394,7 @@ function EmailContent() {
             <p className="text-2xl font-bold text-red-600">{emailStats.totalFailed}</p>
           </CardContent>
         </Card>
-        <Card className="bg-white border-gray-200 shadow-sm">
+        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-medium text-gray-600 uppercase">Status</CardTitle>
           </CardHeader>
@@ -7419,7 +7419,7 @@ function EmailContent() {
 
         {/* History Tab */}
         <TabsContent value="history">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase">Recent Emails</CardTitle>
             </CardHeader>
@@ -7461,7 +7461,7 @@ function EmailContent() {
 
         {/* Templates Tab */}
         <TabsContent value="templates">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
@@ -7525,7 +7525,7 @@ function EmailContent() {
 
         {/* Settings Tab */}
         <TabsContent value="settings">
-          <Card className="bg-white border-gray-200 shadow-sm">
+          <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
             <CardHeader>
               <CardTitle className="text-[#111111] uppercase">SMTP Settings</CardTitle>
               <CardDescription>Configure your email server settings</CardDescription>
@@ -7647,7 +7647,7 @@ function EmailContent() {
 
       {/* Test Email Dialog */}
       <Dialog open={testDialog} onOpenChange={setTestDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">Send Test Email</DialogTitle>
             <DialogDescription className="text-gray-500">Send a test email to verify SMTP configuration</DialogDescription>
@@ -7683,7 +7683,7 @@ function EmailContent() {
 
       {/* Edit/Create Template Dialog */}
       <Dialog open={templateDialog} onOpenChange={setTemplateDialog}>
-        <DialogContent className="bg-white border-gray-200 max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-[#111111] uppercase">
               {editingTemplate?.id ? 'Edit Email Template' : 'Create New Email Template'}
@@ -8502,7 +8502,7 @@ function StaffContent() {
 
       {/* Add User Dialog */}
       <Dialog open={addDialog} onOpenChange={setAddDialog}>
-        <DialogContent className="bg-white">
+        <DialogContent className="bg-white text-gray-900">
           <DialogHeader>
             <DialogTitle>Add Staff Member</DialogTitle>
             <DialogDescription>Create a new admin or operator account for dashboard access.</DialogDescription>
@@ -8535,7 +8535,7 @@ function StaffContent() {
 
       {/* Edit User Dialog */}
       <Dialog open={editDialog} onOpenChange={setEditDialog}>
-        <DialogContent className="bg-white">
+        <DialogContent className="bg-white text-gray-900">
           <DialogHeader>
             <DialogTitle>Edit Staff Member</DialogTitle>
             <DialogDescription>Update {selectedUser?.name || selectedUser?.username}&apos;s account settings.</DialogDescription>
@@ -8571,7 +8571,7 @@ function StaffContent() {
 
       {/* Delete User Dialog */}
       <Dialog open={deleteDialog} onOpenChange={setDeleteDialog}>
-        <DialogContent className="bg-white">
+        <DialogContent className="bg-white text-gray-900">
           <DialogHeader>
             <DialogTitle>Delete Staff Member</DialogTitle>
             <DialogDescription>Are you sure you want to delete {selectedUser?.name || selectedUser?.username}? This action cannot be undone.</DialogDescription>

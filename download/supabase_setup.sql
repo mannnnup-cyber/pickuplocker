@@ -806,6 +806,25 @@ VALUES (
   45000
 ) ON CONFLICT ("code") DO NOTHING;
 
+INSERT INTO "couriers" ("id", "name", "code", "contactPerson", "phone", "email", "address", "status", "balance", "creditLimit", "autoReload", "autoReloadAmount", "minBalance", "totalDropOffs", "totalSpent")
+VALUES (
+  'courier4',
+  '876OnTheGo',
+  '876',
+  '876OnTheGo Team',
+  '876-555-4000',
+  'info@876onthego.com',
+  'Kingston, Jamaica',
+  'ACTIVE',
+  7500,
+  15000,
+  true,
+  3000,
+  1500,
+  85,
+  32000
+) ON CONFLICT ("code") DO NOTHING;
+
 -- -----------------------------------------------------------
 -- 5h. Sample Orders
 -- -----------------------------------------------------------
