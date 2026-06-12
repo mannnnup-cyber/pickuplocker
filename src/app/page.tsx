@@ -1,8 +1,9 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
+import { KioskErrorBoundary } from './kiosk-error-boundary'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { 
@@ -93,7 +94,7 @@ interface BoxAvailability {
   available: number
 }
 
-export default function KioskPage() {
+function KioskPage() {
   // View state
   const [view, setView] = useState<View>("home")
   
@@ -124,6 +125,57 @@ export default function KioskPage() {
   const [lastActivity, setLastActivity] = useState(Date.now())
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false)
   const [secondsRemaining, setSecondsRemaining] = useState(10)
+
+  // Refs for timer cleanup (prevents memory leaks that cause white screen)
+  const pollingTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const visibilityHandlerRef = useRef<(() => void) | null>(null)
+  const isMountedRef = useRef(true)
+
+  // Auto-recovery: reload page if it's been stuck/idle too long (prevents white screen)
+  useEffect(() => {
+    const HEARTBEAT_KEY = 'pickup_kiosk_heartbeat'
+    const RECOVERY_MS = 30 * 60 * 1000 // 30 minutes - if no heartbeat, something is wrong
+    
+    // Write heartbeat
+    const heartbeat = setInterval(() => {
+      try { localStorage.setItem(HEARTBEAT_KEY, Date.now().toString()) } catch {}
+    }, 60000)
+
+    // Check if previous session crashed (no heartbeat for 30 min = white screen)
+    try {
+      const lastHeartbeat = parseInt(localStorage.getItem(HEARTBEAT_KEY) || '0')
+      if (lastHeartbeat && (Date.now() - lastHeartbeat > RECOVERY_MS)) {
+        console.log('[Kiosk] Previous session appears to have crashed. Clearing state.')
+        localStorage.removeItem(HEARTBEAT_KEY)
+      }
+    } catch {}
+
+    // Write initial heartbeat
+    try { localStorage.setItem(HEARTBEAT_KEY, Date.now().toString()) } catch {}
+
+    return () => {
+      clearInterval(heartbeat)
+      try { localStorage.removeItem(HEARTBEAT_KEY) } catch {}
+    }
+  }, [])
+
+  // Cleanup all polling timers on unmount
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+      // Clear any active polling timer
+      if (pollingTimerRef.current) {
+        clearTimeout(pollingTimerRef.current)
+        pollingTimerRef.current = null
+      }
+      // Remove any dangling visibilitychange listener
+      if (visibilityHandlerRef.current) {
+        document.removeEventListener('visibilitychange', visibilityHandlerRef.current)
+        visibilityHandlerRef.current = null
+      }
+    }
+  }, [])
 
   // Get available box sizes based on actual availability
   const BOX_SIZES = ALL_BOX_SIZES.filter(box => {
@@ -157,6 +209,15 @@ export default function KioskPage() {
 
   // Reset all state
   const resetState = useCallback(() => {
+    // Cancel any active polling
+    if (pollingTimerRef.current) {
+      clearTimeout(pollingTimerRef.current)
+      pollingTimerRef.current = null
+    }
+    if (visibilityHandlerRef.current) {
+      document.removeEventListener('visibilitychange', visibilityHandlerRef.current)
+      visibilityHandlerRef.current = null
+    }
     setView("home")
     setCode("")
     setPhoneNumber("")
@@ -373,6 +434,9 @@ export default function KioskPage() {
     let attempts = 0
 
     const poll = async () => {
+      // Stop if component unmounted
+      if (!isMountedRef.current) return
+
       if (attempts >= maxAttempts) {
         setError("Payment timeout. Please try again.")
         return
@@ -380,13 +444,17 @@ export default function KioskPage() {
 
       // Stop polling if tab is hidden
       if (document.visibilityState === 'hidden') {
-        // Resume when visible again
+        // Resume when visible again - track listener for cleanup
         const handleVisible = () => {
           if (document.visibilityState === 'visible') {
             document.removeEventListener('visibilitychange', handleVisible)
+            if (visibilityHandlerRef.current === handleVisible) {
+              visibilityHandlerRef.current = null
+            }
             poll()
           }
         }
+        visibilityHandlerRef.current = handleVisible
         document.addEventListener('visibilitychange', handleVisible)
         return
       }
@@ -396,6 +464,8 @@ export default function KioskPage() {
       try {
         const res = await fetch(`/api/kiosk/payment?paymentId=${paymentId}`)
         const data = await res.json()
+
+        if (!isMountedRef.current) return
 
         if (data.status === "completed") {
           setCode(data.saveCode || "")
@@ -412,10 +482,10 @@ export default function KioskPage() {
 
         // Exponential backoff: 5s for first 10 attempts, then 8s, then 10s
         const delay = attempts < 10 ? 5000 : attempts < 25 ? 8000 : 10000
-        setTimeout(poll, delay)
+        pollingTimerRef.current = setTimeout(poll, delay)
       } catch {
         // Continue polling on error with longer delay
-        setTimeout(poll, 8000)
+        pollingTimerRef.current = setTimeout(poll, 8000)
       }
     }
 
@@ -527,19 +597,26 @@ export default function KioskPage() {
           let attempts = 0
 
           const poll = async () => {
+            // Stop if component unmounted
+            if (!isMountedRef.current) return
+
             if (attempts >= maxAttempts) {
               setError("Payment timeout. Please try again.")
               return
             }
 
-            // Stop polling if tab is hidden
+            // Stop polling if tab is hidden - track listener for cleanup
             if (document.visibilityState === 'hidden') {
               const handleVisible = () => {
                 if (document.visibilityState === 'visible') {
                   document.removeEventListener('visibilitychange', handleVisible)
+                  if (visibilityHandlerRef.current === handleVisible) {
+                    visibilityHandlerRef.current = null
+                  }
                   poll()
                 }
               }
+              visibilityHandlerRef.current = handleVisible
               document.addEventListener('visibilitychange', handleVisible)
               return
             }
@@ -549,6 +626,8 @@ export default function KioskPage() {
             try {
               const res = await fetch(`/api/kiosk/payment?paymentId=${paymentId}`)
               const pollData = await res.json()
+
+              if (!isMountedRef.current) return
 
               if (pollData.status === "completed") {
                 // Payment successful, now process pickup
@@ -579,9 +658,9 @@ export default function KioskPage() {
 
               // Exponential backoff
               const delay = attempts < 10 ? 5000 : attempts < 25 ? 8000 : 10000
-              setTimeout(poll, delay)
+              pollingTimerRef.current = setTimeout(poll, delay)
             } catch {
-              setTimeout(poll, 8000)
+              pollingTimerRef.current = setTimeout(poll, 8000)
             }
           }
 
@@ -1658,5 +1737,14 @@ export default function KioskPage() {
       {view === "payment" && renderPayment()}
       {view === "success" && renderSuccess()}
     </div>
+  )
+}
+
+// Wrap with kiosk error boundary for auto-recovery on white screen crashes
+export default function KioskPageWithErrorBoundary() {
+  return (
+    <KioskErrorBoundary>
+      <KioskPage />
+    </KioskErrorBoundary>
   )
 }

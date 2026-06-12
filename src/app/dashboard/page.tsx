@@ -5469,11 +5469,11 @@ function CouriersContent() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="bg-white">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSelectedCourier(courier); setAddFundsDialog(true); }}>
+                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSelectedCourier(courier); setTimeout(() => setAddFundsDialog(true), 50); }}>
                           <DollarSign className="mr-2 h-4 w-4" />
                           Add Funds
                         </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSelectedCourierForTopup(courier); setTopupDialog(true); setTopupQRCode(null); setTopupUrl(null); setTopupAmount(''); }}>
+                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setSelectedCourierForTopup(courier); setTopupQRCode(null); setTopupUrl(null); setTopupAmount(''); setTimeout(() => setTopupDialog(true), 50); }}>
                           <CreditCard className="mr-2 h-4 w-4" />
                           Top-up via DimePay
                         </DropdownMenuItem>
@@ -5493,11 +5493,12 @@ function CouriersContent() {
                             email: courier.email || '', 
                             address: '' 
                           }); 
-                          setEditDialog(true); 
+                          // Delay dialog open to avoid Radix focus trap conflict with DropdownMenu
+                          setTimeout(() => setEditDialog(true), 50);
                         }}>
                           Edit Courier
                         </DropdownMenuItem>
-                        <DropdownMenuItem className="text-red-600" onSelect={(e) => { e.preventDefault(); setSelectedCourier(courier); setDeleteDialog(true); }}>
+                        <DropdownMenuItem className="text-red-600" onSelect={(e) => { e.preventDefault(); setSelectedCourier(courier); setTimeout(() => setDeleteDialog(true), 50); }}>
                           Delete Courier
                         </DropdownMenuItem>
                       </DropdownMenuContent>
