@@ -3,6 +3,7 @@ import { cookies } from "next/headers"
 import { jwtVerify } from "jose"
 import { db } from "@/lib/db"
 import bcrypt from "bcryptjs"
+import { sendStaffInviteEmail } from "@/lib/email"
 
 // Verify that the requesting user is an admin or operator
 async function verifyAdmin(): Promise<{
@@ -88,7 +89,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json()
-    const { username, name, email, password, pin, role, phone } = body
+    const { username, name, email, password, pin, role, phone, sendInvite } = body
 
     // Validate required fields
     if (!username || !name || !email) {
@@ -158,8 +159,27 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    // Send invite email if requested
+    let inviteSent = false
+    if (sendInvite && email) {
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.VERCEL_URL 
+          ? `https://${process.env.VERCEL_URL}` 
+          : 'https://pickupja.com'
+        const loginUrl = `${baseUrl}/login`
+        const result = await sendStaffInviteEmail(email, name || username, username, role, loginUrl)
+        inviteSent = result.success
+        if (!result.success) {
+          console.error('Failed to send invite email:', result.error)
+        }
+      } catch (emailError) {
+        console.error('Failed to send invite email:', emailError)
+      }
+    }
+
     return NextResponse.json({
       success: true,
+      inviteSent,
       user: {
         id: newUser.id,
         username: newUser.username,

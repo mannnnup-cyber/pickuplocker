@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { sendSMS } from '@/lib/textbee';
+import { sendCourierWelcomeEmail } from '@/lib/email';
 
 // Generate random 4-digit temp PIN
 function generateTempPin(): string {
@@ -59,6 +60,7 @@ export async function POST(request: NextRequest) {
       autoReloadAmount,
       minBalance,
       generateTempPin: shouldGenerateTempPin,
+      sendWelcomeEmail: shouldSendWelcomeEmail,
     } = body;
 
     if (!name || !code) {
@@ -118,12 +120,37 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Send welcome email if requested and email is provided
+    let welcomeEmailSent = false
+    if (shouldSendWelcomeEmail && email) {
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.VERCEL_URL 
+          ? `https://${process.env.VERCEL_URL}` 
+          : 'https://pickupja.com'
+        const pinSetupUrl = `${baseUrl}/courier/pin?courierId=${courier.id}`
+        const emailResult = await sendCourierWelcomeEmail(
+          email,
+          name,
+          contactPerson || null,
+          tempPin || null,
+          pinSetupUrl
+        )
+        welcomeEmailSent = emailResult.success
+        if (!emailResult.success) {
+          console.error('Failed to send courier welcome email:', emailResult.error)
+        }
+      } catch (emailError) {
+        console.error('Failed to send courier welcome email:', emailError)
+      }
+    }
+
     return NextResponse.json({ 
       success: true, 
       data: {
         ...courier,
         tempPin, // Return temp PIN so admin can share it
-      }
+      },
+      welcomeEmailSent,
     });
   } catch (error) {
     console.error('Failed to create courier:', error);

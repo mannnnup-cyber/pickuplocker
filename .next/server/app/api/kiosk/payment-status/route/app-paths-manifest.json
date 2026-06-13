@@ -1,0 +1,3 @@
+{
+  "/api/kiosk/payment-status/route": "app/api/kiosk/payment-status/route.js"
+}

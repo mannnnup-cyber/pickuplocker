@@ -432,6 +432,168 @@ export async function verifyEmailConfig(): Promise<{
   }
 }
 
+// Send staff account invitation email
+export async function sendStaffInviteEmail(
+  to: string,
+  name: string,
+  username: string,
+  role: string,
+  loginUrl: string
+): Promise<EmailResult> {
+  const roleLabel = role === 'ADMIN' ? 'Administrator' : 'Operator';
+  const subject = `You've been invited to Pickup Jamaica - ${roleLabel} Account`;
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #FFD439; padding: 30px 20px; text-align: center; border-radius: 8px 8px 0 0; }
+        .header h1 { margin: 0; color: #111; font-size: 28px; }
+        .content { background: #ffffff; padding: 30px 20px; border: 1px solid #e5e5e5; border-top: none; }
+        .info-box { background: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #FFD439; }
+        .info-box p { margin: 8px 0; }
+        .btn { display: inline-block; background: #111; color: #FFD439; padding: 14px 32px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; margin: 20px 0; }
+        .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; padding: 20px; }
+        .warning { background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 14px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>PICKUP</h1>
+          <p style="margin: 5px 0 0; color: #333;">Smart Locker System</p>
+        </div>
+        
+        <div class="content">
+          <h2>Welcome, ${name}!</h2>
+          <p>You've been invited to join the <strong>Pickup Jamaica</strong> team as an <strong>${roleLabel}</strong>. This gives you access to the admin dashboard where you can manage orders, lockers, couriers, and more.</p>
+          
+          <div class="info-box">
+            <p><strong>Your Account Details:</strong></p>
+            <p><strong>Username:</strong> ${username}</p>
+            <p><strong>Role:</strong> ${roleLabel}</p>
+            <p><strong>Email:</strong> ${to}</p>
+          </div>
+          
+          <div style="text-align: center;">
+            <a href="${loginUrl}" class="btn">Go to Dashboard Login</a>
+          </div>
+          
+          <div class="warning">
+            <strong>Important:</strong> Your account credentials (password or PIN) were set by the administrator who created your account. If you haven't received them separately, please contact your administrator.
+          </div>
+          
+          <p>If the button above doesn't work, copy and paste this link into your browser:</p>
+          <p style="word-break: break-all; color: #666; font-size: 13px;">${loginUrl}</p>
+        </div>
+        
+        <div class="footer">
+          <p>Pickup Jamaica | Smart Locker System</p>
+          <p>If you did not expect this invitation, please ignore this email.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  return sendEmail(to, subject, html);
+}
+
+// Send courier welcome/invitation email
+export async function sendCourierWelcomeEmail(
+  to: string,
+  courierName: string,
+  contactPerson: string | null,
+  tempPin: string | null,
+  pinSetupUrl: string
+): Promise<EmailResult> {
+  const subject = `Welcome to Pickup Jamaica - Your Courier Account`;
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #FFD439; padding: 30px 20px; text-align: center; border-radius: 8px 8px 0 0; }
+        .header h1 { margin: 0; color: #111; font-size: 28px; }
+        .content { background: #ffffff; padding: 30px 20px; border: 1px solid #e5e5e5; border-top: none; }
+        .info-box { background: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #FFD439; }
+        .info-box p { margin: 8px 0; }
+        .pin-box { font-size: 28px; font-weight: bold; letter-spacing: 8px; background: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; border: 2px dashed #FFD439; }
+        .btn { display: inline-block; background: #111; color: #FFD439; padding: 14px 32px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; margin: 20px 0; }
+        .steps { background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .steps ol { margin: 10px 0; padding-left: 20px; }
+        .steps li { margin: 8px 0; }
+        .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; padding: 20px; }
+        .warning { background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 14px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>PICKUP</h1>
+          <p style="margin: 5px 0 0; color: #333;">Smart Locker System</p>
+        </div>
+        
+        <div class="content">
+          <h2>Welcome${contactPerson ? ', ' + contactPerson : ''}!</h2>
+          <p><strong>${courierName}</strong> has been registered as a courier partner on the Pickup Jamaica Smart Locker System. You can now use the courier kiosk to drop off packages for customers.</p>
+          
+          ${tempPin ? `
+          <div class="info-box">
+            <p><strong>Your Temporary Login PIN:</strong></p>
+          </div>
+          <div class="pin-box">${tempPin}</div>
+          
+          <div class="steps">
+            <p><strong>Get Started:</strong></p>
+            <ol>
+              <li>Go to the PIN setup page using the link below</li>
+              <li>Enter your phone number and the temporary PIN above</li>
+              <li>Choose your own permanent 4-digit PIN</li>
+              <li>Use your phone + PIN to log in at any Pickup kiosk</li>
+            </ol>
+          </div>
+          
+          <div style="text-align: center;">
+            <a href="${pinSetupUrl}" class="btn">Set Up Your PIN</a>
+          </div>
+          ` : `
+          <div class="info-box">
+            <p><strong>Your Account:</strong></p>
+            <p>A temporary PIN has been sent to your phone via SMS. Use it to set up your permanent PIN at the link below.</p>
+          </div>
+          
+          <div style="text-align: center;">
+            <a href="${pinSetupUrl}" class="btn">Set Up Your PIN</a>
+          </div>
+          `}
+          
+          <div class="warning">
+            <strong>Important:</strong> Keep your PIN confidential. Do not share it with anyone. If you forget your PIN, contact the Pickup Jamaica team to reset it.
+          </div>
+          
+          <p>If the button above doesn't work, copy and paste this link into your browser:</p>
+          <p style="word-break: break-all; color: #666; font-size: 13px;">${pinSetupUrl}</p>
+        </div>
+        
+        <div class="footer">
+          <p>Pickup Jamaica | Smart Locker System</p>
+          <p>Need help? Contact support@pickupja.com</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  return sendEmail(to, subject, html);
+}
+
 // Export default client
 const EmailClient = {
   sendEmail,
@@ -441,6 +603,8 @@ const EmailClient = {
   sendPickupConfirmationEmail,
   sendOverdueEmail,
   sendDropoffCodeEmail,
+  sendStaffInviteEmail,
+  sendCourierWelcomeEmail,
   verifyEmailConfig,
   isEmailEnabled,
   getEmailConfig,

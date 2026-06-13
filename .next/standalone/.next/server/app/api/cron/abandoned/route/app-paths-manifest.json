@@ -1,0 +1,3 @@
+{
+  "/api/cron/abandoned/route": "app/api/cron/abandoned/route.js"
+}

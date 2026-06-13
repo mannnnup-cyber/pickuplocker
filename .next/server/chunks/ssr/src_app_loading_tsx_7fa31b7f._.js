@@ -1,0 +1,3 @@
+module.exports=[2747,a=>{"use strict";var b=a.i(7997);function c(){return(0,b.jsx)("div",{className:"min-h-screen flex flex-col items-center justify-center bg-[#111111]",children:(0,b.jsxs)("div",{className:"flex flex-col items-center gap-4",children:[(0,b.jsx)("div",{className:"h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-[#FFD439]"}),(0,b.jsx)("p",{className:"text-sm text-gray-400 font-medium",children:"Loading…"}),(0,b.jsx)("p",{className:"text-xs font-semibold tracking-[0.25em] text-[#FFD439]/40 mt-2",children:"PICKUP JAMAICA"})]})})}a.s(["default",()=>c])}];
+
+//# sourceMappingURL=src_app_loading_tsx_7fa31b7f._.js.map

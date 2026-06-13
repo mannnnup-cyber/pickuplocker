@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/courier/layout,_N_T_/courier/pin/layout,_N_T_/courier/pin/page,_N_T_/courier/pin"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/courier/pin/__PAGE__",
+    "/courier/pin",
+    "/courier",
+    "/_index",
+    "/_head"
+  ]
+}

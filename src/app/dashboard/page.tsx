@@ -5129,6 +5129,7 @@ function CouriersContent() {
   const [processing, setProcessing] = React.useState(false)
   const [newCourier, setNewCourier] = React.useState({ name: '', code: '', contactPerson: '', phone: '', email: '', creditLimit: 0 })
   const [sendTempPin, setSendTempPin] = React.useState(true)
+  const [sendWelcomeEmail, setSendWelcomeEmail] = React.useState(true)
   const [createdTempPin, setCreatedTempPin] = React.useState<string | null>(null)
   const [showTempPinDialog, setShowTempPinDialog] = React.useState(false)
   const [editCourier, setEditCourier] = React.useState({ id: '', name: '', code: '', contactPerson: '', phone: '', email: '', address: '' })
@@ -5173,13 +5174,14 @@ function CouriersContent() {
       const res = await fetch('/api/couriers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...newCourier, generateTempPin: sendTempPin })
+        body: JSON.stringify({ ...newCourier, generateTempPin: sendTempPin, sendWelcomeEmail })
       })
       const data = await res.json()
       if (data.success) {
         setAddDialog(false)
         setNewCourier({ name: '', code: '', contactPerson: '', phone: '', email: '', creditLimit: 0 })
         setSendTempPin(true)
+        setSendWelcomeEmail(true)
         // Show temp PIN to admin if one was generated
         if (data.data?.tempPin) {
           setCreatedTempPin(data.data.tempPin)
@@ -5604,6 +5606,21 @@ function CouriersContent() {
               <Label htmlFor="sendTempPin" className="text-[#111111] text-sm cursor-pointer">
                 Send temp PIN via SMS {newCourier.phone ? `(to ${newCourier.phone})` : '(phone required)'}
               </Label>
+            </div>
+            <div className="flex items-center gap-3 py-2 bg-blue-50 px-3 rounded-lg">
+              <input
+                type="checkbox"
+                id="sendWelcomeEmail"
+                checked={sendWelcomeEmail}
+                onChange={(e) => setSendWelcomeEmail(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <div>
+                <Label htmlFor="sendWelcomeEmail" className="text-[#111111] text-sm cursor-pointer font-medium">
+                  <Mail className="inline h-4 w-4 mr-1" />Send welcome email
+                </Label>
+                <p className="text-xs text-gray-500">{newCourier.email ? `Sends welcome email with PIN setup link to ${newCourier.email}` : 'Includes PIN setup link and temp PIN (email required above)'}</p>
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -8383,7 +8400,7 @@ function StaffContent() {
   const [selectedUser, setSelectedUser] = React.useState<StaffUser | null>(null)
   const [formError, setFormError] = React.useState("")
   const [formSuccess, setFormSuccess] = React.useState("")
-  const [newUser, setNewUser] = React.useState({ username: '', name: '', email: '', password: '', pin: '', role: 'OPERATOR', phone: '' })
+  const [newUser, setNewUser] = React.useState({ username: '', name: '', email: '', password: '', pin: '', role: 'OPERATOR', phone: '', sendInvite: true })
   const [editForm, setEditForm] = React.useState({ newPassword: '', newPin: '', role: '', isActive: true, name: '', phone: '' })
 
   const fetchUsers = React.useCallback(async () => {
@@ -8413,8 +8430,8 @@ function StaffContent() {
       const data = await res.json()
       if (data.success) {
         setAddDialog(false)
-        setNewUser({ username: '', name: '', email: '', password: '', pin: '', role: 'OPERATOR', phone: '' })
-        setFormSuccess("User created successfully!")
+        setNewUser({ username: '', name: '', email: '', password: '', pin: '', role: 'OPERATOR', phone: '', sendInvite: true })
+        setFormSuccess(data.inviteSent ? "User created & invite email sent!" : "User created successfully!")
         fetchUsers()
       } else {
         setFormError(data.error || "Failed to create user")
@@ -8450,6 +8467,47 @@ function StaffContent() {
         setFormError(data.error || "Failed to update user")
       }
     } catch { setFormError("Failed to update user") }
+  }
+
+  const handleToggleActive = async (user: StaffUser) => {
+    const newActive = !user.isActive
+    if (!newActive) {
+      const adminCount = users.filter(u => u.role === 'ADMIN' && u.isActive).length
+      if (user.role === 'ADMIN' && adminCount <= 1) {
+        setFormError("Cannot deactivate the last admin account")
+        return
+      }
+    }
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: newActive }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setFormSuccess(`${user.name || user.username} is now ${newActive ? 'active' : 'disabled'}`)
+        fetchUsers()
+      } else {
+        setFormError(data.error || 'Failed to update status')
+      }
+    } catch { setFormError("Failed to update status") }
+  }
+
+  const handleResendInvite = async (user: StaffUser) => {
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resendInvite: true }),
+      })
+      const data = await res.json()
+      if (data.success && data.inviteSent) {
+        setFormSuccess(`Invite email sent to ${user.email}`)
+      } else {
+        setFormError(data.error || 'Failed to send invite email. Check email configuration.')
+      }
+    } catch { setFormError("Failed to send invite email") }
   }
 
   const handleUnlockUser = async (user: StaffUser) => {
@@ -8550,9 +8608,13 @@ function StaffContent() {
                         <Unlock className="mr-1 h-3 w-3" /> Locked
                       </Badge>
                     )}
-                    <Badge className={user.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}>
-                      {user.isActive ? 'Active' : 'Disabled'}
-                    </Badge>
+                    <button 
+                      onClick={() => handleToggleActive(user)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[#FFD439] focus:ring-offset-2 ${user.isActive ? 'bg-green-500' : 'bg-gray-300'}`}
+                      title={user.isActive ? 'Click to deactivate' : 'Click to activate'}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${user.isActive ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
                   </div>
                 </div>
                 <div className="flex items-center justify-between">
@@ -8577,6 +8639,9 @@ function StaffContent() {
               <CardFooter className="pt-3 gap-2">
                 <Button size="sm" variant="outline" className="flex-1 border-gray-300" onClick={() => openEditDialog(user)}>
                   Edit
+                </Button>
+                <Button size="sm" variant="outline" className="border-blue-200 text-blue-600 hover:bg-blue-50" onClick={() => handleResendInvite(user)} title="Resend invite email">
+                  <Mail className="h-4 w-4" />
                 </Button>
                 <Button size="sm" variant="outline" className="border-red-200 text-red-600 hover:bg-red-50" onClick={() => { setSelectedUser(user); setDeleteDialog(true) }}>
                   <Trash2 className="h-4 w-4" />
@@ -8612,6 +8677,21 @@ function StaffContent() {
               <div><Label>PIN</Label><Input type="password" inputMode="numeric" maxLength={6} value={newUser.pin} onChange={e => setNewUser({...newUser, pin: e.target.value})} placeholder="4-6 digit PIN" /></div>
             </div>
             <div><Label>Phone</Label><Input value={newUser.phone} onChange={e => setNewUser({...newUser, phone: e.target.value})} placeholder="876-555-0000" /></div>
+            <div className="flex items-center gap-3 py-2 bg-blue-50 px-3 rounded-lg">
+              <input
+                type="checkbox"
+                id="sendInvite"
+                checked={newUser.sendInvite}
+                onChange={e => setNewUser({...newUser, sendInvite: e.target.checked})}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <div>
+                <Label htmlFor="sendInvite" className="text-[#111111] text-sm cursor-pointer font-medium">
+                  <Mail className="inline h-4 w-4 mr-1" />Send invite email
+                </Label>
+                <p className="text-xs text-gray-500">Sends a welcome email with login details to {newUser.email || 'their email address'}</p>
+              </div>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddDialog(false)}>Cancel</Button>

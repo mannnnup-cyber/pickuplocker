@@ -3,6 +3,7 @@ import { cookies } from "next/headers"
 import { jwtVerify } from "jose"
 import { db } from "@/lib/db"
 import bcrypt from "bcryptjs"
+import { sendStaffInviteEmail } from "@/lib/email"
 
 // Verify admin
 async function verifyAdmin(): Promise<{
@@ -53,7 +54,7 @@ export async function PATCH(
   try {
     const { id } = await params
     const body = await request.json()
-    const { name, role, isActive, resetLockout, newPassword, newPin, phone } = body
+    const { name, role, isActive, resetLockout, newPassword, newPin, phone, resendInvite } = body
 
     // Find the user
     const targetUser = await db.user.findUnique({ where: { id } })
@@ -112,8 +113,30 @@ export async function PATCH(
       },
     })
 
+    // Resend invite email if requested
+    let inviteSent = false
+    if (resendInvite && targetUser.email) {
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.VERCEL_URL 
+          ? `https://${process.env.VERCEL_URL}` 
+          : 'https://pickupja.com'
+        const loginUrl = `${baseUrl}/login`
+        const result = await sendStaffInviteEmail(
+          targetUser.email, 
+          targetUser.name || targetUser.username || 'Team Member', 
+          targetUser.username || '', 
+          targetUser.role, 
+          loginUrl
+        )
+        inviteSent = result.success
+      } catch (emailError) {
+        console.error('Failed to resend invite email:', emailError)
+      }
+    }
+
     return NextResponse.json({
       success: true,
+      inviteSent,
       user: {
         id: updatedUser.id,
         username: updatedUser.username,

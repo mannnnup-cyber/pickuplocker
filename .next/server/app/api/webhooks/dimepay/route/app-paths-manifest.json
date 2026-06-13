@@ -1,0 +1,3 @@
+{
+  "/api/webhooks/dimepay/route": "app/api/webhooks/dimepay/route.js"
+}
