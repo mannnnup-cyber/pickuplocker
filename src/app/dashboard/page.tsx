@@ -35,6 +35,7 @@ import {
   UserCog,
   Trash2,
   Unlock,
+  Ban,
 } from "lucide-react"
 
 import { Suspense } from "react"
@@ -5127,6 +5128,9 @@ function CouriersContent() {
   const [addFundsAmount, setAddFundsAmount] = React.useState("")
   const [processing, setProcessing] = React.useState(false)
   const [newCourier, setNewCourier] = React.useState({ name: '', code: '', contactPerson: '', phone: '', email: '', creditLimit: 0 })
+  const [sendTempPin, setSendTempPin] = React.useState(true)
+  const [createdTempPin, setCreatedTempPin] = React.useState<string | null>(null)
+  const [showTempPinDialog, setShowTempPinDialog] = React.useState(false)
   const [editCourier, setEditCourier] = React.useState({ id: '', name: '', code: '', contactPerson: '', phone: '', email: '', address: '' })
   const [topupDialog, setTopupDialog] = React.useState(false)
   const [selectedCourierForTopup, setSelectedCourierForTopup] = React.useState<Courier | null>(null)
@@ -5169,12 +5173,18 @@ function CouriersContent() {
       const res = await fetch('/api/couriers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newCourier)
+        body: JSON.stringify({ ...newCourier, generateTempPin: sendTempPin })
       })
       const data = await res.json()
       if (data.success) {
         setAddDialog(false)
         setNewCourier({ name: '', code: '', contactPerson: '', phone: '', email: '', creditLimit: 0 })
+        setSendTempPin(true)
+        // Show temp PIN to admin if one was generated
+        if (data.data?.tempPin) {
+          setCreatedTempPin(data.data.tempPin)
+          setShowTempPinDialog(true)
+        }
         fetchCouriers()
       } else {
         alert(data.error || 'Failed to add courier')
@@ -5222,6 +5232,32 @@ function CouriersContent() {
       alert('Failed to update courier')
     } finally {
       setProcessing(false)
+    }
+  }
+
+  const handleToggleCourierStatus = async (courier: Courier) => {
+    const newStatus = courier.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE'
+    const confirmMsg = newStatus === 'SUSPENDED' 
+      ? `Suspend ${courier.name}? They will not be able to log in or use the kiosk.`
+      : `Reactivate ${courier.name}? They will be able to log in and use the kiosk again.`
+    
+    if (!confirm(confirmMsg)) return
+    
+    try {
+      const res = await fetch('/api/couriers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: courier.id, action: 'update_settings', status: newStatus })
+      })
+      const data = await res.json()
+      if (data.success) {
+        fetchCouriers()
+      } else {
+        alert(data.error || 'Failed to update status')
+      }
+    } catch (error) {
+      console.error('Failed to toggle courier status:', error)
+      alert('Failed to update status')
     }
   }
 
@@ -5440,7 +5476,7 @@ function CouriersContent() {
             </TableHeader>
             <TableBody>
               {couriers.map((courier) => (
-                <TableRow key={courier.id} className="border-gray-200">
+                <TableRow key={courier.id} className={`border-gray-200 ${courier.status !== 'ACTIVE' ? 'opacity-60 bg-gray-50' : ''}`}>
                   <TableCell className="font-medium text-[#111111]">{courier.name}</TableCell>
                   <TableCell className="font-mono text-xs">{courier.code}</TableCell>
                   <TableCell className="text-sm">
@@ -5498,6 +5534,16 @@ function CouriersContent() {
                         }}>
                           Edit Courier
                         </DropdownMenuItem>
+                        <DropdownMenuItem 
+                          className={courier.status === 'ACTIVE' ? 'text-orange-600' : 'text-green-600'}
+                          onSelect={(e) => { e.preventDefault(); handleToggleCourierStatus(courier); }}
+                        >
+                          {courier.status === 'ACTIVE' ? (
+                            <><Ban className="mr-2 h-4 w-4" />Suspend Courier</>
+                          ) : (
+                            <><CheckCircle className="mr-2 h-4 w-4" />Reactivate Courier</>
+                          )}
+                        </DropdownMenuItem>
                         <DropdownMenuItem className="text-red-600" onSelect={(e) => { e.preventDefault(); setSelectedCourier(courier); setTimeout(() => setDeleteDialog(true), 50); }}>
                           Delete Courier
                         </DropdownMenuItem>
@@ -5546,6 +5592,18 @@ function CouriersContent() {
             <div className="grid gap-2">
               <Label className="text-[#111111] uppercase text-sm">Credit Limit (JMD)</Label>
               <Input type="number" placeholder="0" className="border-gray-200" value={newCourier.creditLimit || ''} onChange={(e) => setNewCourier({...newCourier, creditLimit: parseFloat(e.target.value) || 0})} />
+            </div>
+            <div className="flex items-center gap-3 py-2">
+              <input
+                type="checkbox"
+                id="sendTempPin"
+                checked={sendTempPin}
+                onChange={(e) => setSendTempPin(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              <Label htmlFor="sendTempPin" className="text-[#111111] text-sm cursor-pointer">
+                Send temp PIN via SMS {newCourier.phone ? `(to ${newCourier.phone})` : '(phone required)'}
+              </Label>
             </div>
           </div>
           <DialogFooter>
@@ -5714,6 +5772,35 @@ function CouriersContent() {
             <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => { setDeleteDialog(false); setSelectedCourier(null); }}>Cancel</Button>
             <Button variant="destructive" className="uppercase" onClick={handleDeleteCourier} disabled={processing}>
               {processing ? 'Deleting...' : 'Delete Courier'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Temp PIN Dialog - Show admin the PIN after creating courier */}
+      <Dialog open={showTempPinDialog} onOpenChange={setShowTempPinDialog}>
+        <DialogContent className="bg-white border-gray-200 text-gray-900">
+          <DialogHeader>
+            <DialogTitle className="text-[#111111] uppercase">Courier Created!</DialogTitle>
+            <DialogDescription className="text-gray-500">Share this temporary PIN with the courier</DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <div className="bg-yellow-50 border-2 border-yellow-400 rounded-xl p-6 text-center">
+              <p className="text-sm text-yellow-700 mb-2">Temporary Login PIN</p>
+              <p className="text-4xl font-bold tracking-widest text-[#111111] font-mono">{createdTempPin}</p>
+            </div>
+            <div className="mt-4 space-y-2">
+              <p className="text-sm text-gray-600">The courier can use this PIN to:</p>
+              <ol className="text-sm text-gray-600 list-decimal list-inside space-y-1">
+                <li>Log in at the kiosk (Courier → Enter phone → Enter PIN)</li>
+                <li>Set a permanent PIN at pickupja.com/courier/pin</li>
+              </ol>
+              <p className="text-xs text-red-600 mt-3">This PIN was also sent via SMS if a phone number was provided. Write it down — it won't be shown again.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase" onClick={() => { setShowTempPinDialog(false); setCreatedTempPin(null); }}>
+              Got It
             </Button>
           </DialogFooter>
         </DialogContent>
