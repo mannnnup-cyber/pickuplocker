@@ -88,6 +88,28 @@ const ALL_BOX_SIZES = [
 // Auto-timeout duration (60 seconds)
 const AUTO_TIMEOUT_MS = 60000
 
+// Fetch with timeout — prevents white screen when API calls hang
+const FETCH_TIMEOUT_MS = 10000
+
+async function kioskFetch(url: string, options?: RequestInit, timeoutMs: number = FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal })
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status} from ${url}`)
+    }
+    return res
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(`Request to ${url} timed out after ${timeoutMs}ms`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 // Box availability type
 interface BoxAvailability {
   code: string
@@ -130,84 +152,9 @@ function KioskPage() {
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null)
   const visibilityHandlerRef = useRef<(() => void) | null>(null)
   const isMountedRef = useRef(true)
+  const loadingStartTimeRef = useRef<number | null>(null)
 
-  // Auto-recovery: reload page if it's been stuck/idle too long (prevents white screen)
-  useEffect(() => {
-    const HEARTBEAT_KEY = 'pickup_kiosk_heartbeat'
-    const RECOVERY_MS = 30 * 60 * 1000 // 30 minutes - if no heartbeat, something is wrong
-    
-    // Write heartbeat
-    const heartbeat = setInterval(() => {
-      try { localStorage.setItem(HEARTBEAT_KEY, Date.now().toString()) } catch {}
-    }, 60000)
-
-    // Check if previous session crashed (no heartbeat for 30 min = white screen)
-    try {
-      const lastHeartbeat = parseInt(localStorage.getItem(HEARTBEAT_KEY) || '0')
-      if (lastHeartbeat && (Date.now() - lastHeartbeat > RECOVERY_MS)) {
-        console.log('[Kiosk] Previous session appears to have crashed. Clearing state.')
-        localStorage.removeItem(HEARTBEAT_KEY)
-      }
-    } catch {}
-
-    // Write initial heartbeat
-    try { localStorage.setItem(HEARTBEAT_KEY, Date.now().toString()) } catch {}
-
-    return () => {
-      clearInterval(heartbeat)
-      try { localStorage.removeItem(HEARTBEAT_KEY) } catch {}
-    }
-  }, [])
-
-  // Cleanup all polling timers on unmount
-  useEffect(() => {
-    isMountedRef.current = true
-    return () => {
-      isMountedRef.current = false
-      // Clear any active polling timer
-      if (pollingTimerRef.current) {
-        clearTimeout(pollingTimerRef.current)
-        pollingTimerRef.current = null
-      }
-      // Remove any dangling visibilitychange listener
-      if (visibilityHandlerRef.current) {
-        document.removeEventListener('visibilitychange', visibilityHandlerRef.current)
-        visibilityHandlerRef.current = null
-      }
-    }
-  }, [])
-
-  // Get available box sizes based on actual availability
-  const BOX_SIZES = ALL_BOX_SIZES.filter(box => {
-    const availability = boxAvailability.find(a => a.code === box.code)
-    return availability && availability.available > 0
-  }).map(box => {
-    const availability = boxAvailability.find(a => a.code === box.code)
-    return {
-      ...box,
-      available: availability?.available || 0,
-    }
-  })
-
-  // Fetch box availability on mount
-  useEffect(() => {
-    const fetchBoxAvailability = async () => {
-      try {
-        const res = await fetch('/api/boxes/availability')
-        const data = await res.json()
-        if (data.success) {
-          setBoxAvailability(data.sizes)
-        }
-      } catch (err) {
-        console.error('Failed to fetch box availability:', err)
-      } finally {
-        setLoadingBoxes(false)
-      }
-    }
-    fetchBoxAvailability()
-  }, [])
-
-  // Reset all state
+  // Reset all state — defined early because it's referenced by recovery useEffects below
   const resetState = useCallback(() => {
     // Cancel any active polling
     if (pollingTimerRef.current) {
@@ -236,6 +183,151 @@ function KioskPage() {
     setSecondsRemaining(10)
     setBoxAvailability([])
     setLoadingBoxes(true)
+  }, [])
+
+  // Auto-recovery: reload page if it's been stuck/idle too long (prevents white screen)
+  useEffect(() => {
+    const HEARTBEAT_KEY = 'pickup_kiosk_heartbeat'
+    const CRASH_KEY = 'pickup_kiosk_crashed'
+    const RECOVERY_MS = 30 * 60 * 1000 // 30 minutes - if no heartbeat, something is wrong
+    
+    // Write heartbeat
+    const heartbeat = setInterval(() => {
+      try { localStorage.setItem(HEARTBEAT_KEY, Date.now().toString()) } catch {}
+    }, 60000)
+
+    // Check if previous session crashed (no heartbeat for 30 min = white screen)
+    try {
+      const lastHeartbeat = parseInt(localStorage.getItem(HEARTBEAT_KEY) || '0')
+      const hadCrash = localStorage.getItem(CRASH_KEY)
+      if (hadCrash || (lastHeartbeat && (Date.now() - lastHeartbeat > RECOVERY_MS))) {
+        console.log('[Kiosk] Previous session appears to have crashed. Recovering...')
+        localStorage.removeItem(CRASH_KEY)
+        localStorage.removeItem(HEARTBEAT_KEY)
+        // Actually recover — reload the page to clear stuck state
+        window.location.reload()
+        return
+      }
+    } catch {}
+
+    // Mark crash on unload (beforeunload fires when page closes/crashes)
+    const markCrash = () => {
+      try { localStorage.setItem(CRASH_KEY, '1') } catch {}
+    }
+    window.addEventListener('beforeunload', markCrash)
+
+    // Clear crash flag on successful load (if we made it this far, we're alive)
+    try { localStorage.removeItem(CRASH_KEY) } catch {}
+
+    // Write initial heartbeat
+    try { localStorage.setItem(HEARTBEAT_KEY, Date.now().toString()) } catch {}
+
+    return () => {
+      clearInterval(heartbeat)
+      window.removeEventListener('beforeunload', markCrash)
+      try { localStorage.removeItem(HEARTBEAT_KEY) } catch {}
+    }
+  }, [])
+
+  // Cleanup all polling timers on unmount
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+      // Clear any active polling timer
+      if (pollingTimerRef.current) {
+        clearTimeout(pollingTimerRef.current)
+        pollingTimerRef.current = null
+      }
+      // Remove any dangling visibilitychange listener
+      if (visibilityHandlerRef.current) {
+        document.removeEventListener('visibilitychange', visibilityHandlerRef.current)
+        visibilityHandlerRef.current = null
+      }
+    }
+  }, [])
+
+  // Global unhandled rejection handler — prevents white screen from uncaught promise errors
+  useEffect(() => {
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      console.error('[Kiosk] Unhandled promise rejection:', event.reason)
+      event.preventDefault()
+      // If we're in a loading state and get an unhandled rejection, recover
+      setError('An unexpected error occurred. The kiosk will restart shortly.')
+      setLoading(false)
+      setLoadingBoxes(false)
+      // Auto-recover after 5 seconds
+      setTimeout(() => {
+        resetState()
+      }, 5000)
+    }
+    window.addEventListener('unhandledrejection', handleUnhandledRejection)
+    return () => window.removeEventListener('unhandledrejection', handleUnhandledRejection)
+  }, [resetState])
+
+  // Stuck-state watchdog — detects when loading has been stuck too long and forces recovery
+  useEffect(() => {
+    const STUCK_THRESHOLD_MS = 30000 // 30 seconds — if loading is stuck this long, something is wrong
+    const CHECK_INTERVAL_MS = 5000   // Check every 5 seconds
+
+    const checkStuckState = () => {
+      const isLoading = loading || loadingBoxes
+      if (isLoading) {
+        if (!loadingStartTimeRef.current) {
+          loadingStartTimeRef.current = Date.now()
+        }
+        const stuckDuration = Date.now() - loadingStartTimeRef.current
+        if (stuckDuration > STUCK_THRESHOLD_MS) {
+          console.error(`[Kiosk] Stuck loading state detected for ${stuckDuration}ms. Forcing recovery.`)
+          loadingStartTimeRef.current = null
+          setLoading(false)
+          setLoadingBoxes(false)
+          setError('Connection issue. Restarting...')
+          // Auto-recover after 3 seconds
+          setTimeout(() => {
+            resetState()
+          }, 3000)
+        }
+      } else {
+        loadingStartTimeRef.current = null
+      }
+    }
+
+    const interval = setInterval(checkStuckState, CHECK_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [loading, loadingBoxes, resetState])
+
+  // Get available box sizes based on actual availability
+  const BOX_SIZES = ALL_BOX_SIZES.filter(box => {
+    const availability = boxAvailability.find(a => a.code === box.code)
+    return availability && availability.available > 0
+  }).map(box => {
+    const availability = boxAvailability.find(a => a.code === box.code)
+    return {
+      ...box,
+      available: availability?.available || 0,
+    }
+  })
+
+  // Fetch box availability on mount
+  useEffect(() => {
+    const fetchBoxAvailability = async () => {
+      try {
+        const res = await kioskFetch('/api/boxes/availability', undefined, 15000)
+        const data = await res.json()
+        if (data.success) {
+          setBoxAvailability(data.sizes)
+        }
+      } catch (err) {
+        console.error('Failed to fetch box availability:', err)
+        if (err instanceof Error && err.message.includes('timed out')) {
+          console.error('[Kiosk] Box availability request timed out — server may be slow')
+        }
+      } finally {
+        setLoadingBoxes(false)
+      }
+    }
+    fetchBoxAvailability()
   }, [])
 
   // Update last activity time
@@ -359,7 +451,7 @@ function KioskPage() {
     setError(null)
 
     try {
-      const res = await fetch("/api/kiosk/use-code", {
+      const res = await kioskFetch("/api/kiosk/use-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -381,8 +473,12 @@ function KioskPage() {
       } else {
         setError(data.error || "Failed to process drop-off")
       }
-    } catch {
-      setError("Failed to connect to server. Please try again.")
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('timed out')) {
+        setError("Server is taking too long to respond. Please try again.")
+      } else {
+        setError("Failed to connect to server. Please try again.")
+      }
     } finally {
       setLoading(false)
     }
@@ -399,7 +495,7 @@ function KioskPage() {
     setError(null)
 
     try {
-      const res = await fetch("/api/kiosk/payment", {
+      const res = await kioskFetch("/api/kiosk/payment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -420,8 +516,12 @@ function KioskPage() {
       }
       
       return data
-    } catch {
-      setError("Failed to connect to server. Please try again.")
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('timed out')) {
+        setError("Server is taking too long to respond. Please try again.")
+      } else {
+        setError("Failed to connect to server. Please try again.")
+      }
       return null
     } finally {
       setLoading(false)
@@ -462,7 +562,7 @@ function KioskPage() {
       attempts++
 
       try {
-        const res = await fetch(`/api/kiosk/payment?paymentId=${paymentId}`)
+        const res = await kioskFetch(`/api/kiosk/payment?paymentId=${paymentId}`, undefined, 10000)
         const data = await res.json()
 
         if (!isMountedRef.current) return
@@ -503,7 +603,7 @@ function KioskPage() {
     setError(null)
 
     try {
-      const res = await fetch("/api/kiosk/payment", {
+      const res = await kioskFetch("/api/kiosk/payment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -524,8 +624,12 @@ function KioskPage() {
       } else {
         setError(data.error || "Failed to open locker")
       }
-    } catch {
-      setError("Failed to connect to server. Please try again.")
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('timed out')) {
+        setError("Server is taking too long to respond. Please try again.")
+      } else {
+        setError("Failed to connect to server. Please try again.")
+      }
     } finally {
       setLoading(false)
     }
@@ -542,7 +646,7 @@ function KioskPage() {
     setError(null)
 
     try {
-      const res = await fetch("/api/kiosk/use-code", {
+      const res = await kioskFetch("/api/kiosk/use-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -563,8 +667,12 @@ function KioskPage() {
       } else {
         setError(data.error || "Invalid pickup code")
       }
-    } catch {
-      setError("Failed to connect to server. Please try again.")
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('timed out')) {
+        setError("Server is taking too long to respond. Please try again.")
+      } else {
+        setError("Failed to connect to server. Please try again.")
+      }
     } finally {
       setLoading(false)
     }
@@ -578,7 +686,7 @@ function KioskPage() {
     setError(null)
 
     try {
-      const res = await fetch("/api/kiosk/payment", {
+      const res = await kioskFetch("/api/kiosk/payment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -624,14 +732,14 @@ function KioskPage() {
             attempts++
 
             try {
-              const res = await fetch(`/api/kiosk/payment?paymentId=${paymentId}`)
+              const res = await kioskFetch(`/api/kiosk/payment?paymentId=${paymentId}`, undefined, 10000)
               const pollData = await res.json()
 
               if (!isMountedRef.current) return
 
               if (pollData.status === "completed") {
                 // Payment successful, now process pickup
-                const pickupRes = await fetch("/api/kiosk/use-code", {
+                const pickupRes = await kioskFetch("/api/kiosk/use-code", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -671,8 +779,12 @@ function KioskPage() {
       } else {
         setError(data.error || "Failed to create payment")
       }
-    } catch {
-      setError("Failed to connect to server. Please try again.")
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('timed out')) {
+        setError("Server is taking too long to respond. Please try again.")
+      } else {
+        setError("Failed to connect to server. Please try again.")
+      }
     } finally {
       setLoading(false)
     }
@@ -701,7 +813,7 @@ function KioskPage() {
     setError(null)
 
     try {
-      const res = await fetch("/api/courier/login", {
+      const res = await kioskFetch("/api/courier/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -730,8 +842,12 @@ function KioskPage() {
       } else {
         setError(data.error || "Login failed. Please try again.")
       }
-    } catch {
-      setError("Failed to connect to server. Please try again.")
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('timed out')) {
+        setError("Server is taking too long to respond. Please try again.")
+      } else {
+        setError("Failed to connect to server. Please try again.")
+      }
     } finally {
       setLoading(false)
     }
@@ -762,7 +878,7 @@ function KioskPage() {
     setError(null)
 
     try {
-      const res = await fetch("/api/kiosk/order", {
+      const res = await kioskFetch("/api/kiosk/order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -784,8 +900,12 @@ function KioskPage() {
       } else {
         setError(data.error || "Failed to create order")
       }
-    } catch {
-      setError("Failed to connect to server. Please try again.")
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('timed out')) {
+        setError("Server is taking too long to respond. Please try again.")
+      } else {
+        setError("Failed to connect to server. Please try again.")
+      }
     } finally {
       setLoading(false)
     }
@@ -1150,7 +1270,7 @@ function KioskPage() {
       setError(null)
       
       try {
-        const res = await fetch("/api/kiosk/payment", {
+        const res = await kioskFetch("/api/kiosk/payment", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1169,8 +1289,12 @@ function KioskPage() {
           setError(data.error || "Failed to create payment")
           setLoading(false)
         }
-      } catch {
-        setError("Failed to connect to server. Please try again.")
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('timed out')) {
+          setError("Server is taking too long to respond. Please try again.")
+        } else {
+          setError("Failed to connect to server. Please try again.")
+        }
         setLoading(false)
       }
     }
@@ -1181,7 +1305,7 @@ function KioskPage() {
       setError(null)
       
       try {
-        const res = await fetch("/api/kiosk/payment", {
+        const res = await kioskFetch("/api/kiosk/payment", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1200,8 +1324,12 @@ function KioskPage() {
         } else {
           setError(data.error || "Failed to create payment")
         }
-      } catch {
-        setError("Failed to connect to server. Please try again.")
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('timed out')) {
+          setError("Server is taking too long to respond. Please try again.")
+        } else {
+          setError("Failed to connect to server. Please try again.")
+        }
       } finally {
         setLoading(false)
       }

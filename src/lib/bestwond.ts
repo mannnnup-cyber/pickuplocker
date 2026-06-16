@@ -4,6 +4,21 @@
 
 import crypto from 'crypto';
 
+// Timeout for all Bestwond API calls — prevents server hangs when their API is slow/down
+const BESTWOND_TIMEOUT_MS = 15000;
+
+// Fetch with timeout for Bestwond API calls
+async function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), BESTWOND_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // Credentials for API calls
 export interface BestwondCredentials {
   appId: string;
@@ -228,7 +243,7 @@ export async function openBoxWithCredentials(
   console.log('=== END OPEN BOX DEBUG ===');
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/open/box/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/open/box/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -272,7 +287,7 @@ export async function getDoorStatusWithCredentials(
   const signature = await generateSignature(params, credentials.appSecret);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/device/box/status/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/box/status/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -414,7 +429,7 @@ export async function getDeviceStatusWithCredentials(
   const signature = await generateSignature(params, credentials.appSecret);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/device/line/status/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/line/status/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -452,7 +467,7 @@ export async function getBoxListWithCredentials(
   const signature = await generateSignature(params, credentials.appSecret);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/device/box/list/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/box/list/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -488,7 +503,7 @@ export async function getDeviceListWithCredentials(
   const signature = await generateSignature(params, credentials.appSecret);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/device/list/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/list/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -537,7 +552,7 @@ export async function getBoxLogWithCredentials(
   console.log('Box:', options?.boxNo || 'all');
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/device/box/log/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/box/log/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -665,7 +680,7 @@ export async function getBoxLog(deviceNumber: string, options?: { boxNo?: number
   const signature = await generateSignature(params, config.appSecret);
   
   try {
-    const response = await fetch(`${config.baseUrl}/api/iot/device/box/log/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${config.baseUrl}/api/iot/device/box/log/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -736,7 +751,7 @@ export async function setWebhookWithCredentials(
   console.log('Take URL:', webhookSettings.take_notify_url);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/set/app/webhook/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/set/app/webhook/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -783,7 +798,7 @@ export async function setSaveOrderWithCredentials(
   console.log('Device:', deviceNumber, 'Order:', orderNo, 'Size:', boxSize);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/kd/set/save/order/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/set/save/order/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -837,7 +852,7 @@ export async function expressSaveOrTakeWithCredentials(
   console.log('Box Size:', boxSize);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/kd/order/save/or/take/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/order/save/or/take/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -879,7 +894,7 @@ export async function getStorableBoxDoorsWithCredentials(
   const signature = await generateSignature(params, credentials.appSecret);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/kd/device/box/doors/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/device/box/doors/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -917,7 +932,7 @@ export async function getBoxUsedInfoWithCredentials(
   const signature = await generateSignature(params, credentials.appSecret);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/kd/device/box/used/info/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/device/box/used/info/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -957,7 +972,7 @@ export async function getBoxSaveOrderInfoWithCredentials(
   const signature = await generateSignature(params, credentials.appSecret);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/kd/get/order/info/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/get/order/info/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -997,7 +1012,7 @@ export async function deleteOrderByOrderNoWithCredentials(
   const signature = await generateSignature(params, credentials.appSecret);
   
   try {
-    const response = await fetch(`${baseUrl}/api/iot/kd/delete/order/no/?sign=${signature}`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/delete/order/no/?sign=${signature}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
