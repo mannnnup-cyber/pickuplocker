@@ -36,10 +36,17 @@ export async function getEmailConfig(): Promise<EmailConfig> {
 }
 
 // Check if email is enabled
+// If an API key is configured, email is considered enabled by default
+// unless explicitly disabled (email_enabled = 'false')
 export async function isEmailEnabled(): Promise<boolean> {
   const enabled = await getSetting('email_enabled', 'EMAIL_ENABLED');
   const config = await getEmailConfig();
-  return enabled === 'true' && !!config.apiKey;
+
+  // If explicitly disabled, respect that
+  if (enabled === 'false') return false;
+
+  // If API key exists, email is enabled (either toggle is 'true' or not set at all)
+  return !!config.apiKey;
 }
 
 // Get Resend client

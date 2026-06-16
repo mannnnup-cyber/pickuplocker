@@ -82,7 +82,7 @@ export async function GET(request: NextRequest) {
         maxRetries: groupedSettings.sms?.maxRetries || '3',
       },
       email: {
-        enabled: groupedSettings.email?.enabled || 'false',
+        enabled: groupedSettings.email?.enabled || (process.env.RESEND_API_KEY ? 'true' : 'false'),
         // Resend settings (recommended for Vercel)
         resend_apiKey: groupedSettings.resend?.apiKey || process.env.RESEND_API_KEY || '',
         resend_fromEmail: groupedSettings.resend?.fromEmail || process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',

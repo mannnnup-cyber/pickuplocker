@@ -199,7 +199,8 @@ export async function getEmailConfig() {
   const settings = await loadSettings();
   
   return {
-    enabled: settings['email_enabled'] === 'true',
+    // Enabled by default if API key exists, unless explicitly disabled
+    enabled: settings['email_enabled'] !== 'false' && !!(settings['resend_apiKey'] || process.env.RESEND_API_KEY),
     // Resend settings
     apiKey: settings['resend_apiKey'] || process.env.RESEND_API_KEY || '',
     fromEmail: settings['resend_fromEmail'] || process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
@@ -221,7 +222,8 @@ export async function getResendConfig() {
     apiKey: settings['resend_apiKey'] || process.env.RESEND_API_KEY || '',
     fromEmail: settings['resend_fromEmail'] || process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
     fromName: settings['resend_fromName'] || process.env.RESEND_FROM_NAME || 'Pickup Jamaica',
-    enabled: settings['email_enabled'] === 'true',
+    // Enabled by default if API key exists, unless explicitly disabled
+    enabled: settings['email_enabled'] !== 'false' && !!(settings['resend_apiKey'] || process.env.RESEND_API_KEY),
   };
 }
 
