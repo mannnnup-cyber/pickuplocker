@@ -229,6 +229,97 @@ function KioskPage() {
     }
   }, [])
 
+  // Visibility change handler — prevents white screen when kiosk tab comes back from background
+  // Browsers throttle/freeze tabs in background, which can corrupt React state
+  useEffect(() => {
+    let hiddenAt: number | null = null
+    const MAX_BACKGROUND_MS = 5 * 60 * 1000 // 5 minutes — if hidden longer, force refresh
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        // Record when the page went hidden
+        hiddenAt = Date.now()
+        console.log('[Kiosk] Page hidden at', new Date().toLocaleTimeString())
+      } else if (document.visibilityState === 'visible') {
+        // Page is visible again
+        if (hiddenAt) {
+          const hiddenDuration = Date.now() - hiddenAt
+          console.log('[Kiosk] Page visible again after', Math.round(hiddenDuration / 1000), 'seconds')
+
+          // If hidden for too long, do a full page reload to clear any corrupted state
+          if (hiddenDuration > MAX_BACKGROUND_MS) {
+            console.log('[Kiosk] Page was hidden too long. Reloading to prevent white screen...')
+            window.location.reload()
+            return
+          }
+
+          // If hidden for a moderate time, refresh box availability and reset if on home screen
+          if (hiddenDuration > 30000) {
+            // Refresh box data since it may be stale
+            const refreshBoxes = async () => {
+              try {
+                const res = await kioskFetch('/api/boxes/availability', undefined, 15000)
+                const data = await res.json()
+                if (data.success) {
+                  setBoxAvailability(data.sizes)
+                }
+              } catch (err) {
+                console.error('[Kiosk] Failed to refresh box availability after visibility change:', err)
+              }
+            }
+            refreshBoxes()
+          }
+        }
+        hiddenAt = null
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [])
+
+  // Periodic self-healing check — detects and recovers from white/frozen screen states
+  useEffect(() => {
+    const CHECK_INTERVAL = 2 * 60 * 1000 // Every 2 minutes
+    const WHITE_SCREEN_CHECK_KEY = 'pickup_kiosk_alive'
+
+    const selfHeal = () => {
+      try {
+        const now = Date.now()
+        localStorage.setItem(WHITE_SCREEN_CHECK_KEY, now.toString())
+
+        // Check if the DOM is actually rendering — if the root element has no children
+        // or has collapsed, the page is likely frozen/white
+        const rootEl = document.getElementById('__next') || document.getElementById('root')
+        if (rootEl) {
+          const hasContent = rootEl.children.length > 0 || rootEl.textContent?.trim()
+          if (!hasContent) {
+            console.error('[Kiosk] White screen detected — root element is empty. Forcing reload.')
+            window.location.reload()
+            return
+          }
+        }
+
+        // Check if we've been on the same non-home view for too long (possible frozen state)
+        // This is a soft check — the auto-timeout should handle most cases,
+        // but if timers are frozen, we need this fallback
+        const lastHeartbeat = parseInt(localStorage.getItem('pickup_kiosk_heartbeat') || '0')
+        if (lastHeartbeat && (now - lastHeartbeat > 10 * 60 * 1000)) {
+          // No heartbeat update for 10 minutes means timers are likely frozen
+          console.error('[Kiosk] No heartbeat for 10 minutes — timers appear frozen. Reloading.')
+          window.location.reload()
+        }
+      } catch (err) {
+        console.error('[Kiosk] Self-heal check failed:', err)
+      }
+    }
+
+    const interval = setInterval(selfHeal, CHECK_INTERVAL)
+    // Run once immediately on mount
+    selfHeal()
+    return () => clearInterval(interval)
+  }, [])
+
   // Cleanup all polling timers on unmount
   useEffect(() => {
     isMountedRef.current = true
@@ -309,7 +400,7 @@ function KioskPage() {
     }
   })
 
-  // Fetch box availability on mount
+  // Fetch box availability on mount AND periodically (keeps kiosk alive + data fresh)
   useEffect(() => {
     const fetchBoxAvailability = async () => {
       try {
@@ -328,6 +419,11 @@ function KioskPage() {
       }
     }
     fetchBoxAvailability()
+
+    // Refresh box availability every 5 minutes to keep data fresh
+    // and serve as a liveness check (if this stops running, the self-heal will detect it)
+    const refreshInterval = setInterval(fetchBoxAvailability, 5 * 60 * 1000)
+    return () => clearInterval(refreshInterval)
   }, [])
 
   // Update last activity time

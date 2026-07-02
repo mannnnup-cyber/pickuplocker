@@ -1,0 +1,958 @@
+     1→     1→import { NextRequest, NextResponse } from 'next/server';
+     2→     2→import { db } from '@/lib/db';
+     3→     3→
+     4→     4→// HTML escape function to prevent XSS
+     5→     5→function esc(str: string): string {
+     6→     6→  return String(str || '')
+     7→     7→    .replace(/&/g, '&amp;')
+     8→     8→    .replace(/</g, '&lt;')
+     9→     9→    .replace(/>/g, '&gt;')
+    10→    10→    .replace(/"/g, '&quot;')
+    11→    11→    .replace(/'/g, '&#39;');
+    12→    12→}
+    13→    13→
+    14→    14→// Shared CSS - Android 5.1 compatible (no CSS Grid, webkit prefixes)
+    15→    15→const SHARED_CSS = `
+    16→    16→  * { -webkit-box-sizing: border-box; box-sizing: border-box; margin: 0; padding: 0; }
+    17→    17→  html, body {
+    18→    18→    height: 100%;
+    19→    19→  }
+    20→    20→  body {
+    21→    21→    font-family: Arial, Helvetica, sans-serif;
+    22→    22→    background: -webkit-linear-gradient(135deg, #111111 0%, #1a1a2e 100%);
+    23→    23→    background: linear-gradient(135deg, #111111 0%, #1a1a2e 100%);
+    24→    24→    min-height: 100vh;
+    25→    25→    color: #ffffff;
+    26→    26→    -webkit-text-size-adjust: 100%;
+    27→    27→  }
+    28→    28→  .container {
+    29→    29→    max-width: 800px;
+    30→    30→    margin: 0 auto;
+    31→    31→    padding: 15px 20px;
+    32→    32→    min-height: 100vh;
+    33→    33→    display: -webkit-flex;
+    34→    34→    display: flex;
+    35→    35→    -webkit-flex-direction: column;
+    36→    36→    flex-direction: column;
+    37→    37→  }
+    38→    38→  .header {
+    39→    39→    padding: 15px 0;
+    40→    40→    -webkit-flex-shrink: 0;
+    41→    41→    flex-shrink: 0;
+    42→    42→  }
+    43→    43→  .header-inner {
+    44→    44→    display: -webkit-flex;
+    45→    45→    display: flex;
+    46→    46→    -webkit-align-items: center;
+    47→    47→    align-items: center;
+    48→    48→    -webkit-justify-content: center;
+    49→    49→    justify-content: center;
+    50→    50→    gap: 12px;
+    51→    51→  }
+    52→    52→  .header-logo {
+    53→    53→    height: 56px;
+    54→    54→    width: auto;
+    55→    55→    -webkit-flex-shrink: 0;
+    56→    56→    flex-shrink: 0;
+    57→    57→    -o-object-fit: contain;
+    58→    58→    object-fit: contain;
+    59→    59→  }
+    60→    60→  .header-text h1 {
+    61→    61→    font-size: 28px;
+    62→    62→    font-weight: bold;
+    63→    63→    text-transform: uppercase;
+    64→    64→    letter-spacing: 1px;
+    65→    65→    margin: 0;
+    66→    66→    color: #ffffff;
+    67→    67→  }
+    68→    68→  .header-text h1 .brand-gold {
+    69→    69→    color: #FFD439;
+    70→    70→  }
+    71→    71→  .header-text p {
+    72→    72→    font-size: 12px;
+    73→    73→    color: #999999;
+    74→    74→    margin: 2px 0 0 0;
+    75→    75→    letter-spacing: 2px;
+    76→    76→    text-transform: uppercase;
+    77→    77→  }
+    78→    78→  .home-brand-area {
+    79→    79→    display: -webkit-flex;
+    80→    80→    display: flex;
+    81→    81→    -webkit-align-items: center;
+    82→    82→    align-items: center;
+    83→    83→    -webkit-justify-content: center;
+    84→    84→    justify-content: center;
+    85→    85→    gap: 16px;
+    86→    86→    margin-bottom: 30px;
+    87→    87→  }
+    88→    88→  .home-logo {
+    89→    89→    height: 110px;
+    90→    90→    width: auto;
+    91→    91→    -webkit-flex-shrink: 0;
+    92→    92→    flex-shrink: 0;
+    93→    93→    -o-object-fit: contain;
+    94→    94→    object-fit: contain;
+    95→    95→  }
+    96→    96→  .home-brand-text h1 {
+    97→    97→    font-size: 40px;
+    98→    98→    font-weight: bold;
+    99→    99→    text-transform: uppercase;
+   100→   100→    letter-spacing: 2px;
+   101→   101→    margin: 0;
+   102→   102→    color: #ffffff;
+   103→   103→    line-height: 1;
+   104→   104→  }
+   105→   105→  .home-brand-text h1 .brand-gold {
+   106→   106→    color: #FFD439;
+   107→   107→  }
+   108→   108→  .home-brand-text p {
+   109→   109→    font-size: 13px;
+   110→   110→    color: #999999;
+   111→   111→    margin: 4px 0 0 0;
+   112→   112→    letter-spacing: 3px;
+   113→   113→    text-transform: uppercase;
+   114→   114→  }
+   115→   115→  .content {
+   116→   116→    -webkit-flex: 1;
+   117→   117→    flex: 1;
+   118→   118→  }
+   119→   119→  .content-centered {
+   120→   120→    -webkit-flex: 1;
+   121→   121→    flex: 1;
+   122→   122→    display: -webkit-flex;
+   123→   123→    display: flex;
+   124→   124→    -webkit-flex-direction: column;
+   125→   125→    flex-direction: column;
+   126→   126→    -webkit-justify-content: center;
+   127→   127→    justify-content: center;
+   128→   128→    -webkit-align-items: center;
+   129→   129→    align-items: center;
+   130→   130→  }
+   131→   131→  .title {
+   132→   132→    text-align: center;
+   133→   133→    font-size: 26px;
+   134→   134→    margin-bottom: 15px;
+   135→   135→    color: #FFD439;
+   136→   136→    font-weight: bold;
+   137→   137→  }
+   138→   138→  .subtitle {
+   139→   139→    text-align: center;
+   140→   140→    font-size: 16px;
+   141→   141→    color: #999999;
+   142→   142→    margin-bottom: 15px;
+   143→   143→  }
+   144→   144→  .btn {
+   145→   145→    display: block;
+   146→   146→    width: 100%;
+   147→   147→    padding: 22px 20px;
+   148→   148→    margin: 10px 0;
+   149→   149→    font-size: 22px;
+   150→   150→    font-weight: bold;
+   151→   151→    border: none;
+   152→   152→    border-radius: 12px;
+   153→   153→    cursor: pointer;
+   154→   154→    text-decoration: none;
+   155→   155→    text-align: center;
+   156→   156→    -webkit-appearance: none;
+   157→   157→    appearance: none;
+   158→   158→    -webkit-tap-highlight-color: rgba(0,0,0,0);
+   159→   159→    min-height: 48px;
+   160→   160→  }
+   161→   161→  .btn-primary {
+   162→   162→    background: #FFD439;
+   163→   163→    color: #111111;
+   164→   164→  }
+   165→   165→  .btn-primary:hover, .btn-primary:active {
+   166→   166→    background: #e6c035;
+   167→   167→  }
+   168→   168→  .btn-secondary {
+   169→   169→    background: #333333;
+   170→   170→    color: #ffffff;
+   171→   171→    border: 2px solid #FFD439;
+   172→   172→  }
+   173→   173→  .btn-secondary:hover, .btn-secondary:active {
+   174→   174→    background: #444444;
+   175→   175→  }
+   176→   176→  .btn-success {
+   177→   177→    background: #4CAF50;
+   178→   178→    color: white;
+   179→   179→  }
+   180→   180→  .btn-success:hover, .btn-success:active {
+   181→   181→    background: #45a049;
+   182→   182→  }
+   183→   183→  .btn-back {
+   184→   184→    display: inline-block;
+   185→   185→    background: transparent;
+   186→   186→    border: 2px solid #666666;
+   187→   187→    color: #999999;
+   188→   188→    padding: 14px 30px;
+   189→   189→    font-size: 16px;
+   190→   190→    font-weight: bold;
+   191→   191→    border-radius: 8px;
+   192→   192→    text-decoration: none;
+   193→   193→    -webkit-tap-highlight-color: rgba(0,0,0,0);
+   194→   194→  }
+   195→   195→  /* ---- Home screen hero buttons ---- */
+   196→   196→  .hero-btn {
+   197→   197→    display: block;
+   198→   198→    width: 100%;
+   199→   199→    max-width: 420px;
+   200→   200→    padding: 0;
+   201→   201→    margin: 12px auto;
+   202→   202→    border: none;
+   203→   203→    border-radius: 16px;
+   204→   204→    cursor: pointer;
+   205→   205→    text-decoration: none;
+   206→   206→    text-align: center;
+   207→   207→    -webkit-appearance: none;
+   208→   208→    appearance: none;
+   209→   209→    -webkit-tap-highlight-color: rgba(0,0,0,0);
+   210→   210→    -webkit-transition: -webkit-transform 0.1s ease;
+   211→   211→    transition: transform 0.1s ease;
+   212→   212→  }
+   213→   213→  .hero-btn:active {
+   214→   214→    -webkit-transform: scale(0.97);
+   215→   215→    transform: scale(0.97);
+   216→   216→  }
+   217→   217→  .hero-btn-dropoff {
+   218→   218→    background: #FFD439;
+   219→   219→    min-height: 140px;
+   220→   220→  }
+   221→   221→  .hero-btn-pickup {
+   222→   222→    background: #ffffff;
+   223→   223→    min-height: 140px;
+   224→   224→  }
+   225→   225→  .hero-btn-icon {
+   226→   226→    font-size: 44px;
+   227→   227→    display: block;
+   228→   228→    margin-bottom: 4px;
+   229→   229→    line-height: 1;
+   230→   230→  }
+   231→   231→  .hero-btn-dropoff .hero-btn-icon { color: #111111; }
+   232→   232→  .hero-btn-pickup .hero-btn-icon { color: #111111; }
+   233→   233→  .hero-btn-label {
+   234→   234→    font-size: 30px;
+   235→   235→    font-weight: bold;
+   236→   236→    letter-spacing: 2px;
+   237→   237→    display: block;
+   238→   238→    line-height: 1.2;
+   239→   239→  }
+   240→   240→  .hero-btn-dropoff .hero-btn-label { color: #111111; }
+   241→   241→  .hero-btn-pickup .hero-btn-label { color: #111111; }
+   242→   242→  .hero-btn-hint {
+   243→   243→    font-size: 13px;
+   244→   244→    color: #666666;
+   245→   245→    display: block;
+   246→   246→    margin-top: 4px;
+   247→   247→  }
+   248→   248→  .home-tagline {
+   249→   249→    text-align: center;
+   250→   250→    color: #666666;
+   251→   251→    font-size: 14px;
+   252→   252→    margin-top: 20px;
+   253→   253→    letter-spacing: 1px;
+   254→   254→  }
+   255→   255→  .divider {
+   256→   256→    text-align: center;
+   257→   257→    margin: 20px 0 10px;
+   258→   258→    color: #444444;
+   259→   259→    font-size: 13px;
+   260→   260→    letter-spacing: 4px;
+   261→   261→  }
+   262→   262→  /* ---- Form elements ---- */
+   263→   263→  .form-group {
+   264→   264→    margin-bottom: 20px;
+   265→   265→  }
+   266→   266→  .form-group label {
+   267→   267→    display: block;
+   268→   268→    margin-bottom: 8px;
+   269→   269→    font-size: 16px;
+   270→   270→    color: #FFD439;
+   271→   271→    font-weight: bold;
+   272→   272→  }
+   273→   273→  .form-group input {
+   274→   274→    width: 100%;
+   275→   275→    padding: 18px;
+   276→   276→    font-size: 24px;
+   277→   277→    border: 2px solid #333333;
+   278→   278→    border-radius: 10px;
+   279→   279→    background: #1a1a1a;
+   280→   280→    color: #ffffff;
+   281→   281→    -webkit-appearance: none;
+   282→   282→    appearance: none;
+   283→   283→    -webkit-tap-highlight-color: rgba(0,0,0,0);
+   284→   284→    text-align: center;
+   285→   285→    letter-spacing: 5px;
+   286→   286→  }
+   287→   287→  .form-group input:focus {
+   288→   288→    outline: none;
+   289→   289→    border-color: #FFD439;
+   290→   290→  }
+   291→   291→  .info-box {
+   292→   292→    background: #1a1a1a;
+   293→   293→    padding: 20px;
+   294→   294→    border-radius: 10px;
+   295→   295→    margin: 15px 0;
+   296→   296→    border: 1px solid #333333;
+   297→   297→  }
+   298→   298→  .info-box p {
+   299→   299→    margin: 8px 0;
+   300→   300→    font-size: 16px;
+   301→   301→  }
+   302→   302→  .label {
+   303→   303→    color: #999999;
+   304→   304→  }
+   305→   305→  .value {
+   306→   306→    color: #ffffff;
+   307→   307→    font-weight: bold;
+   308→   308→  }
+   309→   309→  .code-display {
+   310→   310→    text-align: center;
+   311→   311→    font-size: 48px;
+   312→   312→    color: #FFD439;
+   313→   313→    font-weight: bold;
+   314→   314→    padding: 25px;
+   315→   315→    background: #1a1a1a;
+   316→   316→    border-radius: 10px;
+   317→   317→    margin: 15px 0;
+   318→   318→    border: 2px solid #FFD439;
+   319→   319→    letter-spacing: 10px;
+   320→   320→  }
+   321→   321→  .success-icon {
+   322→   322→    text-align: center;
+   323→   323→    font-size: 72px;
+   324→   324→    color: #4CAF50;
+   325→   325→    margin: 15px 0;
+   326→   326→  }
+   327→   327→  .error-msg {
+   328→   328→    color: #ff6b6b;
+   329→   329→    text-align: center;
+   330→   330→    margin-bottom: 15px;
+   331→   331→    font-size: 16px;
+   332→   332→  }
+   333→   333→  .nav-buttons {
+   334→   334→    margin-top: 25px;
+   335→   335→  }
+   336→   336→  .box-grid {
+   337→   337→    display: -webkit-flex;
+   338→   338→    display: flex;
+   339→   339→    -webkit-flex-wrap: wrap;
+   340→   340→    flex-wrap: wrap;
+   341→   341→    margin: 15px -5px;
+   342→   342→  }
+   343→   343→  .box-option {
+   344→   344→    -webkit-flex: 0 0 calc(50% - 10px);
+   345→   345→    flex: 0 0 calc(50% - 10px);
+   346→   346→    margin: 5px;
+   347→   347→  }
+   348→   348→  .box-option .btn {
+   349→   349→    margin: 0;
+   350→   350→  }
+   351→   351→  .box-S { background: #2196F3; color: white; }
+   352→   352→  .box-M { background: #4CAF50; color: white; }
+   353→   353→  .box-L { background: #FF9800; color: white; }
+   354→   354→  .box-XL { background: #9C27B0; color: white; }
+   355→   355→  .legend {
+   356→   356→    display: -webkit-flex;
+   357→   357→    display: flex;
+   358→   358→    -webkit-flex-wrap: wrap;
+   359→   359→    flex-wrap: wrap;
+   360→   360→    -webkit-justify-content: center;
+   361→   361→    justify-content: center;
+   362→   362→    margin: 15px 0;
+   363→   363→    font-size: 13px;
+   364→   364→  }
+   365→   365→  .legend-item {
+   366→   366→    display: -webkit-flex;
+   367→   367→    display: flex;
+   368→   368→    -webkit-align-items: center;
+   369→   369→    align-items: center;
+   370→   370→    margin: 0 8px;
+   371→   371→  }
+   372→   372→  .legend-item .legend-color {
+   373→   373→    margin-right: 5px;
+   374→   374→  }
+   375→   375→  .legend-color {
+   376→   376→    width: 18px;
+   377→   377→    height: 18px;
+   378→   378→    border-radius: 3px;
+   379→   379→  }
+   380→   380→  .option-card {
+   381→   381→    background: #1a1a1a;
+   382→   382→    border: 2px solid #333333;
+   383→   383→    border-radius: 10px;
+   384→   384→    padding: 20px;
+   385→   385→    margin: 10px 0;
+   386→   386→  }
+   387→   387→  .option-card h3 {
+   388→   388→    color: #FFD439;
+   389→   389→    font-size: 18px;
+   390→   390→    margin-bottom: 5px;
+   391→   391→  }
+   392→   392→  .option-card p {
+   393→   393→    color: #999999;
+   394→   394→    font-size: 14px;
+   395→   395→  }
+   396→   396→  .payment-details {
+   397→   397→    background: #1a1a1a;
+   398→   398→    padding: 15px;
+   399→   399→    border-radius: 8px;
+   400→   400→    margin: 10px 0;
+   401→   401→    border: 1px solid #FFD439;
+   402→   402→  }
+   403→   403→  .qr-container {
+   404→   404→    text-align: center;
+   405→   405→    padding: 20px;
+   406→   406→    background: #ffffff;
+   407→   407→    border-radius: 10px;
+   408→   408→    margin: 15px auto;
+   409→   409→    max-width: 300px;
+   410→   410→  }
+   411→   411→  .qr-container img {
+   412→   412→    max-width: 250px;
+   413→   413→  }
+   414→   414→  #kiosk-clock {
+   415→   415→    color: #FFD439;
+   416→   416→    font-weight: bold;
+   417→   417→  }
+   418→   418→  #kiosk-countdown {
+   419→   419→    color: #666666;
+   420→   420→    font-size: 12px;
+   421→   421→    margin-left: 10px;
+   422→   422→  }
+   423→   423→  .footer {
+   424→   424→    text-align: center;
+   425→   425→    padding: 15px 0;
+   426→   426→    border-top: 1px solid #333333;
+   427→   427→    font-size: 12px;
+   428→   428→    color: #555555;
+   429→   429→    -webkit-flex-shrink: 0;
+   430→   430→    flex-shrink: 0;
+   431→   431→    margin-top: 15px;
+   432→   432→  }
+   433→   433→  .spinner {
+   434→   434→    display: inline-block;
+   435→   435→    width: 40px;
+   436→   436→    height: 40px;
+   437→   437→    border: 4px solid #333333;
+   438→   438→    border-top: 4px solid #FFD439;
+   439→   439→    border-radius: 50%;
+   440→   440→    -webkit-animation: spin 1s linear infinite;
+   441→   441→    animation: spin 1s linear infinite;
+   442→   442→    margin: 20px auto;
+   443→   443→  }
+   444→   444→  @-webkit-keyframes spin { 0% { -webkit-transform: rotate(0deg); } 100% { -webkit-transform: rotate(360deg); } }
+   445→   445→  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+   446→   446→  @media (max-width: 480px) {
+   447→   447→    .btn { font-size: 18px; padding: 18px 15px; }
+   448→   448→    .title { font-size: 22px; }
+   449→   449→    .code-display { font-size: 36px; letter-spacing: 6px; }
+   450→   450→    .hero-btn { min-height: 110px; max-width: 100%; }
+   451→   451→    .hero-btn-label { font-size: 24px; }
+   452→   452→    .hero-btn-icon { font-size: 36px; }
+   453→   453→    .header-logo { height: 44px; width: auto; }
+   454→   454→    .header-text h1 { font-size: 22px; }
+   455→   455→    .header-text p { font-size: 10px; }
+   456→   456→    .home-logo { height: 80px; width: auto; }
+   457→   457→    .home-brand-text h1 { font-size: 30px; }
+   458→   458→    .home-brand-text p { font-size: 11px; }
+   459→   459→  }
+   460→   460→`;
+   461→   461→
+   462→   462→// Kiosk-mode JavaScript - Android 5.0 compatible (ES5 only, no arrow functions, no const/let, no Promises)
+   463→   463→const KIOSK_JS = `
+   464→   464→  // Inactivity timeout - return to home after 90 seconds of no interaction
+   465→   465→  var inactivityTimer;
+   466→   466→  var INACTIVITY_MS = 90000;
+   467→   467→  var countdownTimer;
+   468→   468→  var remainingSeconds = Math.floor(INACTIVITY_MS / 1000);
+   469→   469→
+   470→   470→  function resetInactivityTimer() {
+   471→   471→    clearTimeout(inactivityTimer);
+   472→   472→    clearInterval(countdownTimer);
+   473→   473→    remainingSeconds = Math.floor(INACTIVITY_MS / 1000);
+   474→   474→    updateCountdown();
+   475→   475→    inactivityTimer = setTimeout(function() {
+   476→   476→      window.location.href = '/kiosk-lite';
+   477→   477→    }, INACTIVITY_MS);
+   478→   478→    countdownTimer = setInterval(function() {
+   479→   479→      remainingSeconds = remainingSeconds - 1;
+   480→   480→      if (remainingSeconds <= 0) {
+   481→   481→        clearInterval(countdownTimer);
+   482→   482→        return;
+   483→   483→      }
+   484→   484→      updateCountdown();
+   485→   485→    }, 1000);
+   486→   486→  }
+   487→   487→
+   488→   488→  function updateCountdown() {
+   489→   489→    var el = document.getElementById('kiosk-countdown');
+   490→   490→    if (!el) return;
+   491→   491→    var m = Math.floor(remainingSeconds / 60);
+   492→   492→    var s = remainingSeconds % 60;
+   493→   493→    if (s < 10) s = '0' + s;
+   494→   494→    el.textContent = m + ':' + s;
+   495→   495→    // Change color when low
+   496→   496→    if (remainingSeconds <= 15) {
+   497→   497→      el.style.color = '#ff6b6b';
+   498→   498→    } else if (remainingSeconds <= 30) {
+   499→   499→      el.style.color = '#FFD439';
+   500→   500→    }
+   501→   501→  }
+   502→   502→
+   503→   503→  // Listen for user activity
+   504→   504→  document.addEventListener('touchstart', resetInactivityTimer, false);
+   505→   505→  document.addEventListener('click', resetInactivityTimer, false);
+   506→   506→  document.addEventListener('keydown', resetInactivityTimer, false);
+   507→   507→
+   508→   508→  // Start timer on page load
+   509→   509→  resetInactivityTimer();
+   510→   510→
+   511→   511→  // Update clock display
+   512→   512→  function updateClock() {
+   513→   513→    var el = document.getElementById('kiosk-clock');
+   514→   514→    if (!el) return;
+   515→   515→    var now = new Date();
+   516→   516→    var h = now.getHours();
+   517→   517→    var m = now.getMinutes();
+   518→   518→    var ampm = h >= 12 ? 'PM' : 'AM';
+   519→   519→    h = h % 12;
+   520→   520→    if (h === 0) h = 12;
+   521→   521→    if (m < 10) m = '0' + m;
+   522→   522→    el.textContent = h + ':' + m + ' ' + ampm;
+   523→   523→  }
+   524→   524→  updateClock();
+   525→   525→  setInterval(updateClock, 30000);
+   526→   526→
+   527→   527→  // Try to enter fullscreen (works in some WebView versions)
+   528→   528→  function tryFullscreen() {
+   529→   529→    var el = document.documentElement;
+   530→   530→    if (el.requestFullscreen) {
+   531→   531→      el.requestFullscreen();
+   532→   532→    } else if (el.webkitRequestFullscreen) {
+   533→   533→      el.webkitRequestFullscreen();
+   534→   534→    }
+   535→   535→  }
+   536→   536→  // Auto-enter fullscreen on first touch
+   537→   537→  document.addEventListener('touchstart', function() {
+   538→   538→    tryFullscreen();
+   539→   539→  }, { once: true });
+   540→   540→
+   541→   541→  // ---- AJAX Payment Polling (Chrome 37 compatible) ----
+   542→   542→  // Replaces meta-refresh so QR code stays visible while checking payment status
+   543→   543→  function startPaymentPolling(pollUrl, checkIntervalMs) {
+   544→   544→    var pollInterval = setInterval(function() {
+   545→   545→      var xhr = new XMLHttpRequest();
+   546→   546→      xhr.open('GET', pollUrl, true);
+   547→   547→      xhr.setRequestHeader('Accept', 'application/json');
+   548→   548→      xhr.onreadystatechange = function() {
+   549→   549→        if (xhr.readyState !== 4) return;
+   550→   550→        if (xhr.status !== 200) return;
+   551→   551→        try {
+   552→   552→          var resp = JSON.parse(xhr.responseText);
+   553→   553→          if (resp && resp.status === 'completed') {
+   554→   554→            clearInterval(pollInterval);
+   555→   555→            // Payment confirmed — redirect to success page
+   556→   556→            window.location.href = resp.redirectUrl || '/kiosk-lite?action=payment-success&msg=' + encodeURIComponent(resp.message || 'Payment confirmed!');
+   557→   557→          } else if (resp && resp.status === 'failed') {
+   558→   558→            clearInterval(pollInterval);
+   559→   559→            window.location.href = '/kiosk-lite?action=error&msg=' + encodeURIComponent(resp.message || 'Payment failed');
+   560→   560→          }
+   561→   561→        } catch(e) {
+   562→   562→          // Non-JSON response — ignore, keep polling
+   563→   563→        }
+   564→   564→      };
+   565→   565→      xhr.send();
+   566→   566→    }, checkIntervalMs || 5000);
+   567→   567→  }
+   568→   568→`;
+   569→   569→
+   570→   570→// Shared header HTML matching deployed Vercel version (logo + PICK UP text side by side)
+   571→   571→const HEADER_HTML = `
+   572→   572→  <div class="header">
+   573→   573→    <div class="header-inner">
+   574→   574→      <img src="/logo-icon.png" alt="Pickup Logo" class="header-logo">
+   575→   575→      <div class="header-text">
+   576→   576→        <h1>PICK<span class="brand-gold">UP</span></h1>
+   577→   577→        <p>Smart Locker System</p>
+   578→   578→      </div>
+   579→   579→    </div>
+   580→   580→  </div>`;
+   581→   581→
+   582→   582→// Shared footer HTML
+   583→   583→const FOOTER_HTML = `
+   584→   584→  <div class="footer">Pickup Jamaica | UTech Campus</div>`;
+   585→   585→
+   586→   586→function renderPage(content: string, centered: boolean = false, extraHead: string = ''): string {
+   587→   587→  const contentClass = centered ? 'content-centered' : 'content';
+   588→   588→  return `<!DOCTYPE html>
+   589→   589→<html lang="en">
+   590→   590→<head>
+   591→   591→  <meta charset="UTF-8">
+   592→   592→  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+   593→   593→  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+   594→   594→  <meta name="format-detection" content="telephone=no">
+   595→   595→  <title>Pickup - Smart Locker</title>
+   596→   596→  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+   597→   597→  <link rel="icon" href="/favicon-192.png" sizes="192x192" type="image/png">
+   598→   598→  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+   599→   599→  <style>${SHARED_CSS}</style>
+   600→   600→  ${extraHead}
+   601→   601→</head>
+   602→   602→<body>
+   603→   603→  <div class="container">
+   604→   604→    ${HEADER_HTML}
+   605→   605→    <div class="${contentClass}">
+   606→   606→      ${content}
+   607→   607→    </div>
+   608→   608→    ${FOOTER_HTML}
+   609→   609→  </div>
+   610→   610→  <script>${KIOSK_JS}</script>
+   611→   611→</body>
+   612→   612→</html>`;
+   613→   613→}
+   614→   614→
+   615→   615→const HTML_HEADERS = {
+   616→   616→  'Content-Type': 'text/html',
+   617→   617→  'X-Content-Type-Options': 'nosniff',
+   618→   618→  'Cache-Control': 'no-store',
+   619→   619→};
+   620→   620→
+   621→   621→// GET handler - display screens
+   622→   622→export async function GET(request: NextRequest) {
+   623→   623→  const { searchParams } = request.nextUrl;
+   624→   624→  const action = searchParams.get('action');
+   625→   625→  const error = searchParams.get('error');
+   626→   626→  const msg = searchParams.get('msg');
+   627→   627→
+   628→   628→  // ---- HOME SCREEN (centered, full logo, big hero buttons) ----
+   629→   629→  if (!action) {
+   630→   630→    return new NextResponse(renderPage(`
+   631→   631→      <form action="/api/kiosk-action" method="POST" style="width:100%;max-width:420px;">
+   632→   632→        <input type="hidden" name="flow" value="dropoff">
+   633→   633→        <input type="hidden" name="step" value="1">
+   634→   634→        <button type="submit" class="hero-btn hero-btn-dropoff">
+   635→   635→          <span class="hero-btn-icon">&#128230;</span>
+   636→   636→          <span class="hero-btn-label">DROP-OFF</span>
+   637→   637→          <span class="hero-btn-hint">Deposit a package</span>
+   638→   638→        </button>
+   639→   639→      </form>
+   640→   640→      <form action="/api/kiosk-action" method="POST" style="width:100%;max-width:420px;">
+   641→   641→        <input type="hidden" name="flow" value="pickup">
+   642→   642→        <input type="hidden" name="step" value="1">
+   643→   643→        <button type="submit" class="hero-btn hero-btn-pickup">
+   644→   644→          <span class="hero-btn-icon">&#128273;</span>
+   645→   645→          <span class="hero-btn-label">PICKUP</span>
+   646→   646→          <span class="hero-btn-hint">Collect your package</span>
+   647→   647→        </button>
+   648→   648→      </form>
+   649→   649→      <p class="home-tagline">Available 24/7</p>
+   650→   650→    `, true), { headers: HTML_HEADERS });
+   651→   651→  }
+   652→   652→
+   653→   653→  // ---- DROP-OFF OPTIONS ----
+   654→   654→  if (action === 'dropoff') {
+   655→   655→    return new NextResponse(renderPage(`
+   656→   656→      <h2 class="title">Drop-Off</h2>
+   657→   657→      ${error ? `<p class="error-msg">${esc(error)}</p>` : ''}
+   658→   658→      <form action="/api/kiosk-action" method="POST">
+   659→   659→        <input type="hidden" name="flow" value="dropoff">
+   660→   660→        <input type="hidden" name="step" value="enter_save_code">
+   661→   661→        <button type="submit" class="btn btn-primary">I have a Drop-off Code</button>
+   662→   662→      </form>
+   663→   663→      <form action="/api/kiosk-action" method="POST">
+   664→   664→        <input type="hidden" name="flow" value="dropoff">
+   665→   665→        <input type="hidden" name="step" value="select_size">
+   666→   666→        <button type="submit" class="btn btn-secondary">Buy a Drop-off Code</button>
+   667→   667→      </form>
+   668→   668→      <form action="/api/kiosk-action" method="POST">
+   669→   669→        <input type="hidden" name="flow" value="dropoff">
+   670→   670→        <input type="hidden" name="step" value="courier_login">
+   671→   671→        <button type="submit" class="btn btn-secondary">I'm a Courier</button>
+   672→   672→      </form>
+   673→   673→      <div class="nav-buttons">
+   674→   674→        <a href="/kiosk-lite" class="btn btn-back">Back</a>
+   675→   675→      </div>
+   676→   676→    `), { headers: HTML_HEADERS });
+   677→   677→  }
+   678→   678→
+   679→   679→  // ---- DROP-OFF: ENTER SAVE CODE ----
+   680→   680→  if (action === 'dropoff-save') {
+   681→   681→    return new NextResponse(renderPage(`
+   682→   682→      <h2 class="title">Drop-Off</h2>
+   683→   683→      <p class="subtitle">Enter your 6-digit save code</p>
+   684→   684→      ${error ? `<p class="error-msg">${esc(error)}</p>` : ''}
+   685→   685→      <form action="/api/kiosk-action" method="POST">
+   686→   686→        <input type="hidden" name="flow" value="dropoff">
+   687→   687→        <input type="hidden" name="step" value="use_save_code">
+   688→   688→        <div class="form-group">
+   689→   689→          <label>Save Code</label>
+   690→   690→          <input type="text" name="saveCode" required placeholder="000000" maxlength="6" pattern="[0-9]{6}" inputmode="numeric">
+   691→   691→        </div>
+   692→   692→        <div class="form-group">
+   693→   693→          <label>Phone Number</label>
+   694→   694→          <input type="tel" name="phone" required placeholder="876-XXX-XXXX" inputmode="tel">
+   695→   695→        </div>
+   696→   696→        <button type="submit" class="btn btn-primary">OPEN LOCKER</button>
+   697→   697→      </form>
+   698→   698→      <div class="nav-buttons">
+   699→   699→        <a href="/kiosk-lite?action=dropoff" class="btn btn-back">Back</a>
+   700→   700→      </div>
+   701→   701→    `), { headers: HTML_HEADERS });
+   702→   702→  }
+   703→   703→
+   704→   704→  // ---- DROP-OFF: SELECT BOX SIZE TO BUY ----
+   705→   705→  if (action === 'dropoff-size') {
+   706→   706→    return new NextResponse(renderPage(`
+   707→   707→      <h2 class="title">Buy a Drop-off Code</h2>
+   708→   708→      <p class="subtitle">Select box size - Pay via DimePay QR</p>
+   709→   709→      ${error ? `<p class="error-msg">${esc(error)}</p>` : ''}
+   710→   710→      <div class="legend">
+   711→   711→        <div class="legend-item"><div class="legend-color" style="background:#2196F3"></div> Small</div>
+   712→   712→        <div class="legend-item"><div class="legend-color" style="background:#4CAF50"></div> Medium</div>
+   713→   713→        <div class="legend-item"><div class="legend-color" style="background:#FF9800"></div> Large</div>
+   714→   714→        <div class="legend-item"><div class="legend-color" style="background:#9C27B0"></div> X-Large</div>
+   715→   715→      </div>
+   716→   716→      <div class="box-grid">
+   717→   717→        <div class="box-option">
+   718→   718→          <form action="/api/kiosk-action" method="POST">
+   719→   719→            <input type="hidden" name="flow" value="dropoff">
+   720→   720→            <input type="hidden" name="step" value="buy_enter_phone">
+   721→   721→            <input type="hidden" name="boxSize" value="S">
+   722→   722→            <button type="submit" class="btn box-S">Small<br>$150 JMD</button>
+   723→   723→          </form>
+   724→   724→        </div>
+   725→   725→        <div class="box-option">
+   726→   726→          <form action="/api/kiosk-action" method="POST">
+   727→   727→            <input type="hidden" name="flow" value="dropoff">
+   728→   728→            <input type="hidden" name="step" value="buy_enter_phone">
+   729→   729→            <input type="hidden" name="boxSize" value="M">
+   730→   730→            <button type="submit" class="btn box-M">Medium<br>$200 JMD</button>
+   731→   731→          </form>
+   732→   732→        </div>
+   733→   733→        <div class="box-option">
+   734→   734→          <form action="/api/kiosk-action" method="POST">
+   735→   735→            <input type="hidden" name="flow" value="dropoff">
+   736→   736→            <input type="hidden" name="step" value="buy_enter_phone">
+   737→   737→            <input type="hidden" name="boxSize" value="L">
+   738→   738→            <button type="submit" class="btn box-L">Large<br>$300 JMD</button>
+   739→   739→          </form>
+   740→   740→        </div>
+   741→   741→        <div class="box-option">
+   742→   742→          <form action="/api/kiosk-action" method="POST">
+   743→   743→            <input type="hidden" name="flow" value="dropoff">
+   744→   744→            <input type="hidden" name="step" value="buy_enter_phone">
+   745→   745→            <input type="hidden" name="boxSize" value="XL">
+   746→   746→            <button type="submit" class="btn box-XL">X-Large<br>$400 JMD</button>
+   747→   747→          </form>
+   748→   748→        </div>
+   749→   749→      </div>
+   750→   750→      <div class="nav-buttons">
+   751→   751→        <a href="/kiosk-lite?action=dropoff" class="btn btn-back">Back</a>
+   752→   752→      </div>
+   753→   753→    `), { headers: HTML_HEADERS });
+   754→   754→  }
+   755→   755→
+   756→   756→  // ---- DROP-OFF: BUY - ENTER PHONE ----
+   757→   757→  if (action === 'dropoff-phone') {
+   758→   758→    const boxSize = searchParams.get('boxSize') || '';
+   759→   759→    const prices: Record<string,string> = { S:'150', M:'200', L:'300', XL:'400' };
+   760→   760→    const sizeLabels: Record<string,string> = { S:'Small', M:'Medium', L:'Large', XL:'X-Large' };
+   761→   761→    return new NextResponse(renderPage(`
+   762→   762→      <h2 class="title">Buy Drop-off Code</h2>
+   763→   763→      <p class="subtitle">${esc(sizeLabels[boxSize] || boxSize)} - $${prices[boxSize] || '???'} JMD</p>
+   764→   764→      ${error ? `<p class="error-msg">${esc(error)}</p>` : ''}
+   765→   765→      <form action="/api/kiosk-action" method="POST">
+   766→   766→        <input type="hidden" name="flow" value="dropoff">
+   767→   767→        <input type="hidden" name="step" value="buy_create_payment">
+   768→   768→        <input type="hidden" name="boxSize" value="${esc(boxSize)}">
+   769→   769→        <div class="form-group">
+   770→   770→          <label>Phone Number</label>
+   771→   771→          <input type="tel" name="phone" required placeholder="876-XXX-XXXX" inputmode="tel">
+   772→   772→        </div>
+   773→   773→        <div class="form-group">
+   774→   774→          <label>Email (Optional)</label>
+   775→   775→          <input type="email" name="email" placeholder="you@email.com">
+   776→   776→        </div>
+   777→   777→        <button type="submit" class="btn btn-primary">PAY NOW</button>
+   778→   778→      </form>
+   779→   779→      <div class="nav-buttons">
+   780→   780→        <a href="/kiosk-lite?action=dropoff-size" class="btn btn-back">Back</a>
+   781→   781→      </div>
+   782→   782→    `), { headers: HTML_HEADERS });
+   783→   783→  }
+   784→   784→
+   785→   785→  // ---- DROP-OFF: COURIER LOGIN ----
+   786→   786→  if (action === 'courier-login') {
+   787→   787→    return new NextResponse(renderPage(`
+   788→   788→      <h2 class="title">Courier Login</h2>
+   789→   789→      <p class="subtitle">Enter your phone number and PIN</p>
+   790→   790→      ${error ? `<p class="error-msg">${esc(error)}</p>` : ''}
+   791→   791→      <form action="/api/kiosk-action" method="POST">
+   792→   792→        <input type="hidden" name="flow" value="dropoff">
+   793→   793→        <input type="hidden" name="step" value="courier_auth">
+   794→   794→        <div class="form-group">
+   795→   795→          <label>Phone Number</label>
+   796→   796→          <input type="tel" name="phone" required placeholder="876-XXX-XXXX" maxlength="15" inputmode="tel">
+   797→   797→        </div>
+   798→   798→        <div class="form-group">
+   799→   799→          <label>Courier PIN</label>
+   800→   800→          <input type="password" name="pin" required placeholder="Enter 4-digit PIN" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+   801→   801→        </div>
+   802→   802→        <button type="submit" class="btn btn-primary">LOGIN</button>
+   803→   803→      </form>
+   804→   804→      <div class="nav-buttons">
+   805→   805→        <a href="/kiosk-lite?action=dropoff" class="btn btn-back">Back</a>
+   806→   806→      </div>
+   807→   807→    `), { headers: HTML_HEADERS });
+   808→   808→  }
+   809→   809→
+   810→   810→  // ---- PICKUP: ENTER CODE ----
+   811→   811→  if (action === 'pickup') {
+   812→   812→    return new NextResponse(renderPage(`
+   813→   813→      <h2 class="title">Pickup</h2>
+   814→   814→      <p class="subtitle">Enter your 6-digit pickup code</p>
+   815→   815→      ${error ? `<p class="error-msg">${esc(error)}</p>` : ''}
+   816→   816→      <form action="/api/kiosk-action" method="POST">
+   817→   817→        <input type="hidden" name="flow" value="pickup">
+   818→   818→        <input type="hidden" name="step" value="lookup">
+   819→   819→        <div class="form-group">
+   820→   820→          <label>Pickup Code</label>
+   821→   821→          <input type="text" name="pickCode" required placeholder="000000" maxlength="6" pattern="[0-9]{6}" inputmode="numeric">
+   822→   822→        </div>
+   823→   823→        <button type="submit" class="btn btn-primary">FIND MY PACKAGE</button>
+   824→   824→      </form>
+   825→   825→      <div class="nav-buttons">
+   826→   826→        <a href="/kiosk-lite" class="btn btn-back">Back</a>
+   827→   827→      </div>
+   828→   828→    `), { headers: HTML_HEADERS });
+   829→   829→  }
+   830→   830→
+   831→   831→  // ---- CONFIRM CARD CHARGE (one-tap for saved cards) ----
+   832→   832→  if (action === 'confirm-charge') {
+   833→   833→    const amount = searchParams.get('amount') || '0';
+   834→   834→    const brand = searchParams.get('brand') || '';
+   835→   835→    const last4 = searchParams.get('last4') || '****';
+   836→   836→    const cardToken = searchParams.get('cardToken') || '';
+   837→   837→    const orderId = searchParams.get('orderId') || '';
+   838→   838→    const boxName = searchParams.get('boxName') || '';
+   839→   839→    return new NextResponse(renderPage(`
+   840→   840→      <h2 class="title">Storage Fee</h2>
+   841→   841→      <p class="subtitle">A storage fee has been applied</p>
+   842→   842→      <div class="info-box">
+   843→   843→        <p style="text-align:center; color:#999999;">Amount Due</p>
+   844→   844→        <div class="code-display">$${esc(amount)} JMD</div>
+   845→   845→      </div>
+   846→   846→      <div class="info-box">
+   847→   847→        <p style="text-align:center; color:#999999;">Charge to saved card</p>
+   848→   848→        <p style="text-align:center; font-size:22px; font-weight:bold;">
+   849→   849→          ${esc(brand)} ****${esc(last4)}
+   850→   850→        </p>
+   851→   851→      </div>
+   852→   852→      <form action="/api/kiosk-action" method="POST">
+   853→   853→        <input type="hidden" name="flow" value="pickup">
+   854→   854→        <input type="hidden" name="step" value="charge_saved_card">
+   855→   855→        <input type="hidden" name="cardToken" value="${esc(cardToken)}">
+   856→   856→        <input type="hidden" name="amount" value="${esc(amount)}">
+   857→   857→        <input type="hidden" name="orderId" value="${esc(orderId)}">
+   858→   858→        <input type="hidden" name="boxName" value="${esc(boxName)}">
+   859→   859→        <button type="submit" class="btn btn-primary">CONFIRM CHARGE</button>
+   860→   860→      </form>
+   861→   861→      <form action="/api/kiosk-action" method="POST">
+   862→   862→        <input type="hidden" name="flow" value="pickup">
+   863→   863→        <input type="hidden" name="step" value="pay_storage_fee_qr">
+   864→   864→        <input type="hidden" name="orderId" value="${esc(orderId)}">
+   865→   865→        <input type="hidden" name="amount" value="${esc(amount)}">
+   866→   866→        <button type="submit" class="btn btn-secondary">PAY ANOTHER WAY</button>
+   867→   867→      </form>
+   868→   868→      <div class="nav-buttons">
+   869→   869→        <a href="/kiosk-lite" class="btn btn-back">Cancel</a>
+   870→   870→      </div>
+   871→   871→    `), { headers: HTML_HEADERS });
+   872→   872→  }
+   873→   873→
+   874→   874→  // ---- DROPOFF PAYMENT CONFIRMED (after QR scan payment) ----
+   875→   875→  if (action === 'dropoff-confirmed') {
+   876→   876→    const saveCode = searchParams.get('saveCode') || '';
+   877→   877→    const boxSize = searchParams.get('boxSize') || '';
+   878→   878→    const phone = searchParams.get('phone') || '';
+   879→   879→    const pickCode = searchParams.get('pickCode') || '';
+   880→   880→    return new NextResponse(renderPage(`
+   881→   881→      <div class="success-icon">&#10003;</div>
+   882→   882→      <h2 class="title">Payment Confirmed!</h2>
+   883→   883→      <p class="subtitle">Your drop-off code is ready.</p>
+   884→   884→      <div class="info-box">
+   885→   885→        <p style="text-align:center; color:#999999;">Your Save Code</p>
+   886→   886→        <div class="code-display">${esc(saveCode)}</div>
+   887→   887→        <p style="text-align:center; font-size:14px; color:#999999;">Use this code to open a locker</p>
+   888→   888→      </div>
+   889→   889→      <form action="/api/kiosk-action" method="POST">
+   890→   890→        <input type="hidden" name="flow" value="dropoff">
+   891→   891→        <input type="hidden" name="step" value="open_after_payment">
+   892→   892→        <input type="hidden" name="saveCode" value="${esc(saveCode)}">
+   893→   893→        <input type="hidden" name="boxSize" value="${esc(boxSize)}">
+   894→   894→        <input type="hidden" name="phone" value="${esc(phone)}">
+   895→   895→        <button type="submit" class="btn btn-success">DEPOSIT NOW</button>
+   896→   896→      </form>
+   897→   897→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+   898→   898→    `), { headers: HTML_HEADERS });
+   899→   899→  }
+   900→   900→
+   901→   901→  // ---- STORAGE FEE PAYMENT CONFIRMED (after QR scan payment) ----
+   902→   902→  if (action === 'storage-confirmed') {
+   903→   903→    const pickCode = searchParams.get('pickCode') || '';
+   904→   904→    return new NextResponse(renderPage(`
+   905→   905→      <div class="success-icon">&#10003;</div>
+   906→   906→      <h2 class="title">Payment Confirmed!</h2>
+   907→   907→      <p class="subtitle">Storage fee has been paid.</p>
+   908→   908→      <form action="/api/kiosk-action" method="POST">
+   909→   909→        <input type="hidden" name="flow" value="pickup">
+   910→   910→        <input type="hidden" name="step" value="open_pickup">
+   911→   911→        <input type="hidden" name="pickCode" value="${esc(pickCode)}">
+   912→   912→        <button type="submit" class="btn btn-success">OPEN LOCKER</button>
+   913→   913→      </form>
+   914→   914→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+   915→   915→    `), { headers: HTML_HEADERS });
+   916→   916→  }
+   917→   917→
+   918→   918→  // ---- PAYMENT SUCCESS ----
+   919→   919→  if (action === 'payment-success') {
+   920→   920→    return new NextResponse(renderPage(`
+   921→   921→      <div class="success-icon">&#10003;</div>
+   922→   922→      <h2 class="title">Payment Confirmed!</h2>
+   923→   923→      <p class="subtitle">${esc(msg || 'Your payment was successful.')}</p>
+   924→   924→      <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+   925→   925→    `), { headers: HTML_HEADERS });
+   926→   926→  }
+   927→   927→
+   928→   928→  // ---- ERROR SCREEN ----
+   929→   929→  if (action === 'error') {
+   930→   930→    return new NextResponse(renderPage(`
+   931→   931→      <h2 class="title">Oops!</h2>
+   932→   932→      <p class="error-msg">${esc(msg || 'Something went wrong')}</p>
+   933→   933→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+   934→   934→    `), { headers: HTML_HEADERS });
+   935→   935→  }
+   936→   936→
+   937→   937→  // Default: home
+   938→   938→  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
+   939→   939→}
+   940→   940→
+   941→   941→// POST handler - only for step=1 redirects
+   942→   942→export async function POST(request: NextRequest) {
+   943→   943→  const formData = await request.formData();
+   944→   944→  const flow = formData.get('flow') as string;
+   945→   945→  const step = formData.get('step') as string;
+   946→   946→
+   947→   947→  if (step === '1') {
+   948→   948→    if (flow === 'dropoff') {
+   949→   949→      return NextResponse.redirect(new URL('/kiosk-lite?action=dropoff', request.url), 303);
+   950→   950→    }
+   951→   951→    if (flow === 'pickup') {
+   952→   952→      return NextResponse.redirect(new URL('/kiosk-lite?action=pickup', request.url), 303);
+   953→   953→    }
+   954→   954→  }
+   955→   955→
+   956→   956→  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
+   957→   957→}
+   958→   958→

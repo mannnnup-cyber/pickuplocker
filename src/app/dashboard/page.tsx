@@ -149,6 +149,8 @@ interface Courier {
   hasPin?: boolean
   hasTempPin?: boolean
   pinSetAt?: string | null
+  lastLoginAt?: string | null
+  inviteStatus?: 'pending' | 'invited' | 'active' | 'inactive'
 }
 
 interface Stats {
@@ -5469,6 +5471,7 @@ function CouriersContent() {
                 <TableHead className="text-gray-500 uppercase text-xs">Code</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Contact</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Status</TableHead>
+                <TableHead className="text-gray-500 uppercase text-xs">Account</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">PIN</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Balance</TableHead>
                 <TableHead className="text-gray-500 uppercase text-xs">Credit Limit</TableHead>
@@ -5486,6 +5489,20 @@ function CouriersContent() {
                     {courier.phone && <div className="text-gray-500 text-xs">{courier.phone}</div>}
                   </TableCell>
                   <TableCell><Badge className={getStatusBadge(courier.status)}>{courier.status}</Badge></TableCell>
+                  <TableCell>
+                    {courier.inviteStatus === 'active' ? (
+                      <Badge className="bg-green-100 text-green-700 text-xs"><CheckCircle className="h-3 w-3 mr-1" />Active</Badge>
+                    ) : courier.inviteStatus === 'invited' ? (
+                      <Badge className="bg-blue-100 text-blue-700 text-xs"><Mail className="h-3 w-3 mr-1" />Invited</Badge>
+                    ) : courier.inviteStatus === 'inactive' ? (
+                      <Badge className="bg-gray-100 text-gray-600 text-xs"><Clock className="h-3 w-3 mr-1" />Inactive</Badge>
+                    ) : (
+                      <Badge className="bg-orange-100 text-orange-700 text-xs"><AlertCircle className="h-3 w-3 mr-1" />Pending</Badge>
+                    )}
+                    {courier.lastLoginAt && (
+                      <div className="text-[10px] text-gray-400 mt-0.5">Last login: {new Date(courier.lastLoginAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
+                    )}
+                  </TableCell>
                   <TableCell>
                     {courier.hasPin ? (
                       <Badge className="bg-green-100 text-green-700 text-xs"><Lock className="h-3 w-3 mr-1" />Set</Badge>

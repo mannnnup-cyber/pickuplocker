@@ -27,12 +27,30 @@ export async function GET(request: NextRequest) {
       orderBy: { name: 'asc' },
     });
 
-    // Add PIN status to each courier
-    const couriersWithPinStatus = couriers.map(courier => ({
-      ...courier,
-      hasPin: !!courier.pin,
-      hasTempPin: !!courier.tempPin,
-    }));
+    // Add PIN and invite status to each courier
+    const couriersWithPinStatus = couriers.map(courier => {
+      // Determine invite status based on PIN and login state
+      let inviteStatus: 'pending' | 'invited' | 'active' | 'inactive' = 'pending';
+      if (courier.pin) {
+        // Has permanent PIN set = they've logged in and set up their account
+        inviteStatus = courier.lastLoginAt && (Date.now() - new Date(courier.lastLoginAt).getTime() < 30 * 24 * 60 * 60 * 1000)
+          ? 'active'      // Logged in within last 30 days
+          : 'inactive';   // Has PIN but hasn't logged in recently
+      } else if (courier.tempPin) {
+        // Has temp PIN but hasn't set permanent PIN = invited but hasn't completed setup
+        inviteStatus = 'invited';
+      } else {
+        // No PIN at all = pending invite
+        inviteStatus = 'pending';
+      }
+
+      return {
+        ...courier,
+        hasPin: !!courier.pin,
+        hasTempPin: !!courier.tempPin,
+        inviteStatus,
+      };
+    });
 
     return NextResponse.json({ success: true, data: couriersWithPinStatus });
   } catch (error) {

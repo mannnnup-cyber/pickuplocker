@@ -1,0 +1,2002 @@
+     1→"use client"
+     2→
+     3→import * as React from "react"
+     4→import { useSearchParams, useRouter } from "next/navigation"
+     5→import {
+     6→  Box,
+     7→  Package,
+     8→  Users,
+     9→  CreditCard,
+    10→  TrendingUp,
+    11→  Clock,
+    12→  Plus,
+    13→  Search,
+    14→  MoreHorizontal,
+    15→  QrCode,
+    16→  RefreshCw,
+    17→  Wifi,
+    18→  WifiOff,
+    19→  Lock,
+    20→  Database,
+    21→  Server,
+    22→  MessageSquare,
+    23→  CheckCircle,
+    24→  AlertTriangle,
+    25→  XCircle,
+    26→  Shield,
+    27→  Truck,
+    28→  Eye,
+    29→  DollarSign,
+    30→  Mail,
+    31→  Send,
+    32→  Zap,
+    33→  Copy,
+    34→  Key,
+    35→  UserCog,
+    36→  Trash2,
+    37→  Unlock,
+    38→  Ban,
+    39→} from "lucide-react"
+    40→
+    41→import { Suspense } from "react"
+    42→
+    43→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+    44→import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+    45→import { Button } from "@/components/ui/button"
+    46→import { Input } from "@/components/ui/input"
+    47→import { Badge } from "@/components/ui/badge"
+    48→import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+    49→import {
+    50→  Table,
+    51→  TableBody,
+    52→  TableCell,
+    53→  TableHead,
+    54→  TableHeader,
+    55→  TableRow,
+    56→} from "@/components/ui/table"
+    57→import {
+    58→  Dialog,
+    59→  DialogContent,
+    60→  DialogDescription,
+    61→  DialogFooter,
+    62→  DialogHeader,
+    63→  DialogTitle,
+    64→} from "@/components/ui/dialog"
+    65→import {
+    66→  Select,
+    67→  SelectContent,
+    68→  SelectItem,
+    69→  SelectTrigger,
+    70→  SelectValue,
+    71→} from "@/components/ui/select"
+    72→import {
+    73→  DropdownMenu,
+    74→  DropdownMenuContent,
+    75→  DropdownMenuItem,
+    76→  DropdownMenuLabel,
+    77→  DropdownMenuSeparator,
+    78→  DropdownMenuTrigger,
+    79→} from "@/components/ui/dropdown-menu"
+    80→import { Label } from "@/components/ui/label"
+    81→import { AppLayout } from "@/components/app-sidebar"
+    82→import { formatCurrency, formatDate, getStatusColor } from "@/lib/storage"
+    83→import { AuthGuard } from "@/components/auth-guard"
+    84→import { useAuth } from "@/hooks/useAuth"
+    85→
+    86→// Types
+    87→interface Device {
+    88→  id: string
+    89→  deviceId: string
+    90→  name: string
+    91→  status: string
+    92→  location: string | null
+    93→  totalBoxes: number
+    94→  availableBoxes: number
+    95→  hasCredentials?: boolean
+    96→}
+    97→
+    98→interface Order {
+    99→  id: string
+   100→  orderNumber: string
+   101→  trackingCode: string
+   102→  customerName: string
+   103→  customerPhone: string
+   104→  status: string
+   105→  storageDays: number
+   106→  storageFee: number
+   107→  deviceName?: string
+   108→  deviceId?: string
+   109→  bestwondDeviceId?: string
+   110→  boxNumber?: number
+   111→  createdAt: string
+   112→  currentStorageDays?: number
+   113→  currentStorageFee?: number
+   114→}
+   115→
+   116→interface Customer {
+   117→  id: string
+   118→  name: string
+   119→  email: string
+   120→  phone: string
+   121→  totalOrders: number
+   122→  activeOrders: number
+   123→}
+   124→
+   125→interface Payment {
+   126→  id: string
+   127→  orderId: string
+   128→  customerName: string
+   129→  amount: number
+   130→  status: string
+   131→  method: string
+   132→  createdAt: string
+   133→}
+   134→
+   135→interface Courier {
+   136→  id: string
+   137→  name: string
+   138→  code: string
+   139→  contactPerson: string | null
+   140→  phone: string | null
+   141→  email: string | null
+   142→  status: string
+   143→  balance: number
+   144→  creditLimit: number
+   145→  autoReload: boolean
+   146→  autoReloadAmount: number | null
+   147→  minBalance: number | null
+   148→  _count?: { orders: number }
+   149→  hasPin?: boolean
+   150→  hasTempPin?: boolean
+   151→  pinSetAt?: string | null
+   152→}
+   153→
+   154→interface Stats {
+   155→  totalDevices: number
+   156→  totalBoxes: number
+   157→  availableBoxes: number
+   158→  totalOrders: number
+   159→  activeOrders: number
+   160→  totalRevenue: number
+   161→  todayRevenue: number
+   162→  pendingPayments: number
+   163→  totalExpressOrders?: number
+   164→  activeExpressOrders?: number
+   165→  totalPayments?: number
+   166→}
+   167→
+   168→interface ServiceStatus {
+   169→  name: string
+   170→  status: 'online' | 'offline' | 'warning' | 'unknown'
+   171→  message: string
+   172→  latency?: number
+   173→  details?: Record<string, unknown>
+   174→}
+   175→
+   176→interface SystemStatus {
+   177→  timestamp: string
+   178→  overallStatus: 'online' | 'degraded' | 'offline'
+   179→  totalLatency: number
+   180→  services: ServiceStatus[]
+   181→}
+   182→
+   183→interface BoxInfo {
+   184→  boxNo: number
+   185→  status: 'EMPTY' | 'USED' | 'LOCKED'
+   186→  size?: string
+   187→}
+   188→
+   189→// Mock data for fallback
+   190→const mockDevices = [
+   191→  { id: "1", deviceId: "2100018247", name: "Pickup Locker - Jamaica", status: "ONLINE", location: "Jamaica", totalBoxes: 36, availableBoxes: 28 },
+   192→]
+   193→
+   194→const mockOrders = [
+   195→  { id: "1", orderNumber: "DH-20250225-001", trackingCode: "123456", customerName: "John Brown", customerPhone: "876-555-0101", status: "STORED", storageDays: 2, storageFee: 0, deviceName: "UTech Campus Locker", boxNumber: 5, createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() },
+   196→  { id: "2", orderNumber: "DH-20250224-003", trackingCode: "789012", customerName: "Sarah Jones", customerPhone: "876-555-0202", status: "STORED", storageDays: 5, storageFee: 200, deviceName: "Main Office Locker", boxNumber: 12, createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString() },
+   197→]
+   198→
+   199→const mockCustomers = [
+   200→  { id: "1", name: "John Brown", email: "john.b@email.com", phone: "876-555-0101", totalOrders: 5, activeOrders: 1 },
+   201→  { id: "2", name: "Sarah Jones", email: "sarah.j@email.com", phone: "876-555-0202", totalOrders: 12, activeOrders: 1 },
+   202→]
+   203→
+   204→const mockPayments = [
+   205→  { id: "1", orderId: "DH-20250224-003", customerName: "Sarah Jones", amount: 200, status: "COMPLETED", method: "CARD", createdAt: new Date().toISOString() },
+   206→]
+   207→
+   208→const mockCouriers = [
+   209→  { id: "1", name: "Knutsford Express", code: "KE", contactPerson: "John Smith", phone: "876-555-1000", email: "logistics@knutsford.com", status: "ACTIVE", balance: 5000, creditLimit: 10000, autoReload: true, autoReloadAmount: 2000, minBalance: 1000, _count: { orders: 45 } },
+   210→  { id: "2", name: "ZipMail", code: "ZM", contactPerson: "Jane Doe", phone: "876-555-2000", email: "support@zipmail.com", status: "ACTIVE", balance: 2500, creditLimit: 5000, autoReload: false, autoReloadAmount: null, minBalance: null, _count: { orders: 23 } },
+   211→]
+   212→
+   213→// Stats cards component
+   214→function StatsCards({ stats }: { stats: Stats | null }) {
+   215→  const displayStats = [
+   216→    { 
+   217→      title: "Lockers", 
+   218→      value: stats?.totalDevices ?? 2, 
+   219→      subtext: "Active locations", 
+   220→      icon: Box,
+   221→      iconBg: "bg-blue-500",
+   222→      change: "+0"
+   223→    },
+   224→    { 
+   225→      title: "Available Boxes", 
+   226→      value: `${stats?.availableBoxes ?? 30}/${stats?.totalBoxes ?? 60}`, 
+   227→      subtext: "Ready for use", 
+   228→      icon: Package,
+   229→      iconBg: "bg-green-500",
+   230→      change: `${Math.round(((stats?.availableBoxes ?? 30) / (stats?.totalBoxes ?? 60)) * 100)}%`
+   231→    },
+   232→    { 
+   233→      title: "Active Orders", 
+   234→      value: stats?.activeOrders ?? 4, 
+   235→      subtext: "Packages stored", 
+   236→      icon: Clock,
+   237→      iconBg: "bg-[#FFD439]",
+   238→      change: "+0 today"
+   239→    },
+   240→    { 
+   241→      title: "Revenue", 
+   242→      value: `$${(stats?.todayRevenue ?? 0).toLocaleString()}`, 
+   243→      subtext: "JMD today", 
+   244→      icon: TrendingUp,
+   245→      iconBg: "bg-purple-500",
+   246→      change: `${stats?.pendingPayments ?? 0} pending`
+   247→    },
+   248→  ]
+   249→
+   250→  return (
+   251→    <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+   252→      {displayStats.map((stat) => (
+   253→        <Card key={stat.title} className="bg-white border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+   254→          <CardContent className="p-4">
+   255→            <div className="flex items-start justify-between">
+   256→              <div className="flex-1">
+   257→                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{stat.title}</p>
+   258→                <p className="text-2xl font-bold text-[#111111] mt-1">{stat.value}</p>
+   259→                <p className="text-xs text-gray-400 mt-0.5">{stat.subtext}</p>
+   260→              </div>
+   261→              <div className={`rounded-lg p-2.5 ${stat.iconBg}`}>
+   262→                <stat.icon className="h-4 w-4 text-white" />
+   263→              </div>
+   264→            </div>
+   265→          </CardContent>
+   266→        </Card>
+   267→      ))}
+   268→    </div>
+   269→  )
+   270→}
+   271→
+   272→// Unused Credits Warning Component
+   273→function UnusedCreditsWarning({ onNavigate }: { onNavigate: (tab: string) => void }) {
+   274→  const [unusedCredits, setUnusedCredits] = React.useState<Array<{
+   275→    saveCode: string
+   276→    amount: number
+   277→    customerPhone: string
+   278→    createdAt: string
+   279→  }>>([])
+   280→  const [summary, setSummary] = React.useState<{ count: number; totalValue: number } | null>(null)
+   281→  const [loading, setLoading] = React.useState(true)
+   282→  const [dismissed, setDismissed] = React.useState(false)
+   283→
+   284→  React.useEffect(() => {
+   285→    const fetchUnusedCredits = async () => {
+   286→      try {
+   287→        const res = await fetch('/api/payments/unused-credits')
+   288→        const data = await res.json()
+   289→        if (data.success) {
+   290→          setUnusedCredits(data.data.slice(0, 5)) // Show max 5
+   291→          setSummary(data.summary)
+   292→        }
+   293→      } catch (error) {
+   294→        console.error('Failed to fetch unused credits:', error)
+   295→      } finally {
+   296→        setLoading(false)
+   297→      }
+   298→    }
+   299→    fetchUnusedCredits()
+   300→  }, [])
+   301→
+   302→  // Don't show if loading, dismissed, or no unused credits
+   303→  if (loading || dismissed || !summary || summary.count === 0) return null
+   304→
+   305→  return (
+   306→    <Card className="bg-amber-50 border-amber-300 shadow-sm">
+   307→      <CardContent className="p-4">
+   308→        <div className="flex items-start justify-between">
+   309→          <div className="flex items-start gap-3">
+   310→            <div className="rounded-full bg-amber-200 p-2">
+   311→              <AlertTriangle className="h-5 w-5 text-amber-700" />
+   312→            </div>
+   313→            <div>
+   314→              <h3 className="font-bold text-amber-900 uppercase text-sm">
+   315→                Unused Drop-off Credits
+   316→              </h3>
+   317→              <p className="text-amber-700 text-sm mt-1">
+   318→                <span className="font-bold">{summary.count}</span> customer{summary.count !== 1 ? 's' : ''} paid 
+   319→                but haven't dropped off items yet. Total value: 
+   320→                <span className="font-bold"> ${summary.totalValue} JMD</span>
+   321→              </p>
+   322→              {unusedCredits.length > 0 && (
+   323→                <div className="mt-2 text-xs text-amber-600">
+   324→                  Latest: Save Code <span className="font-mono font-bold">{unusedCredits[0].saveCode}</span> - 
+   325→                  ${unusedCredits[0].amount} from {unusedCredits[0].customerPhone}
+   326→                </div>
+   327→              )}
+   328→            </div>
+   329→          </div>
+   330→          <div className="flex items-center gap-2">
+   331→            <Button
+   332→              variant="outline"
+   333→              size="sm"
+   334→              onClick={() => onNavigate('payments')}
+   335→              className="border-amber-400 text-amber-800 hover:bg-amber-100"
+   336→            >
+   337→              View All
+   338→            </Button>
+   339→            <Button
+   340→              variant="ghost"
+   341→              size="sm"
+   342→              onClick={() => setDismissed(true)}
+   343→              className="text-amber-600 hover:bg-amber-100"
+   344→            >
+   345→              ×
+   346→            </Button>
+   347→          </div>
+   348→        </div>
+   349→      </CardContent>
+   350→    </Card>
+   351→  )
+   352→}
+   353→
+   354→// Recent activity component
+   355→function RecentActivity({ activities }: { activities: Array<{id: string; action: string; description: string | null; userName?: string; time: string}> }) {
+   356→  const formatTime = (dateStr: string) => {
+   357→    const date = new Date(dateStr)
+   358→    const now = new Date()
+   359→    const diff = Math.floor((now.getTime() - date.getTime()) / 1000 / 60)
+   360→    if (diff < 60) return `${diff} mins ago`
+   361→    if (diff < 1440) return `${Math.floor(diff / 60)} hours ago`
+   362→    return `${Math.floor(diff / 1440)} days ago`
+   363→  }
+   364→
+   365→  return (
+   366→    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
+   367→      <CardHeader>
+   368→        <CardTitle className="text-[#111111] uppercase">Recent Activity</CardTitle>
+   369→        <CardDescription className="text-gray-500">Latest events across all devices</CardDescription>
+   370→      </CardHeader>
+   371→      <CardContent>
+   372→        {activities.length === 0 ? (
+   373→          <p className="text-gray-500 text-center py-4">No recent activity</p>
+   374→        ) : (
+   375→          <div className="space-y-4">
+   376→            {activities.map((activity) => (
+   377→              <div key={activity.id} className="flex items-center gap-4">
+   378→                <div className="rounded-full bg-[#FFD439] p-2">
+   379→                  <Package className="h-4 w-4 text-[#111111]" />
+   380→                </div>
+   381→                <div className="flex-1 space-y-1">
+   382→                  <p className="text-sm font-medium text-[#111111]">{activity.action.replace(/_/g, ' ')}</p>
+   383→                  <p className="text-sm text-gray-500">{activity.description || activity.userName || ''}</p>
+   384→                </div>
+   385→                <div className="text-sm text-gray-500">{formatTime(activity.time)}</div>
+   386→              </div>
+   387→            ))}
+   388→          </div>
+   389→        )}
+   390→      </CardContent>
+   391→    </Card>
+   392→  )
+   393→}
+   394→
+   395→// System Status component
+   396→function SystemStatusCard() {
+   397→  const [status, setStatus] = React.useState<SystemStatus | null>(null)
+   398→  const [loading, setLoading] = React.useState(true)
+   399→
+   400→  const fetchStatus = React.useCallback(async () => {
+   401→    setLoading(true)
+   402→    try {
+   403→      const res = await fetch('/api/status')
+   404→      const data = await res.json()
+   405→      setStatus(data)
+   406→    } catch (error) {
+   407→      console.error('Failed to fetch status:', error)
+   408→    } finally {
+   409→      setLoading(false)
+   410→    }
+   411→  }, [])
+   412→
+   413→  React.useEffect(() => {
+   414→    fetchStatus()
+   415→    // Reduced polling: 60 seconds instead of 30 (API has ISR cache now)
+   416→    const interval = setInterval(fetchStatus, 60000)
+   417→    
+   418→    // Also refresh when tab becomes visible
+   419→    const handleVisibility = () => {
+   420→      if (document.visibilityState === 'visible') {
+   421→        fetchStatus()
+   422→      }
+   423→    }
+   424→    document.addEventListener('visibilitychange', handleVisibility)
+   425→    
+   426→    return () => {
+   427→      clearInterval(interval)
+   428→      document.removeEventListener('visibilitychange', handleVisibility)
+   429→    }
+   430→  }, [fetchStatus])
+   431→
+   432→  const getStatusIcon = (statusType: string) => {
+   433→    switch (statusType) {
+   434→      case 'online': return <CheckCircle className="h-4 w-4 text-green-500" />
+   435→      case 'offline': return <XCircle className="h-4 w-4 text-red-500" />
+   436→      case 'warning': return <AlertTriangle className="h-4 w-4 text-yellow-500" />
+   437→      default: return <AlertTriangle className="h-4 w-4 text-gray-500" />
+   438→    }
+   439→  }
+   440→
+   441→  const getServiceIcon = (name: string) => {
+   442→    switch (name) {
+   443→      case 'Database': return <Database className="h-4 w-4" />
+   444→      case 'Bestwond Lockers': return <Lock className="h-4 w-4" />
+   445→      case 'DimePay': return <CreditCard className="h-4 w-4" />
+   446→      case 'TextBee SMS': return <MessageSquare className="h-4 w-4" />
+   447→      case 'Email SMTP': return <Mail className="h-4 w-4" />
+   448→      default: return <Server className="h-4 w-4" />
+   449→    }
+   450→  }
+   451→
+   452→  const getOverallStatusBadge = () => {
+   453→    if (!status) return null
+   454→    const styles = {
+   455→      online: 'bg-green-500 text-white',
+   456→      degraded: 'bg-yellow-500 text-white',
+   457→      offline: 'bg-red-500 text-white'
+   458→    }
+   459→    return (
+   460→      <Badge className={styles[status.overallStatus]}>
+   461→        {status.overallStatus.toUpperCase()}
+   462→      </Badge>
+   463→    )
+   464→  }
+   465→
+   466→  return (
+   467→    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
+   468→      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+   469→        <div className="flex items-center gap-2">
+   470→          <CardTitle className="text-[#111111] uppercase text-base">System Status</CardTitle>
+   471→          {status && getOverallStatusBadge()}
+   472→        </div>
+   473→        <Button variant="ghost" size="sm" onClick={fetchStatus} className="h-8 w-8 p-0">
+   474→          <RefreshCw className={`h-4 w-4 text-gray-500 ${loading ? 'animate-spin' : ''}`} />
+   475→        </Button>
+   476→      </CardHeader>
+   477→      <CardContent>
+   478→        {loading && !status ? (
+   479→          <div className="text-center py-4 text-gray-500">Checking connections...</div>
+   480→        ) : (
+   481→          <div className="space-y-2">
+   482→            {status?.services.map((service) => (
+   483→              <div key={service.name} className="flex items-center justify-between p-2 rounded-lg bg-gray-50">
+   484→                <div className="flex items-center gap-2">
+   485→                  <div className={`rounded-full p-1.5 ${
+   486→                    service.status === 'online' ? 'bg-green-100' :
+   487→                    service.status === 'offline' ? 'bg-red-100' : 'bg-yellow-100'
+   488→                  }`}>
+   489→                    {getServiceIcon(service.name)}
+   490→                  </div>
+   491→                  <div>
+   492→                    <p className="text-xs font-medium text-[#111111]">{service.name}</p>
+   493→                    <p className="text-xs text-gray-500 truncate max-w-[120px]">{service.message}</p>
+   494→                  </div>
+   495→                </div>
+   496→                <div className="flex items-center gap-1">
+   497→                  {service.latency && (
+   498→                    <span className="text-xs text-gray-500">{service.latency}ms</span>
+   499→                  )}
+   500→                  {getStatusIcon(service.status)}
+   501→                </div>
+   502→              </div>
+   503→            ))}
+   504→          </div>
+   505→        )}
+   506→      </CardContent>
+   507→    </Card>
+   508→  )
+   509→}
+   510→
+   511→// Locker Sync Widget - Shows sync status and allows manual sync
+   512→function LockerSyncWidget() {
+   513→  const [syncData, setSyncData] = React.useState<{
+   514→    devices: Array<{
+   515→      deviceId: string;
+   516→      name: string;
+   517→      status: string;
+   518→      totalBoxes: number;
+   519→      availableBoxes: number;
+   520→      sync: {
+   521→        lastSyncAt: string | null;
+   522→        syncStatus: string;
+   523→        deviceOnline: boolean;
+   524→        usedBoxes: number;
+   525→      } | null;
+   526→    }>;
+   527→    lastSync: string | null;
+   528→  } | null>(null)
+   529→  const [loading, setLoading] = React.useState(true)
+   530→  const [syncing, setSyncing] = React.useState(false)
+   531→  const [syncResult, setSyncResult] = React.useState<{success: boolean; message: string} | null>(null)
+   532→
+   533→  const fetchSyncData = React.useCallback(async () => {
+   534→    setLoading(true)
+   535→    try {
+   536→      const res = await fetch('/api/sync')
+   537→      const data = await res.json()
+   538→      if (data.success) {
+   539→        setSyncData(data)
+   540→      }
+   541→    } catch (error) {
+   542→      console.error('Failed to fetch sync data:', error)
+   543→    } finally {
+   544→      setLoading(false)
+   545→    }
+   546→  }, [])
+   547→
+   548→  const handleSync = React.useCallback(async () => {
+   549→    setSyncing(true)
+   550→    setSyncResult(null)
+   551→    try {
+   552→      const res = await fetch('/api/sync', { method: 'POST' })
+   553→      const data = await res.json()
+   554→      if (data.success) {
+   555→        setSyncResult({ success: true, message: `Synced ${data.synced}/${data.total} devices (${data.latency}ms)` })
+   556→        fetchSyncData()
+   557→      } else {
+   558→        setSyncResult({ success: false, message: data.error || 'Sync failed' })
+   559→      }
+   560→    } catch (error) {
+   561→      setSyncResult({ success: false, message: 'Failed to sync' })
+   562→    } finally {
+   563→      setSyncing(false)
+   564→    }
+   565→  }, [fetchSyncData])
+   566→
+   567→  React.useEffect(() => {
+   568→    fetchSyncData()
+   569→    // Reduced polling: 5 minutes instead of 2 (sync data rarely changes)
+   570→    const interval = setInterval(fetchSyncData, 300000)
+   571→    
+   572→    // Refresh when tab becomes visible
+   573→    const handleVisibility = () => {
+   574→      if (document.visibilityState === 'visible') {
+   575→        fetchSyncData()
+   576→      }
+   577→    }
+   578→    document.addEventListener('visibilitychange', handleVisibility)
+   579→    
+   580→    return () => {
+   581→      clearInterval(interval)
+   582→      document.removeEventListener('visibilitychange', handleVisibility)
+   583→    }
+   584→  }, [fetchSyncData])
+   585→
+   586→  const formatTimeAgo = (dateStr: string | null) => {
+   587→    if (!dateStr) return 'Never'
+   588→    const date = new Date(dateStr)
+   589→    const now = new Date()
+   590→    const diff = Math.floor((now.getTime() - date.getTime()) / 1000 / 60)
+   591→    if (diff < 1) return 'Just now'
+   592→    if (diff < 60) return `${diff}m ago`
+   593→    if (diff < 1440) return `${Math.floor(diff / 60)}h ago`
+   594→    return `${Math.floor(diff / 1440)}d ago`
+   595→  }
+   596→
+   597→  return (
+   598→    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
+   599→      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+   600→        <CardTitle className="text-[#111111] uppercase text-base">Locker Sync</CardTitle>
+   601→        <div className="flex items-center gap-2">
+   602→          {syncData?.lastSync && (
+   603→            <span className="text-xs text-gray-500">Last: {formatTimeAgo(syncData.lastSync)}</span>
+   604→          )}
+   605→          <Button 
+   606→            variant="ghost" 
+   607→            size="sm" 
+   608→            onClick={handleSync} 
+   609→            disabled={syncing}
+   610→            className="h-8 bg-[#FFD439] hover:bg-[#FFD439]/90 text-[#111111] font-bold uppercase"
+   611→          >
+   612→            {syncing ? (
+   613→              <RefreshCw className="h-4 w-4 animate-spin" />
+   614→            ) : (
+   615→              <>
+   616→                <RefreshCw className="mr-1 h-4 w-4" />
+   617→                Sync
+   618→              </>
+   619→            )}
+   620→          </Button>
+   621→        </div>
+   622→      </CardHeader>
+   623→      <CardContent>
+   624→        {loading && !syncData ? (
+   625→          <div className="text-center py-4 text-gray-500">Loading sync status...</div>
+   626→        ) : syncData?.devices && syncData.devices.length > 0 ? (
+   627→          <div className="space-y-2">
+   628→            {syncData.devices.slice(0, 3).map((device) => (
+   629→              <div 
+   630→                key={device.deviceId} 
+   631→                className="flex items-center justify-between p-2 bg-gray-50 rounded-lg"
+   632→              >
+   633→                <div className="flex items-center gap-2">
+   634→                  <div className={`w-2 h-2 rounded-full ${
+   635→                    device.sync?.deviceOnline ? 'bg-green-500' : 'bg-red-500'
+   636→                  }`} />
+   637→                  <div>
+   638→                    <p className="text-sm font-medium text-[#111111]">{device.name || device.deviceId}</p>
+   639→                    <p className="text-xs text-gray-500">
+   640→                      {device.availableBoxes}/{device.totalBoxes} available
+   641→                    </p>
+   642→                  </div>
+   643→                </div>
+   644→                <div className="text-right">
+   645→                  <Badge className={
+   646→                    device.sync?.syncStatus === 'SUCCESS' ? 'bg-green-100 text-green-700' :
+   647→                    device.sync?.syncStatus === 'FAILED' ? 'bg-red-100 text-red-700' :
+   648→                    'bg-gray-100 text-gray-600'
+   649→                  }>
+   650→                    {device.sync?.syncStatus || 'PENDING'}
+   651→                  </Badge>
+   652→                  {device.sync?.lastSyncAt && (
+   653→                    <p className="text-xs text-gray-400 mt-1">{formatTimeAgo(device.sync.lastSyncAt)}</p>
+   654→                  )}
+   655→                </div>
+   656→              </div>
+   657→            ))}
+   658→            {syncResult && (
+   659→              <div className={`p-2 rounded text-sm ${
+   660→                syncResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+   661→              }`}>
+   662→                {syncResult.success ? '✓' : '✗'} {syncResult.message}
+   663→              </div>
+   664→            )}
+   665→          </div>
+   666→        ) : (
+   667→          <div className="text-center py-4 text-gray-500">No devices configured</div>
+   668→        )}
+   669→      </CardContent>
+   670→    </Card>
+   671→  )
+   672→}
+   673→
+   674→// Locker Details Card - Shows device metadata and box status
+   675→function LockerDetailsCard() {
+   676→  const [lockerData, setLockerData] = React.useState<{
+   677→    online: boolean
+   678→    deviceId: string
+   679→    totalBoxes: number
+   680→    emptyBoxes: number
+   681→    usedBoxes: number
+   682→    boxes: BoxInfo[]
+   683→    latency: number
+   684→  } | null>(null)
+   685→  const [loading, setLoading] = React.useState(true)
+   686→  const [error, setError] = React.useState<string | null>(null)
+   687→
+   688→  const fetchLockerData = React.useCallback(async () => {
+   689→    setLoading(true)
+   690→    setError(null)
+   691→    try {
+   692→      const res = await fetch('/api/lockers?action=status')
+   693→      const data = await res.json()
+   694→      if (data.success && data.data) {
+   695→        setLockerData({
+   696→          online: data.data.online ?? true,
+   697→          deviceId: data.data.deviceId || process.env.NEXT_PUBLIC_DEVICE_ID || '2100018247',
+   698→          totalBoxes: data.data.totalBoxes || data.data.boxes?.length || 24,
+   699→          emptyBoxes: data.data.emptyBoxes || 0,
+   700→          usedBoxes: data.data.usedBoxes || 0,
+   701→          boxes: data.data.boxes || [],
+   702→          latency: data.latency || 0
+   703→        })
+   704→      } else {
+   705→        // Fallback - try status endpoint for Bestwond data
+   706→        const statusRes = await fetch('/api/status')
+   707→        const statusData = await statusRes.json()
+   708→        const bestwondService = statusData?.services?.find((s: ServiceStatus) => s.name === 'Bestwond Lockers')
+   709→        if (bestwondService?.details) {
+   710→          setLockerData({
+   711→            online: bestwondService.details.online as boolean ?? true,
+   712→            deviceId: String(bestwondService.details.device_id || '2100018247'),
+   713→            totalBoxes: (bestwondService.details.total_boxes as number) || (bestwondService.details.box_count as number) || 24,
+   714→            emptyBoxes: (bestwondService.details.empty_boxes as number) || 18,
+   715→            usedBoxes: (bestwondService.details.used_boxes as number) || 6,
+   716→            boxes: (bestwondService.details.box_preview as BoxInfo[]) || [],
+   717→            latency: bestwondService.latency || 0
+   718→          })
+   719→        } else {
+   720→          setError('No locker data available')
+   721→        }
+   722→      }
+   723→    } catch (err) {
+   724→      console.error('Failed to fetch locker data:', err)
+   725→      setError('Failed to connect to locker')
+   726→    } finally {
+   727→      setLoading(false)
+   728→    }
+   729→  }, [])
+   730→
+   731→  React.useEffect(() => {
+   732→    fetchLockerData()
+   733→    // Reduced polling: 2 minutes instead of 1 (locker status rarely changes)
+   734→    const interval = setInterval(fetchLockerData, 120000)
+   735→    
+   736→    // Refresh when tab becomes visible
+   737→    const handleVisibility = () => {
+   738→      if (document.visibilityState === 'visible') {
+   739→        fetchLockerData()
+   740→      }
+   741→    }
+   742→    document.addEventListener('visibilitychange', handleVisibility)
+   743→    
+   744→    return () => {
+   745→      clearInterval(interval)
+   746→      document.removeEventListener('visibilitychange', handleVisibility)
+   747→    }
+   748→  }, [fetchLockerData])
+   749→
+   750→  return (
+   751→    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
+   752→      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+   753→        <div className="flex items-center gap-2">
+   754→          <CardTitle className="text-[#111111] uppercase text-base">Locker Details</CardTitle>
+   755→          {lockerData && (
+   756→            <Badge className={lockerData.online ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}>
+   757→              {lockerData.online ? 'ONLINE' : 'OFFLINE'}
+   758→            </Badge>
+   759→          )}
+   760→        </div>
+   761→        <Button variant="ghost" size="sm" onClick={fetchLockerData} className="h-8 w-8 p-0">
+   762→          <RefreshCw className={`h-4 w-4 text-gray-500 ${loading ? 'animate-spin' : ''}`} />
+   763→        </Button>
+   764→      </CardHeader>
+   765→      <CardContent>
+   766→        {loading && !lockerData ? (
+   767→          <div className="text-center py-4 text-gray-500">Fetching locker data...</div>
+   768→        ) : error ? (
+   769→          <div className="text-center py-4 text-red-500">{error}</div>
+   770→        ) : lockerData ? (
+   771→          <div className="space-y-4">
+   772→            {/* Device Info */}
+   773→            <div className="grid grid-cols-2 gap-3 text-sm">
+   774→              <div>
+   775→                <p className="text-gray-500 text-xs uppercase">Device ID</p>
+   776→                <p className="font-mono text-[#111111]">{lockerData.deviceId}</p>
+   777→              </div>
+   778→              <div>
+   779→                <p className="text-gray-500 text-xs uppercase">Response</p>
+   780→                <p className="text-[#111111]">{lockerData.latency}ms</p>
+   781→              </div>
+   782→            </div>
+   783→            
+   784→            {/* Box Stats */}
+   785→            <div className="flex items-center justify-between bg-gray-50 rounded-lg p-3">
+   786→              <div className="text-center">
+   787→                <p className="text-2xl font-bold text-green-600">{lockerData.emptyBoxes}</p>
+   788→                <p className="text-xs text-gray-500 uppercase">Empty</p>
+   789→              </div>
+   790→              <div className="h-8 w-px bg-gray-200" />
+   791→              <div className="text-center">
+   792→                <p className="text-2xl font-bold text-[#FFD439]">{lockerData.usedBoxes}</p>
+   793→                <p className="text-xs text-gray-500 uppercase">Used</p>
+   794→              </div>
+   795→              <div className="h-8 w-px bg-gray-200" />
+   796→              <div className="text-center">
+   797→                <p className="text-2xl font-bold text-[#111111]">{lockerData.totalBoxes}</p>
+   798→                <p className="text-xs text-gray-500 uppercase">Total</p>
+   799→              </div>
+   800→            </div>
+   801→
+   802→            {/* Box Grid Preview */}
+   803→            {lockerData.boxes && lockerData.boxes.length > 0 && (
+   804→              <div>
+   805→                <p className="text-xs text-gray-500 uppercase mb-2">Box Status</p>
+   806→                <div className="grid grid-cols-6 gap-1">
+   807→                  {lockerData.boxes.slice(0, 24).map((box) => (
+   808→                    <div
+   809→                      key={box.boxNo}
+   810→                      className={`aspect-square rounded text-[10px] flex items-center justify-center font-bold ${
+   811→                        box.status === 'EMPTY' 
+   812→                          ? 'bg-green-100 text-green-700 border border-green-200' 
+   813→                          : box.status === 'USED'
+   814→                          ? 'bg-[#FFD439] text-[#111111] border border-[#E5BE33]'
+   815→                          : 'bg-gray-200 text-gray-500 border border-gray-300'
+   816→                      }`}
+   817→                      title={`Box ${box.boxNo}: ${box.status}`}
+   818→                    >
+   819→                      {box.boxNo}
+   820→                    </div>
+   821→                  ))}
+   822→                </div>
+   823→                <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+   824→                  <div className="flex items-center gap-1">
+   825→                    <div className="w-3 h-3 rounded bg-green-100 border border-green-200" />
+   826→                    <span>Empty</span>
+   827→                  </div>
+   828→                  <div className="flex items-center gap-1">
+   829→                    <div className="w-3 h-3 rounded bg-[#FFD439] border border-[#E5BE33]" />
+   830→                    <span>Used</span>
+   831→                  </div>
+   832→                  <div className="flex items-center gap-1">
+   833→                    <div className="w-3 h-3 rounded bg-gray-200 border border-gray-300" />
+   834→                    <span>Locked</span>
+   835→                  </div>
+   836→                </div>
+   837→              </div>
+   838→            )}
+   839→
+   840→            {/* Capacity Bar */}
+   841→            <div>
+   842→              <div className="flex justify-between text-xs mb-1">
+   843→                <span className="text-gray-500">Capacity</span>
+   844→                <span className="font-medium text-[#111111]">
+   845→                  {Math.round((lockerData.usedBoxes / lockerData.totalBoxes) * 100)}% used
+   846→                </span>
+   847→              </div>
+   848→              <div className="h-2 rounded-full bg-gray-200">
+   849→                <div 
+   850→                  className="h-2 rounded-full bg-[#FFD439] transition-all" 
+   851→                  style={{ width: `${lockerData.totalBoxes > 0 ? (lockerData.usedBoxes / lockerData.totalBoxes) * 100 : 0}%` }} 
+   852→                />
+   853→              </div>
+   854→            </div>
+   855→          </div>
+   856→        ) : null}
+   857→      </CardContent>
+   858→    </Card>
+   859→  )
+   860→}
+   861→
+   862→// Quick actions component
+   863→function QuickActions({ onNavigate }: { onNavigate: (tab: string) => void }) {
+   864→  return (
+   865→    <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
+   866→      <CardHeader>
+   867→        <CardTitle className="text-[#111111] uppercase">Quick Actions</CardTitle>
+   868→        <CardDescription className="text-gray-500">Common operations</CardDescription>
+   869→      </CardHeader>
+   870→      <CardContent className="grid gap-3">
+   871→        <Button className="w-full justify-start bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase" onClick={() => onNavigate("orders")}>
+   872→          <Plus className="mr-2 h-4 w-4" />
+   873→          New Drop-off
+   874→        </Button>
+   875→        <Button className="w-full justify-start border-gray-300 text-gray-700 hover:bg-gray-100 font-bold uppercase" variant="outline">
+   876→          <QrCode className="mr-2 h-4 w-4" />
+   877→          Scan Pickup Code
+   878→        </Button>
+   879→        <Button className="w-full justify-start border-gray-300 text-gray-700 hover:bg-gray-100 uppercase" variant="outline" onClick={() => onNavigate("devices")}>
+   880→          <Lock className="mr-2 h-4 w-4" />
+   881→          Open Box Manually
+   882→        </Button>
+   883→        <Button className="w-full justify-start border-gray-300 text-gray-700 hover:bg-gray-100 uppercase" variant="outline" onClick={() => onNavigate("orders")}>
+   884→          <Search className="mr-2 h-4 w-4" />
+   885→          Search Orders
+   886→        </Button>
+   887→      </CardContent>
+   888→    </Card>
+   889→  )
+   890→}
+   891→
+   892→// Dashboard content
+   893→function DashboardContent({ onNavigate }: { onNavigate: (tab: string) => void }) {
+   894→  const [stats, setStats] = React.useState<Stats | null>(null)
+   895→  const [activities, setActivities] = React.useState<Array<{id: string; action: string; description: string | null; userName?: string; time: string}>>([])
+   896→  const [loading, setLoading] = React.useState(true)
+   897→
+   898→  const fetchData = React.useCallback(async () => {
+   899→    setLoading(true)
+   900→    try {
+   901→      const res = await fetch('/api/stats')
+   902→      const data = await res.json()
+   903→      if (data.success) {
+   904→        setStats(data.data.stats)
+   905→        setActivities(data.data.recentActivities)
+   906→      }
+   907→    } catch (error) {
+   908→      console.error('Failed to fetch stats:', error)
+   909→      setStats({
+   910→        totalDevices: 2,
+   911→        totalBoxes: 60,
+   912→        availableBoxes: 30,
+   913→        totalOrders: 4,
+   914→        activeOrders: 4,
+   915→        totalRevenue: 12500,
+   916→        todayRevenue: 12500,
+   917→        pendingPayments: 2
+   918→      })
+   919→      setActivities([])
+   920→    } finally {
+   921→      setLoading(false)
+   922→    }
+   923→  }, [])
+   924→
+   925→  React.useEffect(() => {
+   926→    fetchData()
+   927→  }, [fetchData])
+   928→
+   929→  return (
+   930→    <div className="space-y-6">
+   931→      {/* Header Section */}
+   932→      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+   933→        <div>
+   934→          <h2 className="text-2xl font-bold text-[#111111] uppercase tracking-tight" style={{ fontFamily: "'Montserrat', sans-serif" }}>
+   935→            Dashboard
+   936→          </h2>
+   937→          <p className="text-gray-500 text-sm">Overview of your Pickup smart locker system</p>
+   938→        </div>
+   939→        <div className="flex items-center gap-3">
+   940→          <Button 
+   941→            onClick={fetchData} 
+   942→            variant="outline"
+   943→            className="border-gray-300 text-gray-700 hover:bg-gray-100"
+   944→          >
+   945→            <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+   946→            Refresh
+   947→          </Button>
+   948→          <Button 
+   949→            onClick={() => onNavigate('orders')} 
+   950→            className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold"
+   951→          >
+   952→            <Plus className="mr-2 h-4 w-4" />
+   953→            New Drop-off
+   954→          </Button>
+   955→        </div>
+   956→      </div>
+   957→
+   958→      {/* Stats Cards Row */}
+   959→      <StatsCards stats={stats} />
+   960→
+   961→      {/* Unused Credits Warning */}
+   962→      <UnusedCreditsWarning onNavigate={onNavigate} />
+   963→
+   964→      {/* Main Content Grid */}
+   965→      <div className="grid gap-6 lg:grid-cols-12">
+   966→        {/* Left Column - Main Content */}
+   967→        <div className="lg:col-span-8 space-y-6">
+   968→          {/* Quick Actions Bar */}
+   969→          <div className="bg-[#111111] rounded-xl p-4">
+   970→            <div className="flex items-center justify-between flex-wrap gap-3">
+   971→              <div className="flex items-center gap-2 text-white">
+   972→                <Zap className="h-5 w-5 text-[#FFD439]" />
+   973→                <span className="font-bold uppercase text-sm">Quick Actions</span>
+   974→              </div>
+   975→              <div className="flex items-center gap-2 flex-wrap">
+   976→                <Button 
+   977→                  size="sm" 
+   978→                  onClick={() => onNavigate('orders')}
+   979→                  className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold"
+   980→                >
+   981→                  <Plus className="mr-1 h-3 w-3" /> Drop-off
+   982→                </Button>
+   983→                <Button 
+   984→                  size="sm" 
+   985→                  onClick={() => onNavigate('express')}
+   986→                  className="bg-transparent border-2 border-[#FFD439] text-[#FFD439] hover:bg-[#FFD439] hover:text-[#111111] font-bold"
+   987→                >
+   988→                  <Key className="mr-1 h-3 w-3" /> Express Code
+   989→                </Button>
+   990→                <Button 
+   991→                  size="sm" 
+   992→                  onClick={() => onNavigate('devices')}
+   993→                  className="bg-transparent border-2 border-[#FFD439] text-[#FFD439] hover:bg-[#FFD439] hover:text-[#111111] font-bold"
+   994→                >
+   995→                  <Lock className="mr-1 h-3 w-3" /> Open Box
+   996→                </Button>
+   997→              </div>
+   998→            </div>
+   999→          </div>
+  1000→
+  1001→          {/* Locker Status Grid */}
+  1002→          <div className="grid gap-4 md:grid-cols-2">
+  1003→            <LockerDetailsCard />
+  1004→            <SystemStatusCard />
+  1005→          </div>
+  1006→
+  1007→          {/* Recent Activity */}
+  1008→          <RecentActivity activities={activities} />
+  1009→        </div>
+  1010→
+  1011→        {/* Right Column - Sidebar */}
+  1012→        <div className="lg:col-span-4 space-y-6">
+  1013→          <LockerSyncWidget />
+  1014→          
+  1015→          {/* Today's Summary Card */}
+  1016→          <Card className="bg-gradient-to-br from-[#111111] to-gray-900 border-0 text-white">
+  1017→            <CardHeader>
+  1018→              <CardTitle className="text-white uppercase text-sm">Today's Summary</CardTitle>
+  1019→            </CardHeader>
+  1020→            <CardContent className="space-y-4">
+  1021→              <div className="flex items-center justify-between">
+  1022→                <div className="flex items-center gap-2">
+  1023→                  <Package className="h-4 w-4 text-[#FFD439]" />
+  1024→                  <span className="text-sm text-gray-300">Packages Stored</span>
+  1025→                </div>
+  1026→                <span className="text-2xl font-bold">{stats?.activeOrders ?? 0}</span>
+  1027→              </div>
+  1028→              <div className="flex items-center justify-between">
+  1029→                <div className="flex items-center gap-2">
+  1030→                  <Truck className="h-4 w-4 text-[#FFD439]" />
+  1031→                  <span className="text-sm text-gray-300">Pickups Today</span>
+  1032→                </div>
+  1033→                <span className="text-2xl font-bold">0</span>
+  1034→              </div>
+  1035→              <div className="flex items-center justify-between">
+  1036→                <div className="flex items-center gap-2">
+  1037→                  <DollarSign className="h-4 w-4 text-[#FFD439]" />
+  1038→                  <span className="text-sm text-gray-300">Revenue</span>
+  1039→                </div>
+  1040→                <span className="text-2xl font-bold">${(stats?.todayRevenue ?? 0).toLocaleString()}</span>
+  1041→              </div>
+  1042→              <div className="pt-2 border-t border-gray-700">
+  1043→                <div className="flex items-center justify-between text-sm">
+  1044→                  <span className="text-gray-400">Pending Payments</span>
+  1045→                  <Badge className="bg-[#FFD439] text-[#111111] font-bold">
+  1046→                    {stats?.pendingPayments ?? 0}
+  1047→                  </Badge>
+  1048→                </div>
+  1049→              </div>
+  1050→            </CardContent>
+  1051→          </Card>
+  1052→        </div>
+  1053→      </div>
+  1054→    </div>
+  1055→  )
+  1056→}
+  1057→
+  1058→// Devices content
+  1059→// Box with order info
+  1060→interface BoxWithOrder {
+  1061→  boxNumber: number
+  1062→  status: string
+  1063→  size?: string | null
+  1064→  lastUsedAt?: string | null
+  1065→  order?: {
+  1066→    id: string
+  1067→    orderNumber: string
+  1068→    trackingCode: string
+  1069→    customerName: string
+  1070→    customerPhone: string
+  1071→    status: string
+  1072→    createdAt: string
+  1073→  } | null
+  1074→}
+  1075→
+  1076→function DevicesContent() {
+  1077→  const [devices, setDevices] = React.useState<Device[]>([])
+  1078→  const [loading, setLoading] = React.useState(true)
+  1079→  const [openBoxDialog, setOpenBoxDialog] = React.useState(false)
+  1080→  const [addDeviceDialog, setAddDeviceDialog] = React.useState(false)
+  1081→  const [editDeviceDialog, setEditDeviceDialog] = React.useState(false)
+  1082→  const [deleteDeviceDialog, setDeleteDeviceDialog] = React.useState(false)
+  1083→  const [viewBoxesDialog, setViewBoxesDialog] = React.useState(false)
+  1084→  const [selectedDevice, setSelectedDevice] = React.useState<Device | null>(null)
+  1085→  const [selectedBox, setSelectedBox] = React.useState<string>("")
+  1086→  const [openingBox, setOpeningBox] = React.useState(false)
+  1087→  const [openBoxResult, setOpenBoxResult] = React.useState<{success: boolean; message: string} | null>(null)
+  1088→  const [newDevice, setNewDevice] = React.useState({ deviceId: '', name: '', location: '', totalBoxes: 24, bestwondAppId: '', bestwondAppSecret: '' })
+  1089→  const [editDevice, setEditDevice] = React.useState({ id: '', name: '', location: '', bestwondAppId: '', bestwondAppSecret: '' })
+  1090→  const [boxes, setBoxes] = React.useState<BoxWithOrder[]>([])
+  1091→  const [loadingBoxes, setLoadingBoxes] = React.useState(false)
+  1092→  const [syncingDevice, setSyncingDevice] = React.useState<string | null>(null)
+  1093→  const [selectedBoxInfo, setSelectedBoxInfo] = React.useState<BoxWithOrder | null>(null)
+  1094→  const [boxDetailDialog, setBoxDetailDialog] = React.useState(false)
+  1095→  const [verifyingDevice, setVerifyingDevice] = React.useState(false)
+  1096→  const [verifiedDevice, setVerifiedDevice] = React.useState<{deviceId: string; online: boolean; totalBoxes: number; availableBoxes: number} | null>(null)
+  1097→  const [verifyError, setVerifyError] = React.useState<string | null>(null)
+  1098→  const [syncResult, setSyncResult] = React.useState<{synced: boolean; boxesUpdated: number; deviceOnline: boolean | null} | null>(null)
+  1099→  const [syncMessage, setSyncMessage] = React.useState<string | null>(null)
+  1100→  const [boxLogs, setBoxLogs] = React.useState<Array<{id: string; boxNumber: number; action: string; orderNo: string | null; occurredAt: string}>>([])
+  1101→  const [loadingLogs, setLoadingLogs] = React.useState(false)
+  1102→  const [logsDialog, setLogsDialog] = React.useState(false)
+  1103→  
+  1104→  // Device discovery states
+  1105→  const [discoveringDevices, setDiscoveringDevices] = React.useState(false)
+  1106→  const [discoveredDevices, setDiscoveredDevices] = React.useState<Array<{device_number: string; online?: boolean; box_count?: number}>>([])
+  1107→  const [discoverError, setDiscoverError] = React.useState<string | null>(null)
+  1108→
+  1109→  const fetchDevices = React.useCallback(async () => {
+  1110→    setLoading(true)
+  1111→    try {
+  1112→      const res = await fetch('/api/devices')
+  1113→      const data = await res.json()
+  1114→      if (data.success && data.data.length > 0) {
+  1115→        setDevices(data.data)
+  1116→      } else {
+  1117→        setDevices(mockDevices)
+  1118→      }
+  1119→    } catch (error) {
+  1120→      console.error('Failed to fetch devices:', error)
+  1121→      setDevices(mockDevices)
+  1122→    } finally {
+  1123→      setLoading(false)
+  1124→    }
+  1125→  }, [])
+  1126→
+  1127→  React.useEffect(() => {
+  1128→    fetchDevices()
+  1129→  }, [fetchDevices])
+  1130→
+  1131→  // Discover devices registered to Bestwond account
+  1132→  const handleDiscoverDevices = async () => {
+  1133→    if (!newDevice.bestwondAppId || !newDevice.bestwondAppSecret) {
+  1134→      setDiscoverError('Please enter App ID and App Secret first')
+  1135→      return
+  1136→    }
+  1137→
+  1138→    setDiscoveringDevices(true)
+  1139→    setDiscoverError(null)
+  1140→    setDiscoveredDevices([])
+  1141→
+  1142→    try {
+  1143→      const res = await fetch('/api/lockers', {
+  1144→        method: 'POST',
+  1145→        headers: { 'Content-Type': 'application/json' },
+  1146→        body: JSON.stringify({
+  1147→          action: 'device-list',
+  1148→          app_id: newDevice.bestwondAppId,
+  1149→          app_secret: newDevice.bestwondAppSecret
+  1150→        })
+  1151→      })
+  1152→      const data = await res.json()
+  1153→
+  1154→      if (data.success && data.devices) {
+  1155→        setDiscoveredDevices(data.devices)
+  1156→        if (data.devices.length === 0) {
+  1157→          setDiscoverError('No devices found for this account. Enter device ID manually.')
+  1158→        }
+  1159→      } else {
+  1160→        setDiscoverError(data.error || 'Failed to discover devices. Check your credentials.')
+  1161→      }
+  1162→    } catch (error) {
+  1163→      console.error('Failed to discover devices:', error)
+  1164→      setDiscoverError('Failed to connect to Bestwond API')
+  1165→    } finally {
+  1166→      setDiscoveringDevices(false)
+  1167→    }
+  1168→  }
+  1169→
+  1170→  // Select a discovered device
+  1171→  const handleSelectDiscoveredDevice = async (deviceNumber: string) => {
+  1172→    setNewDevice(prev => ({ ...prev, deviceId: deviceNumber }))
+  1173→    setVerifiedDevice(null)
+  1174→    setVerifyError(null)
+  1175→    // Auto-verify after a short delay
+  1176→    setTimeout(() => {
+  1177→      handleVerifyDevice()
+  1178→    }, 500)
+  1179→  }
+  1180→
+  1181→  // Auto-verify device ID after user stops typing (debounced)
+  1182→  // Only auto-verify if credentials are provided or global credentials exist
+  1183→  React.useEffect(() => {
+  1184→    if (!newDevice.deviceId || newDevice.deviceId.length < 8) {
+  1185→      return // Don't auto-verify if too short or empty
+  1186→    }
+  1187→
+  1188→    // Only verify if we have credentials (either provided or will use global)
+  1189→    const timeoutId = setTimeout(() => {
+  1190→      handleVerifyDevice()
+  1191→    }, 1200) // Wait 1.2s after user stops typing
+  1192→
+  1193→    return () => clearTimeout(timeoutId)
+  1194→  }, [newDevice.deviceId, newDevice.bestwondAppId, newDevice.bestwondAppSecret])
+  1195→
+  1196→  const handleOpenBox = async () => {
+  1197→    if (!selectedDevice || !selectedBox) {
+  1198→      setOpenBoxResult({ success: false, message: 'Please select a device and enter a box number' })
+  1199→      return
+  1200→    }
+  1201→
+  1202→    setOpeningBox(true)
+  1203→    setOpenBoxResult(null)
+  1204→
+  1205→    try {
+  1206→      const res = await fetch('/api/lockers', {
+  1207→        method: 'POST',
+  1208→        headers: { 'Content-Type': 'application/json' },
+  1209→        body: JSON.stringify({
+  1210→          action: 'open',
+  1211→          deviceId: selectedDevice.deviceId,
+  1212→          boxNo: parseInt(selectedBox)
+  1213→        })
+  1214→      })
+  1215→      const data = await res.json()
+  1216→
+  1217→      if (data.success) {
+  1218→        setOpenBoxResult({ success: true, message: data.message || `Box #${selectedBox} opened successfully!` })
+  1219→        setTimeout(() => {
+  1220→          setOpenBoxDialog(false)
+  1221→          setSelectedBox('')
+  1222→          setOpenBoxResult(null)
+  1223→        }, 2000)
+  1224→      } else {
+  1225→        setOpenBoxResult({ success: false, message: data.error || 'Failed to open box' })
+  1226→      }
+  1227→    } catch (error) {
+  1228→      console.error('Failed to open box:', error)
+  1229→      setOpenBoxResult({ success: false, message: error instanceof Error ? error.message : 'Failed to open box' })
+  1230→    } finally {
+  1231→      setOpeningBox(false)
+  1232→    }
+  1233→  }
+  1234→
+  1235→  const handleVerifyDevice = async () => {
+  1236→    if (!newDevice.deviceId) {
+  1237→      setVerifyError('Please enter a device ID')
+  1238→      return
+  1239→    }
+  1240→
+  1241→    setVerifyingDevice(true)
+  1242→    setVerifyError(null)
+  1243→    setVerifiedDevice(null)
+  1244→
+  1245→    try {
+  1246→      const res = await fetch('/api/devices/verify', {
+  1247→        method: 'POST',
+  1248→        headers: { 'Content-Type': 'application/json' },
+  1249→        body: JSON.stringify({ 
+  1250→          deviceId: newDevice.deviceId,
+  1251→          bestwondAppId: newDevice.bestwondAppId || undefined,
+  1252→          bestwondAppSecret: newDevice.bestwondAppSecret || undefined,
+  1253→        })
+  1254→      })
+  1255→      const data = await res.json()
+  1256→
+  1257→      if (data.success) {
+  1258→        setVerifiedDevice(data.device)
+  1259→        // Auto-fill total boxes and name from API
+  1260→        setNewDevice(prev => ({
+  1261→          ...prev,
+  1262→          totalBoxes: data.device.totalBoxes,
+  1263→          name: data.device.deviceName || prev.name || `Locker ${data.device.deviceId}`
+  1264→        }))
+  1265→      } else {
+  1266→        setVerifyError(data.error || 'Device verification failed')
+  1267→      }
+  1268→    } catch (error) {
+  1269→      console.error('Failed to verify device:', error)
+  1270→      setVerifyError('Failed to verify device. Check API configuration.')
+  1271→    } finally {
+  1272→      setVerifyingDevice(false)
+  1273→    }
+  1274→  }
+  1275→
+  1276→  const handleAddDevice = async () => {
+  1277→    try {
+  1278→      const res = await fetch('/api/devices', {
+  1279→        method: 'POST',
+  1280→        headers: { 'Content-Type': 'application/json' },
+  1281→        body: JSON.stringify(newDevice)
+  1282→      })
+  1283→      const data = await res.json()
+  1284→      if (data.success) {
+  1285→        setAddDeviceDialog(false)
+  1286→        setNewDevice({ deviceId: '', name: '', location: '', totalBoxes: 24, bestwondAppId: '', bestwondAppSecret: '' })
+  1287→        setVerifiedDevice(null)
+  1288→        setVerifyError(null)
+  1289→        fetchDevices()
+  1290→      } else {
+  1291→        alert(data.error || 'Failed to add device')
+  1292→      }
+  1293→    } catch (error) {
+  1294→      console.error('Failed to add device:', error)
+  1295→      alert(error instanceof Error ? error.message : 'Failed to add device')
+  1296→    }
+  1297→  }
+  1298→
+  1299→  const handleEditDevice = async () => {
+  1300→    try {
+  1301→      const res = await fetch('/api/devices', {
+  1302→        method: 'PUT',
+  1303→        headers: { 'Content-Type': 'application/json' },
+  1304→        body: JSON.stringify(editDevice)
+  1305→      })
+  1306→      const data = await res.json()
+  1307→      if (data.success) {
+  1308→        setEditDeviceDialog(false)
+  1309→        setEditDevice({ id: '', name: '', location: '', bestwondAppId: '', bestwondAppSecret: '' })
+  1310→        fetchDevices()
+  1311→      } else {
+  1312→        alert(data.error || 'Failed to update device')
+  1313→      }
+  1314→    } catch (error) {
+  1315→      console.error('Failed to update device:', error)
+  1316→      alert('Failed to update device')
+  1317→    }
+  1318→  }
+  1319→
+  1320→  const handleDeleteDevice = async () => {
+  1321→    if (!selectedDevice) return
+  1322→
+  1323→    try {
+  1324→      const res = await fetch(`/api/devices?id=${selectedDevice.id}`, {
+  1325→        method: 'DELETE'
+  1326→      })
+  1327→      const data = await res.json()
+  1328→      if (data.success) {
+  1329→        setDeleteDeviceDialog(false)
+  1330→        setSelectedDevice(null)
+  1331→        fetchDevices()
+  1332→      } else {
+  1333→        alert(data.error || 'Failed to delete device')
+  1334→      }
+  1335→    } catch (error) {
+  1336→      console.error('Failed to delete device:', error)
+  1337→      alert('Failed to delete device')
+  1338→    }
+  1339→  }
+  1340→
+  1341→  const handleViewBoxes = async (device: Device, sync: boolean = false) => {
+  1342→    setSelectedDevice(device)
+  1343→    setLoadingBoxes(true)
+  1344→    setViewBoxesDialog(true)
+  1345→    setSyncResult(null)
+  1346→    setSyncMessage(null)
+  1347→
+  1348→    try {
+  1349→      const res = await fetch(`/api/devices/${device.id}/boxes?sync=${sync}`)
+  1350→      const data = await res.json()
+  1351→      if (data.success) {
+  1352→        setBoxes(data.boxes)
+  1353→        if (sync && data.syncResult) {
+  1354→          setSyncResult(data.syncResult)
+  1355→          if (data.syncResult.synced) {
+  1356→            setSyncMessage(`✓ Synced! ${data.syncResult.boxesUpdated} boxes updated. Device ${data.syncResult.deviceOnline ? 'online' : 'offline'}.`)
+  1357→          } else if (data.syncResult.error) {
+  1358→            setSyncMessage(`✗ Sync failed: ${data.syncResult.error}`)
+  1359→          } else {
+  1360→            setSyncMessage(`✗ Sync failed - no response from device`)
+  1361→          }
+  1362→        } else if (sync) {
+  1363→          setSyncMessage(`✗ Sync failed - check device credentials`)
+  1364→        }
+  1365→      } else {
+  1366→        setBoxes([])
+  1367→        if (sync) {
+  1368→          setSyncMessage(`✗ Sync failed: ${data.error || 'Unknown error'}`)
+  1369→        }
+  1370→      }
+  1371→    } catch (error) {
+  1372→      console.error('Failed to fetch boxes:', error)
+  1373→      setBoxes([])
+  1374→      if (sync) {
+  1375→        setSyncMessage(`✗ Sync failed: Network error`)
+  1376→      }
+  1377→    } finally {
+  1378→      setLoadingBoxes(false)
+  1379→    }
+  1380→  }
+  1381→
+  1382→  const handleSyncDevice = async (device: Device) => {
+  1383→    setSyncingDevice(device.id)
+  1384→    try {
+  1385→      const res = await fetch(`/api/devices/${device.id}/boxes?sync=true`)
+  1386→      const data = await res.json()
+  1387→      if (data.success) {
+  1388→        // Update device in list
+  1389→        const availableCount = data.boxes?.filter((b: BoxWithOrder) => b.status === 'AVAILABLE').length || 0
+  1390→        setDevices(prev => prev.map(d =>
+  1391→          d.id === device.id
+  1392→            ? { 
+  1393→                ...d, 
+  1394→                status: data.syncResult?.deviceOnline ? 'ONLINE' : 'OFFLINE',
+  1395→                availableBoxes: availableCount
+  1396→              }
+  1397→            : d
+  1398→        ))
+  1399→        // Show result
+  1400→        if (data.syncResult?.synced) {
+  1401→          alert(`✓ Synced! ${data.syncResult.boxesUpdated} boxes updated. Device ${data.syncResult.deviceOnline ? 'online' : 'offline'}.`)
+  1402→        } else if (data.syncResult?.error) {
+  1403→          alert(`✗ Sync failed: ${data.syncResult.error}`)
+  1404→        }
+  1405→      }
+  1406→    } catch (error) {
+  1407→      console.error('Failed to sync device:', error)
+  1408→      alert('Failed to sync device')
+  1409→    } finally {
+  1410→      setSyncingDevice(null)
+  1411→    }
+  1412→  }
+  1413→
+  1414→  const handleOpenBoxFromGrid = async (boxNumber: number) => {
+  1415→    if (!selectedDevice) return
+  1416→
+  1417→    setOpeningBox(true)
+  1418→    try {
+  1419→      const res = await fetch('/api/lockers', {
+  1420→        method: 'POST',
+  1421→        headers: { 'Content-Type': 'application/json' },
+  1422→        body: JSON.stringify({
+  1423→          action: 'open',
+  1424→          deviceId: selectedDevice.deviceId,
+  1425→          boxNo: boxNumber
+  1426→        })
+  1427→      })
+  1428→      const data = await res.json()
+  1429→
+  1430→      if (data.success) {
+  1431→        alert(`Box #${boxNumber} opened successfully!`)
+  1432→      } else {
+  1433→        alert(data.error || 'Failed to open box')
+  1434→      }
+  1435→    } catch (error) {
+  1436→      console.error('Failed to open box:', error)
+  1437→      alert('Failed to open box')
+  1438→    } finally {
+  1439→      setOpeningBox(false)
+  1440→    }
+  1441→  }
+  1442→
+  1443→  const handleViewLogs = async (deviceId: string, boxNumber?: number) => {
+  1444→    setLoadingLogs(true)
+  1445→    setLogsDialog(true)
+  1446→    try {
+  1447→      const url = boxNumber 
+  1448→        ? `/api/devices/${deviceId}/logs?boxNumber=${boxNumber}&limit=50`
+  1449→        : `/api/devices/${deviceId}/logs?limit=50`
+  1450→      const res = await fetch(url)
+  1451→      const data = await res.json()
+  1452→      if (data.success) {
+  1453→        setBoxLogs(data.logs || [])
+  1454→      } else {
+  1455→        setBoxLogs([])
+  1456→      }
+  1457→    } catch (error) {
+  1458→      console.error('Failed to fetch logs:', error)
+  1459→      setBoxLogs([])
+  1460→    } finally {
+  1461→      setLoadingLogs(false)
+  1462→    }
+  1463→  }
+  1464→
+  1465→  return (
+  1466→    <div className="space-y-6">
+  1467→      <div className="flex items-center justify-between">
+  1468→        <div>
+  1469→          <h2 className="text-3xl font-bold text-[#111111] uppercase tracking-tight" style={{ fontFamily: "'Montserrat', sans-serif" }}>Devices</h2>
+  1470→          <p className="text-gray-500">Manage your smart locker devices</p>
+  1471→        </div>
+  1472→        <Button onClick={() => setAddDeviceDialog(true)} className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase">
+  1473→          <Plus className="mr-2 h-4 w-4" />
+  1474→          Add Device
+  1475→        </Button>
+  1476→      </div>
+  1477→
+  1478→      {loading ? (
+  1479→        <div className="text-center py-8 text-gray-500">Loading devices...</div>
+  1480→      ) : devices.length === 0 ? (
+  1481→        <Card className="bg-white border-gray-200 shadow-sm text-gray-900">
+  1482→          <CardContent className="py-8 text-center text-gray-500">
+  1483→            No devices found. Add your first locker device to get started.
+  1484→          </CardContent>
+  1485→        </Card>
+  1486→      ) : (
+  1487→        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+  1488→          {devices.map((device) => (
+  1489→            <Card key={device.id} className="bg-white border-gray-200 shadow-sm">
+  1490→              <CardHeader className="flex flex-row items-start justify-between">
+  1491→                <div>
+  1492→                  <CardTitle className="flex items-center gap-2 text-[#111111] uppercase">
+  1493→                    {device.name}
+  1494→                    <Badge className={device.status === "ONLINE" ? "bg-[#FFD439] text-[#111111] ml-2" : "bg-red-500 text-white ml-2"}>
+  1495→                      {device.status === "ONLINE" ? <Wifi className="mr-1 h-3 w-3" /> : <WifiOff className="mr-1 h-3 w-3" />}
+  1496→                      {device.status}
+  1497→                    </Badge>
+  1498→                  </CardTitle>
+  1499→                  <CardDescription className="mt-1 text-gray-500">{device.location || 'No location set'}</CardDescription>
+  1500→                </div>
+  1501→                <DropdownMenu>
+  1502→                  <DropdownMenuTrigger asChild>
+  1503→                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+  1504→                      <MoreHorizontal className="h-4 w-4" />
+  1505→                    </Button>
+  1506→                  </DropdownMenuTrigger>
+  1507→                  <DropdownMenuContent align="end" className="bg-white">
+  1508→                    <DropdownMenuLabel>Actions</DropdownMenuLabel>
+  1509→                    <DropdownMenuItem onClick={() => handleSyncDevice(device)}>
+  1510→                      <RefreshCw className={`mr-2 h-4 w-4 ${syncingDevice === device.id ? 'animate-spin' : ''}`} />
+  1511→                      Sync Status
+  1512→                    </DropdownMenuItem>
+  1513→                    <DropdownMenuSeparator />
+  1514→                    <DropdownMenuItem onClick={() => { setEditDevice({ id: device.id, name: device.name, location: device.location || '', bestwondAppId: '', bestwondAppSecret: '' }); setSelectedDevice(device); setEditDeviceDialog(true); }}>
+  1515→                      Edit Device
+  1516→                    </DropdownMenuItem>
+  1517→                    <DropdownMenuItem className="text-red-600" onClick={() => { setSelectedDevice(device); setDeleteDeviceDialog(true); }}>
+  1518→                      Delete Device
+  1519→                    </DropdownMenuItem>
+  1520→                  </DropdownMenuContent>
+  1521→                </DropdownMenu>
+  1522→              </CardHeader>
+  1523→              <CardContent>
+  1524→                <div className="grid grid-cols-2 gap-4 text-sm">
+  1525→                  <div>
+  1526→                    <p className="text-gray-500">Device ID</p>
+  1527→                    <p className="font-mono text-[#111111]">{device.deviceId}</p>
+  1528→                  </div>
+  1529→                  <div>
+  1530→                    <p className="text-gray-500">Boxes</p>
+  1531→                    <p className="font-medium text-[#111111]">{device.availableBoxes} / {device.totalBoxes} available</p>
+  1532→                  </div>
+  1533→                </div>
+  1534→                <div className="mt-2 flex items-center gap-1">
+  1535→                  {device.hasCredentials ? (
+  1536→                    <Badge className="bg-green-100 text-green-700 text-xs"><Shield className="mr-1 h-3 w-3" />Custom API Credentials</Badge>
+  1537→                  ) : (
+  1538→                    <Badge className="bg-gray-100 text-gray-600 text-xs">Using Global Credentials</Badge>
+  1539→                  )}
+  1540→                </div>
+  1541→                <div className="mt-2 h-2 rounded-full bg-gray-200">
+  1542→                  <div className="h-2 rounded-full bg-[#FFD439]" style={{ width: `${device.totalBoxes > 0 ? (device.availableBoxes / device.totalBoxes) * 100 : 0}%` }} />
+  1543→                </div>
+  1544→              </CardContent>
+  1545→              <CardFooter className="gap-2">
+  1546→                <Button variant="outline" size="sm" className="flex-1 border-gray-300 text-gray-700 hover:bg-gray-100 uppercase" onClick={() => handleViewBoxes(device)}>
+  1547→                  <Eye className="mr-1 h-3 w-3" />
+  1548→                  View Boxes
+  1549→                </Button>
+  1550→                <Button size="sm" className="flex-1 bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase" onClick={() => { setSelectedDevice(device); setOpenBoxDialog(true) }}>
+  1551→                  Open Box
+  1552→                </Button>
+  1553→              </CardFooter>
+  1554→            </Card>
+  1555→          ))}
+  1556→        </div>
+  1557→      )}
+  1558→
+  1559→      {/* Open Box Dialog */}
+  1560→      <Dialog open={openBoxDialog} onOpenChange={setOpenBoxDialog}>
+  1561→        <DialogContent className="bg-white border-gray-200 text-gray-900">
+  1562→          <DialogHeader>
+  1563→            <DialogTitle className="text-[#111111] uppercase">Open Box</DialogTitle>
+  1564→            <DialogDescription className="text-gray-500">Select a box to open remotely via Bestwond API</DialogDescription>
+  1565→          </DialogHeader>
+  1566→          <div className="grid gap-4 py-4">
+  1567→            <div className="grid gap-2">
+  1568→              <Label className="text-[#111111] uppercase text-sm">Device</Label>
+  1569→              <Select value={selectedDevice?.deviceId || ""} onValueChange={(val) => setSelectedDevice(devices.find(d => d.deviceId === val) || null)}>
+  1570→                <SelectTrigger className="border-gray-200"><SelectValue placeholder="Select device" /></SelectTrigger>
+  1571→                <SelectContent>
+  1572→                  {devices.filter(d => d.status === "ONLINE").map(d => (
+  1573→                    <SelectItem key={d.deviceId} value={d.deviceId}>{d.name} ({d.deviceId})</SelectItem>
+  1574→                  ))}
+  1575→                </SelectContent>
+  1576→              </Select>
+  1577→            </div>
+  1578→            <div className="grid gap-2">
+  1579→              <Label className="text-[#111111] uppercase text-sm">Box Number</Label>
+  1580→              <Input type="number" placeholder="Enter box number (e.g., 1, 2, 3...)" className="border-gray-200" value={selectedBox} onChange={(e) => setSelectedBox(e.target.value)} />
+  1581→            </div>
+  1582→            {openBoxResult && (
+  1583→              <div className={`p-3 rounded-lg ${openBoxResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+  1584→                {openBoxResult.message}
+  1585→              </div>
+  1586→            )}
+  1587→          </div>
+  1588→          <DialogFooter>
+  1589→            <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => { setOpenBoxDialog(false); setOpenBoxResult(null); setSelectedBox(''); setSelectedDevice(null); }}>Cancel</Button>
+  1590→            <Button
+  1591→              className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
+  1592→              onClick={handleOpenBox}
+  1593→              disabled={openingBox || !selectedDevice || !selectedBox}
+  1594→            >
+  1595→              {openingBox ? (
+  1596→                <>
+  1597→                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+  1598→                  Opening...
+  1599→                </>
+  1600→              ) : (
+  1601→                'Open Box'
+  1602→              )}
+  1603→            </Button>
+  1604→          </DialogFooter>
+  1605→        </DialogContent>
+  1606→      </Dialog>
+  1607→
+  1608→      {/* Add Device Dialog */}
+  1609→      <Dialog open={addDeviceDialog} onOpenChange={(open) => { 
+  1610→        setAddDeviceDialog(open); 
+  1611→        if (!open) { 
+  1612→          setVerifiedDevice(null); 
+  1613→          setVerifyError(null); 
+  1614→          setDiscoveredDevices([]);
+  1615→          setDiscoverError(null);
+  1616→        } 
+  1617→      }}>
+  1618→        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-lg">
+  1619→          <DialogHeader>
+  1620→            <DialogTitle className="text-[#111111] uppercase">Add New Device</DialogTitle>
+  1621→            <DialogDescription className="text-gray-500">Enter your Bestwond credentials to discover devices linked to your account</DialogDescription>
+  1622→          </DialogHeader>
+  1623→          <div className="grid gap-4 py-4 max-h-[65vh] overflow-y-auto">
+  1624→            {/* Bestwond Credentials Section */}
+  1625→            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+  1626→              <div className="flex items-center gap-2 mb-3">
+  1627→                <Shield className="h-4 w-4 text-[#111111]" />
+  1628→                <Label className="text-[#111111] font-medium text-sm">Bestwond API Credentials</Label>
+  1629→              </div>
+  1630→              <p className="text-xs text-gray-500 mb-3">Enter your Bestwond App ID and Secret to discover devices linked to your account.</p>
+  1631→              <div className="grid gap-3">
+  1632→                <div className="grid gap-1">
+  1633→                  <Label className="text-[#111111] uppercase text-xs">App ID</Label>
+  1634→                  <Input 
+  1635→                    placeholder="e.g., bw_86b83996147111f" 
+  1636→                    className="border-gray-200 bg-white text-sm" 
+  1637→                    value={newDevice.bestwondAppId} 
+  1638→                    onChange={(e) => { 
+  1639→                      setNewDevice({...newDevice, bestwondAppId: e.target.value}); 
+  1640→                      setVerifiedDevice(null); 
+  1641→                      setVerifyError(null);
+  1642→                      setDiscoveredDevices([]);
+  1643→                    }} 
+  1644→                  />
+  1645→                </div>
+  1646→                <div className="grid gap-1">
+  1647→                  <Label className="text-[#111111] uppercase text-xs">App Secret</Label>
+  1648→                  <Input 
+  1649→                    type="password"
+  1650→                    placeholder="Enter App Secret" 
+  1651→                    className="border-gray-200 bg-white text-sm" 
+  1652→                    value={newDevice.bestwondAppSecret} 
+  1653→                    onChange={(e) => { 
+  1654→                      setNewDevice({...newDevice, bestwondAppSecret: e.target.value}); 
+  1655→                      setVerifiedDevice(null); 
+  1656→                      setVerifyError(null);
+  1657→                      setDiscoveredDevices([]);
+  1658→                    }} 
+  1659→                  />
+  1660→                </div>
+  1661→                <Button 
+  1662→                  className="w-full bg-[#111111] text-white hover:bg-gray-800 uppercase text-sm"
+  1663→                  onClick={handleDiscoverDevices}
+  1664→                  disabled={discoveringDevices || !newDevice.bestwondAppId || !newDevice.bestwondAppSecret}
+  1665→                >
+  1666→                  {discoveringDevices ? (
+  1667→                    <>
+  1668→                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+  1669→                      Discovering...
+  1670→                    </>
+  1671→                  ) : (
+  1672→                    <>
+  1673→                      <Search className="mr-2 h-4 w-4" />
+  1674→                      Discover Devices
+  1675→                    </>
+  1676→                  )}
+  1677→                </Button>
+  1678→              </div>
+  1679→            </div>
+  1680→
+  1681→            {/* Discovered Devices List */}
+  1682→            {discoveredDevices.length > 0 && (
+  1683→              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+  1684→                <p className="text-blue-800 font-medium text-sm mb-2">✓ Found {discoveredDevices.length} device(s) linked to your account:</p>
+  1685→                <div className="grid gap-2 max-h-32 overflow-y-auto">
+  1686→                  {discoveredDevices.map((device) => (
+  1687→                    <button
+  1688→                      key={device.device_number}
+  1689→                      className={`w-full text-left p-2 rounded border transition-all ${
+  1690→                        newDevice.deviceId === device.device_number 
+  1691→                          ? 'bg-blue-100 border-blue-400' 
+  1692→                          : 'bg-white border-gray-200 hover:border-blue-300'
+  1693→                      }`}
+  1694→                      onClick={() => handleSelectDiscoveredDevice(device.device_number)}
+  1695→                    >
+  1696→                      <div className="flex items-center justify-between">
+  1697→                        <span className="font-mono text-sm">{device.device_number}</span>
+  1698→                        <span className={`text-xs px-2 py-0.5 rounded ${device.online ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+  1699→                          {device.online ? 'Online' : 'Offline'}
+  1700→                        </span>
+  1701→                      </div>
+  1702→                      {device.box_count && <span className="text-xs text-gray-500">{device.box_count} boxes</span>}
+  1703→                    </button>
+  1704→                  ))}
+  1705→                </div>
+  1706→                <p className="text-xs text-blue-600 mt-2">Click a device to select it, or enter a different ID below.</p>
+  1707→              </div>
+  1708→            )}
+  1709→
+  1710→            {/* Discovery Error */}
+  1711→            {discoverError && (
+  1712→              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm text-yellow-700">
+  1713→                ⚠ {discoverError}
+  1714→              </div>
+  1715→            )}
+  1716→
+  1717→            {/* Manual Device ID Entry */}
+  1718→            <div className="grid gap-2">
+  1719→              <Label className="text-[#111111] uppercase text-sm">Device ID</Label>
+  1720→              <div className="relative">
+  1721→                <Input 
+  1722→                  placeholder="e.g., 2100018247" 
+  1723→                  className={`border-gray-200 ${verifyingDevice ? 'pr-10' : ''} ${verifiedDevice ? 'border-green-500 bg-green-50' : verifyError ? 'border-red-500 bg-red-50' : ''}`} 
+  1724→                  value={newDevice.deviceId} 
+  1725→                  onChange={(e) => { setNewDevice({...newDevice, deviceId: e.target.value}); setVerifiedDevice(null); setVerifyError(null); }} 
+  1726→                />
+  1727→                {verifyingDevice && (
+  1728→                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+  1729→                    <RefreshCw className="h-4 w-4 animate-spin text-gray-400" />
+  1730→                  </div>
+  1731→                )}
+  1732→                {verifiedDevice && !verifyingDevice && (
+  1733→                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+  1734→                    <CheckCircle className="h-4 w-4 text-green-500" />
+  1735→                  </div>
+  1736→                )}
+  1737→              </div>
+  1738→              {verifyingDevice && <p className="text-xs text-gray-500 mt-1">Verifying device with Bestwond API...</p>}
+  1739→            </div>
+  1740→
+  1741→            {/* Verification Result */}
+  1742→            {verifyError && (
+  1743→              <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+  1744→                ✗ {verifyError}
+  1745→              </div>
+  1746→            )}
+  1747→            {verifiedDevice && (
+  1748→              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm">
+  1749→                <p className="text-green-800 font-medium">✓ Device Verified</p>
+  1750→                <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+  1751→                  <div><span className="text-gray-500">Status:</span> <span className={verifiedDevice.online ? 'text-green-600' : 'text-red-600'}>{verifiedDevice.online ? 'Online' : 'Offline'}</span></div>
+  1752→                  <div><span className="text-gray-500">Boxes:</span> {verifiedDevice.totalBoxes}</div>
+  1753→                  <div><span className="text-gray-500">Available:</span> {verifiedDevice.availableBoxes}</div>
+  1754→                </div>
+  1755→              </div>
+  1756→            )}
+  1757→
+  1758→            <div className="grid gap-2">
+  1759→              <Label className="text-[#111111] uppercase text-sm">Device Name</Label>
+  1760→              <Input placeholder="e.g., Locker 2" className="border-gray-200" value={newDevice.name} onChange={(e) => setNewDevice({...newDevice, name: e.target.value})} />
+  1761→            </div>
+  1762→            <div className="grid gap-2">
+  1763→              <Label className="text-[#111111] uppercase text-sm">Location</Label>
+  1764→              <Input placeholder="e.g., UTech Campus, Kingston" className="border-gray-200" value={newDevice.location} onChange={(e) => setNewDevice({...newDevice, location: e.target.value})} />
+  1765→            </div>
+  1766→            <div className="grid gap-2">
+  1767→              <Label className="text-[#111111] uppercase text-sm">Total Boxes</Label>
+  1768→              <Input type="number" placeholder="24" className="border-gray-200" value={newDevice.totalBoxes} onChange={(e) => setNewDevice({...newDevice, totalBoxes: parseInt(e.target.value) || 24})} />
+  1769→              {verifiedDevice && <p className="text-xs text-gray-500">Auto-filled from API ({verifiedDevice.totalBoxes} boxes detected)</p>}
+  1770→            </div>
+  1771→          </div>
+  1772→          <DialogFooter>
+  1773→            <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => setAddDeviceDialog(false)}>Cancel</Button>
+  1774→            <Button className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase" onClick={handleAddDevice} disabled={!verifiedDevice}>Add Device</Button>
+  1775→          </DialogFooter>
+  1776→        </DialogContent>
+  1777→      </Dialog>
+  1778→
+  1779→      {/* Edit Device Dialog */}
+  1780→      <Dialog open={editDeviceDialog} onOpenChange={setEditDeviceDialog}>
+  1781→        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-lg">
+  1782→          <DialogHeader>
+  1783→            <DialogTitle className="text-[#111111] uppercase">Edit Device</DialogTitle>
+  1784→            <DialogDescription className="text-gray-500">Update device information and API credentials</DialogDescription>
+  1785→          </DialogHeader>
+  1786→          <div className="grid gap-4 py-4">
+  1787→            <div className="grid gap-2">
+  1788→              <Label className="text-[#111111] uppercase text-sm">Device Name</Label>
+  1789→              <Input placeholder="e.g., Locker 1" className="border-gray-200" value={editDevice.name} onChange={(e) => setEditDevice({...editDevice, name: e.target.value})} />
+  1790→            </div>
+  1791→            <div className="grid gap-2">
+  1792→              <Label className="text-[#111111] uppercase text-sm">Location</Label>
+  1793→              <Input placeholder="e.g., UTech Campus, Kingston" className="border-gray-200" value={editDevice.location} onChange={(e) => setEditDevice({...editDevice, location: e.target.value})} />
+  1794→            </div>
+  1795→            
+  1796→            {/* Bestwond Credentials Section */}
+  1797→            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+  1798→              <div className="flex items-center gap-2 mb-3">
+  1799→                <Shield className="h-4 w-4 text-[#111111]" />
+  1800→                <Label className="text-[#111111] font-medium text-sm">Bestwond API Credentials</Label>
+  1801→              </div>
+  1802→              <p className="text-xs text-gray-500 mb-3">Update credentials for this device. Leave empty to keep existing or use global settings.</p>
+  1803→              <div className="grid gap-3">
+  1804→                <div className="grid gap-1">
+  1805→                  <Label className="text-[#111111] uppercase text-xs">App ID</Label>
+  1806→                  <Input 
+  1807→                    placeholder="e.g., bw_57c12404463d11e" 
+  1808→                    className="border-gray-200 bg-white text-sm" 
+  1809→                    value={editDevice.bestwondAppId} 
+  1810→                    onChange={(e) => setEditDevice({...editDevice, bestwondAppId: e.target.value})} 
+  1811→                  />
+  1812→                </div>
+  1813→                <div className="grid gap-1">
+  1814→                  <Label className="text-[#111111] uppercase text-xs">App Secret</Label>
+  1815→                  <Input 
+  1816→                    type="password"
+  1817→                    placeholder="Enter new App Secret" 
+  1818→                    className="border-gray-200 bg-white text-sm" 
+  1819→                    value={editDevice.bestwondAppSecret} 
+  1820→                    onChange={(e) => setEditDevice({...editDevice, bestwondAppSecret: e.target.value})} 
+  1821→                  />
+  1822→                </div>
+  1823→              </div>
+  1824→            </div>
+  1825→          </div>
+  1826→          <DialogFooter>
+  1827→            <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => setEditDeviceDialog(false)}>Cancel</Button>
+  1828→            <Button className="bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase" onClick={handleEditDevice}>Save Changes</Button>
+  1829→          </DialogFooter>
+  1830→        </DialogContent>
+  1831→      </Dialog>
+  1832→
+  1833→      {/* Delete Device Dialog */}
+  1834→      <Dialog open={deleteDeviceDialog} onOpenChange={setDeleteDeviceDialog}>
+  1835→        <DialogContent className="bg-white border-gray-200 text-gray-900">
+  1836→          <DialogHeader>
+  1837→            <DialogTitle className="text-[#111111] uppercase">Delete Device</DialogTitle>
+  1838→            <DialogDescription className="text-gray-500">Are you sure you want to delete this device? This action cannot be undone.</DialogDescription>
+  1839→          </DialogHeader>
+  1840→          <div className="py-4">
+  1841→            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+  1842→              <p className="text-red-800 font-medium">{selectedDevice?.name}</p>
+  1843→              <p className="text-red-600 text-sm">Device ID: {selectedDevice?.deviceId}</p>
+  1844→              <p className="text-red-600 text-sm">Location: {selectedDevice?.location || 'No location'}</p>
+  1845→            </div>
+  1846→          </div>
+  1847→          <DialogFooter>
+  1848→            <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => setDeleteDeviceDialog(false)}>Cancel</Button>
+  1849→            <Button variant="destructive" className="uppercase" onClick={handleDeleteDevice}>Delete Device</Button>
+  1850→          </DialogFooter>
+  1851→        </DialogContent>
+  1852→      </Dialog>
+  1853→
+  1854→      {/* View Boxes Dialog */}
+  1855→      <Dialog open={viewBoxesDialog} onOpenChange={setViewBoxesDialog}>
+  1856→        <DialogContent className="bg-white border-gray-200 text-gray-900 max-w-4xl max-h-[80vh] overflow-hidden">
+  1857→          <DialogHeader>
+  1858→            <div className="flex items-center justify-between">
+  1859→              <div>
+  1860→                <DialogTitle className="text-[#111111] uppercase">{selectedDevice?.name} - Boxes</DialogTitle>
+  1861→                <DialogDescription className="text-gray-500">{selectedDevice?.location || 'No location'}</DialogDescription>
+  1862→              </div>
+  1863→              <Button variant="outline" size="sm" onClick={() => selectedDevice && handleViewBoxes(selectedDevice, true)} disabled={loadingBoxes}>
+  1864→                <RefreshCw className={`mr-2 h-4 w-4 ${loadingBoxes ? 'animate-spin' : ''}`} />
+  1865→                Sync with Hardware
+  1866→              </Button>
+  1867→            </div>
+  1868→          </DialogHeader>
+  1869→
+  1870→          {/* Sync Result Feedback */}
+  1871→          {syncMessage && (
+  1872→            <div className={`p-4 rounded-lg text-sm font-medium ${syncResult?.synced ? 'bg-green-100 border-2 border-green-400 text-green-800' : 'bg-red-100 border-2 border-red-400 text-red-800'}`}>
+  1873→              {syncMessage}
+  1874→            </div>
+  1875→          )}
+  1876→
+  1877→          <div className="py-4 overflow-auto max-h-[60vh]">
+  1878→            {loadingBoxes ? (
+  1879→              <div className="text-center py-8 text-gray-500">Loading boxes...</div>
+  1880→            ) : (
+  1881→              <div className="grid grid-cols-6 gap-2">
+  1882→                {boxes.map((box) => {
+  1883→                  // Determine display status
+  1884→                  const isOccupied = box.status === 'OCCUPIED'
+  1885→                  const hasOrder = !!box.order
+  1886→                  
+  1887→                  return (
+  1888→                    <div
+  1889→                      key={box.boxNumber}
+  1890→                      className={`relative p-3 rounded-lg border-2 cursor-pointer transition-all hover:scale-105 ${
+  1891→                        box.status === 'AVAILABLE'
+  1892→                          ? 'bg-green-50 border-green-300 hover:border-green-500'
+  1893→                          : box.status === 'OCCUPIED'
+  1894→                          ? 'bg-yellow-50 border-yellow-300 hover:border-yellow-500'
+  1895→                          : 'bg-gray-50 border-gray-300'
+  1896→                      }`}
+  1897→                      onClick={() => { setSelectedBoxInfo(box); setBoxDetailDialog(true); }}
+  1898→                    >
+  1899→                      <div className="text-center">
+  1900→                        <div className="font-bold text-[#111111]">{box.boxNumber}</div>
+  1901→                        <div className={`text-xs ${box.status === 'AVAILABLE' ? 'text-green-600' : box.status === 'OCCUPIED' ? 'text-yellow-600' : 'text-gray-500'}`}>
+  1902→                          {box.status === 'AVAILABLE' ? 'Empty' : box.status === 'OCCUPIED' ? 'Occupied' : box.status}
+  1903→                        </div>
+  1904→                        {/* Show box size if available */}
+  1905→                        {box.size && (
+  1906→                          <div className="text-[10px] text-gray-400 mt-0.5">{box.size}</div>
+  1907→                        )}
+  1908→                        {/* Show indicator for unknown packages */}
+  1909→                        {isOccupied && !hasOrder && (
+  1910→                          <div className="text-[10px] text-orange-600 font-medium mt-0.5">Unknown</div>
+  1911→                        )}
+  1912→                      </div>
+  1913→                      {hasOrder && (
+  1914→                        <div className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 rounded-full border-2 border-white" />
+  1915→                      )}
+  1916→                    </div>
+  1917→                  )
+  1918→                })}
+  1919→              </div>
+  1920→            )}
+  1921→          </div>
+  1922→          <DialogFooter>
+  1923→            <div className="flex items-center gap-4 text-sm text-gray-500 mr-auto">
+  1924→              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-green-400 rounded" /> Available</div>
+  1925→              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-yellow-400 rounded" /> Occupied</div>
+  1926→              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-gray-300 rounded" /> Other</div>
+  1927→            </div>
+  1928→            <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => selectedDevice && handleViewLogs(selectedDevice.id)}>
+  1929→              <Clock className="mr-2 h-4 w-4" />
+  1930→              View Logs
+  1931→            </Button>
+  1932→            <Button variant="outline" className="border-gray-300 text-gray-700 uppercase" onClick={() => setViewBoxesDialog(false)}>Close</Button>
+  1933→          </DialogFooter>
+  1934→        </DialogContent>
+  1935→      </Dialog>
+  1936→
+  1937→      {/* Box Detail Dialog */}
+  1938→      <Dialog open={boxDetailDialog} onOpenChange={setBoxDetailDialog}>
+  1939→        <DialogContent className="bg-white border-gray-200 text-gray-900">
+  1940→          <DialogHeader>
+  1941→            <DialogTitle className="text-[#111111] uppercase">Box #{selectedBoxInfo?.boxNumber}</DialogTitle>
+  1942→            <DialogDescription className="text-gray-500">
+  1943→              {selectedBoxInfo?.status === 'AVAILABLE' ? 'Available for use' : `Status: ${selectedBoxInfo?.status}`}
+  1944→              {selectedBoxInfo?.size && ` • Size: ${selectedBoxInfo.size}`}
+  1945→            </DialogDescription>
+  1946→          </DialogHeader>
+  1947→          <div className="py-4">
+  1948→            {selectedBoxInfo?.order ? (
+  1949→              <div className="space-y-3">
+  1950→                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+  1951→                  <p className="font-medium text-yellow-800">Package Stored</p>
+  1952→                  <div className="mt-2 space-y-1 text-sm">
+  1953→                    <p><span className="text-gray-500">Order:</span> {selectedBoxInfo.order.orderNumber}</p>
+  1954→                    <p><span className="text-gray-500">Tracking Code:</span> <span className="font-mono">{selectedBoxInfo.order.trackingCode}</span></p>
+  1955→                    <p><span className="text-gray-500">Customer:</span> {selectedBoxInfo.order.customerName}</p>
+  1956→                    <p><span className="text-gray-500">Phone:</span> {selectedBoxInfo.order.customerPhone}</p>
+  1957→                    <p><span className="text-gray-500">Status:</span> {selectedBoxInfo.order.status}</p>
+  1958→                    <p><span className="text-gray-500">Created:</span> {formatDate(selectedBoxInfo.order.createdAt)}</p>
+  1959→                    {selectedBoxInfo.size && <p><span className="text-gray-500">Box Size:</span> {selectedBoxInfo.size}</p>}
+  1960→                  </div>
+  1961→                </div>
+  1962→                <Button
+  1963→                  className="w-full bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
+  1964→                  onClick={() => { handleOpenBoxFromGrid(selectedBoxInfo.boxNumber); }}
+  1965→                  disabled={openingBox}
+  1966→                >
+  1967→                  <Lock className="mr-2 h-4 w-4" />
+  1968→                  Open This Box
+  1969→                </Button>
+  1970→              </div>
+  1971→            ) : selectedBoxInfo?.status === 'OCCUPIED' ? (
+  1972→              <div className="space-y-3">
+  1973→                <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+  1974→                  <p className="font-medium text-orange-800">Unknown Package</p>
+  1975→                  <p className="text-sm text-orange-700 mt-2">
+  1976→                    This box is occupied according to the locker hardware, but no order record was found in the system.
+  1977→                  </p>
+  1978→                  <p className="text-xs text-orange-600 mt-2">
+  1979→                    This may happen if a package was placed directly without creating an order, or the order was deleted.
+  1980→                  </p>
+  1981→                </div>
+  1982→                <Button
+  1983→                  className="w-full bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
+  1984→                  onClick={() => { handleOpenBoxFromGrid(selectedBoxInfo!.boxNumber); }}
+  1985→                  disabled={openingBox}
+  1986→                >
+  1987→                  <Lock className="mr-2 h-4 w-4" />
+  1988→                  Open This Box
+  1989→                </Button>
+  1990→              </div>
+  1991→            ) : (
+  1992→              <div className="space-y-3">
+  1993→                <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+  1994→                  <p className="text-green-800">This box is empty and available for use</p>
+  1995→                  {selectedBoxInfo?.size && (
+  1996→                    <p className="text-sm text-green-600 mt-1">Size: {selectedBoxInfo.size}</p>
+  1997→                  )}
+  1998→                </div>
+  1999→                <Button
+  2000→                  className="w-full bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90 font-bold uppercase"
+
+[showing lines 1-2000 of 8776; use offset=2001 with limit to continue reading]
