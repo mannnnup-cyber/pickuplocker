@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Pickup Jamaica - Offline</title>
+  <style>
+    * { -webkit-box-sizing: border-box; box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: -webkit-linear-gradient(135deg, #111111 0%, #1a1a2e 100%);
+      background: linear-gradient(135deg, #111111 0%, #1a1a2e 100%);
+      min-height: 100vh;
+      color: #ffffff;
+      display: -webkit-flex;
+      display: flex;
+      -webkit-align-items: center;
+      align-items: center;
+      -webkit-justify-content: center;
+      justify-content: center;
+      text-align: center;
+    }
+    .offline-container {
+      padding: 40px 20px;
+      max-width: 500px;
+    }
+    .logo {
+      font-size: 48px;
+      font-weight: bold;
+      color: #FFD439;
+      letter-spacing: 6px;
+      margin-bottom: 10px;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #999999;
+      margin-bottom: 40px;
+      letter-spacing: 2px;
+    }
+    .icon {
+      font-size: 72px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      font-size: 28px;
+      color: #FFD439;
+      margin-bottom: 10px;
+    }
+    p {
+      font-size: 16px;
+      color: #999999;
+      margin-bottom: 30px;
+      line-height: 1.5;
+    }
+    .spinner {
+      display: inline-block;
+      width: 40px;
+      height: 40px;
+      border: 4px solid #333333;
+      border-top: 4px solid #FFD439;
+      border-radius: 50%;
+      -webkit-animation: spin 1s linear infinite;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @-webkit-keyframes spin { 0% { -webkit-transform: rotate(0deg); } 100% { -webkit-transform: rotate(360deg); } }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .retry-msg {
+      font-size: 13px;
+      color: #555555;
+    }
+    .footer {
+      margin-top: 50px;
+      font-size: 12px;
+      color: #444444;
+    }
+  </style>
+</head>
+<body>
+  <div class="offline-container">
+    <div class="logo">PICKUP</div>
+    <div class="subtitle">JAMAICA</div>
+    <div class="spinner"></div>
+    <h1>Connecting...</h1>
+    <p>We're trying to reach the Pickup locker system. This usually happens when the internet connection is temporarily unavailable.</p>
+    <p class="retry-msg">Auto-reconnecting... please wait</p>
+    <div class="footer">Pickup Jamaica | UTech Campus</div>
+  </div>
+  <script>
+    // Auto-retry every 10 seconds
+    setInterval(function() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('HEAD', 'https://pickuplocker.vercel.app/kiosk-lite', true);
+      xhr.timeout = 5000;
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+          window.location.href = 'https://pickuplocker.vercel.app/kiosk-lite';
+        }
+      };
+      xhr.onerror = function() {};
+      xhr.send();
+    }, 10000);
+  </script>
+</body>
+</html>

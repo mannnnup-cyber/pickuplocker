@@ -1,0 +1,17 @@
+R_DEF: Internal format may change without notice
+local
+color black
+color pickup_black
+color pickup_dark
+color pickup_gold
+color pickup_gold_dark
+color white
+drawable splash_icon
+drawable splash_screen
+mipmap ic_launcher
+mipmap ic_launcher_foreground
+mipmap ic_launcher_round
+string app_name
+string title_activity_main
+style Theme.PickupKiosk
+xml network_security_config
