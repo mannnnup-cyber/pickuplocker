@@ -1,0 +1,1118 @@
+     1→package com.pickupjamaica.kiosk;
+     2→
+     3→import android.app.AlertDialog;
+     4→import android.content.Context;
+     5→import android.content.Intent;
+     6→import android.content.SharedPreferences;
+     7→import android.net.ConnectivityManager;
+     8→import android.net.Network;
+     9→import android.net.NetworkCapabilities;
+    10→import android.net.NetworkRequest;
+    11→import android.os.Build;
+    12→import android.os.Bundle;
+    13→import android.os.Handler;
+    14→import android.os.Looper;
+    15→import android.provider.Settings;
+    16→import android.text.InputType;
+    17→import android.util.Log;
+    18→import android.view.Gravity;
+    19→import android.view.MotionEvent;
+    20→import android.view.View;
+    21→import android.view.WindowManager;
+    22→import android.webkit.ConsoleMessage;
+    23→import android.webkit.WebChromeClient;
+    24→import android.webkit.WebResourceError;
+    25→import android.webkit.WebResourceRequest;
+    26→import android.webkit.WebSettings;
+    27→import android.webkit.WebView;
+    28→import android.webkit.WebViewClient;
+    29→import android.widget.EditText;
+    30→import android.widget.LinearLayout;
+    31→import android.widget.SeekBar;
+    32→import android.widget.TextView;
+    33→import android.widget.Toast;
+    34→
+    35→import androidx.appcompat.app.AppCompatActivity;
+    36→
+    37→import javax.net.ssl.SSLContext;
+    38→
+    39→/**
+    40→ * Pickup Jamaica Kiosk — Bare WebView Activity v3.0
+    41→ *
+    42→ * Two-tier security: Staff PIN (basic access) vs Admin PIN (full access).
+    43→ * Settings are persisted via SharedPreferences.
+    44→ *
+    45→ * Access Levels:
+    46→ *   Staff PIN → basic menu (WiFi, orientation, brightness, reload, close)
+    47→ *   Admin PIN → full menu (backend, server URL, change PINs, clear data + all staff options)
+    48→ *
+    49→ * The PIN dialog shows "Device Code" — no hint about admin access exists in the UI.
+    50→ * Staff never sees admin options. Admin access is invisible.
+    51→ *
+    52→ * Security: 3 wrong PIN attempts = 5 minute lockout.
+    53→ */
+    54→public class MainActivity extends AppCompatActivity {
+    55→
+    56→    private static final String TAG = "PickupKiosk";
+    57→    private static final String APP_VERSION = "3.0";
+    58→
+    59→    // URLs
+    60→    private static final String DEFAULT_KIOSK_URL = "https://pickuplocker.vercel.app/kiosk-lite";
+    61→    private static final String DEFAULT_BACKEND_URL = "https://pickuplocker.vercel.app/admin";
+    62→    private static final String OFFLINE_URL = "file:///android_asset/offline.html";
+    63→
+    64→    // Reconnect
+    65→    private static final int RECONNECT_DELAY_MS = 5000;
+    66→    private static final int MAX_RECONNECT_ATTEMPTS = 60;
+    67→    private static final int CONNECTIVITY_CHECK_MS = 3000;
+    68→
+    69→    // Secret trigger: tap top-left 5x within 3 seconds
+    70→    private static final int SECRET_TAP_COUNT = 5;
+    71→    private static final int SECRET_TAP_TIMEOUT_MS = 3000;
+    72→    private static final int SECRET_TAP_AREA_DP = 80;
+    73→
+    74→    // PIN lockout
+    75→    private static final int MAX_PIN_ATTEMPTS = 3;
+    76→    private static final long PIN_LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+    77→
+    78→    // SharedPreferences keys
+    79→    private static final String PREFS_NAME = "pickup_kiosk_prefs";
+    80→    private static final String KEY_STAFF_PIN = "staff_pin";
+    81→    private static final String KEY_ADMIN_PIN = "admin_pin";
+    82→    private static final String KEY_ORIENTATION = "orientation";     // portrait / landscape / auto
+    83→    private static final String KEY_SERVER_URL = "server_url";
+    84→    private static final String KEY_BACKEND_URL = "backend_url";
+    85→    private static final String KEY_KEEP_SCREEN_ON = "keep_screen_on";
+    86→    private static final String KEY_PIN_FAILED_ATTEMPTS = "pin_failed_attempts";
+    87→    private static final String KEY_PIN_LOCKOUT_UNTIL = "pin_lockout_until";
+    88→    private static final String KEY_BRIGHTNESS = "brightness";       // 0-255, -1 = system default
+    89→
+    90→    // Defaults
+    91→    private static final String DEFAULT_STAFF_PIN = "1111";
+    92→    private static final String DEFAULT_ADMIN_PIN = "1234";
+    93→    private static final String DEFAULT_ORIENTATION = "portrait";
+    94→
+    95→    // State
+    96→    private WebView webView;
+    97→    private Handler mainHandler;
+    98→    private ConnectivityManager.NetworkCallback networkCallback;
+    99→    private boolean isShowingOfflinePage = false;
+   100→    private boolean isViewingBackend = false;
+   101→    private int reconnectAttempts = 0;
+   102→    private boolean isDestroyed = false;
+   103→    private int secretTapCount = 0;
+   104→    private long lastSecretTapTime = 0;
+   105→
+   106→    // ============================================
+   107→    // LIFECYCLE
+   108→    // ============================================
+   109→
+   110→    @Override
+   111→    protected void onCreate(Bundle savedInstanceState) {
+   112→        try {
+   113→            super.onCreate(savedInstanceState);
+   114→            mainHandler = new Handler(Looper.getMainLooper());
+   115→
+   116→            // Apply saved orientation before UI appears
+   117→            applySavedOrientation();
+   118→
+   119→            // Keep screen on (24/7 kiosk)
+   120→            if (getPrefs().getBoolean(KEY_KEEP_SCREEN_ON, true)) {
+   121→                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+   122→            }
+   123→
+   124→            // Prevent screenshots / screen recording (payment security)
+   125→            getWindow().setFlags(
+   126→                WindowManager.LayoutParams.FLAG_SECURE,
+   127→                WindowManager.LayoutParams.FLAG_SECURE
+   128→            );
+   129→
+   130→            // Apply saved brightness
+   131→            applySavedBrightness();
+   132→
+   133→            // Enable TLS 1.2 on Android 5.x
+   134→            enableTLS12();
+   135→
+   136→            // Create and configure WebView
+   137→            webView = createWebViewSafely();
+   138→            if (webView == null) {
+   139→                showErrorScreen("Failed to create WebView. The app cannot continue.");
+   140→                return;
+   141→            }
+   142→
+   143→            setContentView(webView);
+   144→            hideSystemUI();
+   145→            configureWebView();
+   146→            registerConnectivityMonitoring();
+   147→
+   148→            Log.i(TAG, "Kiosk v" + APP_VERSION + " started — loading " + getKioskUrl());
+   149→        } catch (Throwable t) {
+   150→            Log.e(TAG, "FATAL: onCreate — " + t.getClass().getSimpleName() + ": " + t.getMessage(), t);
+   151→            showErrorScreen("App failed to start: " + t.getClass().getSimpleName() + " — " + t.getMessage());
+   152→        }
+   153→    }
+   154→
+   155→    @Override
+   156→    public void onWindowFocusChanged(boolean hasFocus) {
+   157→        super.onWindowFocusChanged(hasFocus);
+   158→        if (hasFocus) hideSystemUI();
+   159→    }
+   160→
+   161→    @Override
+   162→    protected void onResume() {
+   163→        super.onResume();
+   164→        hideSystemUI();
+   165→        if (isShowingOfflinePage) checkAndReload();
+   166→    }
+   167→
+   168→    @Override
+   169→    protected void onDestroy() {
+   170→        isDestroyed = true;
+   171→        super.onDestroy();
+   172→        unregisterConnectivityMonitoring();
+   173→        if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
+   174→        if (webView != null) {
+   175→            try {
+   176→                webView.stopLoading();
+   177→                webView.loadUrl("about:blank");
+   178→                webView.clearCache(true);
+   179→                webView.destroy();
+   180→            } catch (Throwable t) { Log.w(TAG, "Error destroying WebView: " + t.getMessage()); }
+   181→            webView = null;
+   182→        }
+   183→    }
+   184→
+   185→    // ============================================
+   186→    // SHARED PREFERENCES HELPERS
+   187→    // ============================================
+   188→
+   189→    private SharedPreferences getPrefs() {
+   190→        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+   191→    }
+   192→
+   193→    private String getStaffPin() {
+   194→        return getPrefs().getString(KEY_STAFF_PIN, DEFAULT_STAFF_PIN);
+   195→    }
+   196→
+   197→    private String getAdminPin() {
+   198→        return getPrefs().getString(KEY_ADMIN_PIN, DEFAULT_ADMIN_PIN);
+   199→    }
+   200→
+   201→    private String getKioskUrl() {
+   202→        return getPrefs().getString(KEY_SERVER_URL, DEFAULT_KIOSK_URL);
+   203→    }
+   204→
+   205→    private String getBackendUrl() {
+   206→        return getPrefs().getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL);
+   207→    }
+   208→
+   209→    private String getOrientation() {
+   210→        return getPrefs().getString(KEY_ORIENTATION, DEFAULT_ORIENTATION);
+   211→    }
+   212→
+   213→    // ============================================
+   214→    // ORIENTATION
+   215→    // ============================================
+   216→
+   217→    private void applySavedOrientation() {
+   218→        String orient = getOrientation();
+   219→        switch (orient) {
+   220→            case "portrait":
+   221→                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+   222→                break;
+   223→            case "landscape":
+   224→                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+   225→                break;
+   226→            case "auto":
+   227→                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+   228→                break;
+   229→            default:
+   230→                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+   231→                break;
+   232→        }
+   233→    }
+   234→
+   235→    // ============================================
+   236→    // BRIGHTNESS
+   237→    // ============================================
+   238→
+   239→    private void applySavedBrightness() {
+   240→        try {
+   241→            int brightness = getPrefs().getInt(KEY_BRIGHTNESS, -1);
+   242→            if (brightness >= 0) {
+   243→                WindowManager.LayoutParams lp = getWindow().getAttributes();
+   244→                lp.screenBrightness = brightness / 255f;
+   245→                getWindow().setAttributes(lp);
+   246→            }
+   247→        } catch (Throwable t) {
+   248→            Log.w(TAG, "Failed to apply brightness: " + t.getMessage());
+   249→        }
+   250→    }
+   251→
+   252→    // ============================================
+   253→    // ERROR SCREEN
+   254→    // ============================================
+   255→
+   256→    private void showErrorScreen(String message) {
+   257→        try {
+   258→            LinearLayout layout = new LinearLayout(this);
+   259→            layout.setOrientation(LinearLayout.VERTICAL);
+   260→            layout.setPadding(40, 40, 40, 40);
+   261→            layout.setBackgroundColor(0xFF111111);
+   262→            layout.setGravity(Gravity.CENTER);
+   263→
+   264→            TextView title = new TextView(this);
+   265→            title.setText("PICKUP");
+   266→            title.setTextColor(0xFFFFD439);
+   267→            title.setTextSize(36);
+   268→            title.setGravity(Gravity.CENTER);
+   269→
+   270→            TextView errorMsg = new TextView(this);
+   271→            errorMsg.setText(message);
+   272→            errorMsg.setTextColor(0xFF999999);
+   273→            errorMsg.setTextSize(16);
+   274→            errorMsg.setGravity(Gravity.CENTER);
+   275→            errorMsg.setPadding(0, 30, 0, 0);
+   276→
+   277→            layout.addView(title);
+   278→            layout.addView(errorMsg);
+   279→            setContentView(layout);
+   280→        } catch (Throwable t2) {
+   281→            Log.e(TAG, "Even error screen failed: " + t2.getMessage());
+   282→        }
+   283→    }
+   284→
+   285→    // ============================================
+   286→    // TLS 1.2 — Critical for Android 5.1
+   287→    // ============================================
+   288→
+   289→    private void enableTLS12() {
+   290→        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN
+   291→                && Build.VERSION.SDK_INT <= Build.VERSION_CODES.LOLLIPOP_MR1) {
+   292→            try {
+   293→                SSLContext sc = SSLContext.getInstance("TLSv1.2");
+   294→                sc.init(null, null, null);
+   295→                SSLContext.setDefault(sc);
+   296→                Log.i(TAG, "TLS 1.2 enabled for Android 5.x");
+   297→            } catch (Throwable t) {
+   298→                Log.e(TAG, "Failed to enable TLS 1.2: " + t.getMessage());
+   299→            }
+   300→        }
+   301→    }
+   302→
+   303→    // ============================================
+   304→    // IMMERSIVE MODE
+   305→    // ============================================
+   306→
+   307→    private void hideSystemUI() {
+   308→        try {
+   309→            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+   310→                getWindow().setDecorFitsSystemWindows(false);
+   311→                getWindow().getInsetsController().hide(
+   312→                    android.view.WindowInsets.Type.statusBars()
+   313→                    | android.view.WindowInsets.Type.navigationBars()
+   314→                );
+   315→                getWindow().getInsetsController().setSystemBarsBehavior(
+   316→                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+   317→                );
+   318→            } else {
+   319→                View decorView = getWindow().getDecorView();
+   320→                int uiOptions = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+   321→                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+   322→                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+   323→                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+   324→                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+   325→                        | View.SYSTEM_UI_FLAG_FULLSCREEN;
+   326→                decorView.setSystemUiVisibility(uiOptions);
+   327→            }
+   328→        } catch (Throwable t) {
+   329→            Log.w(TAG, "hideSystemUI failed: " + t.getMessage());
+   330→        }
+   331→    }
+   332→
+   333→    // ============================================
+   334→    // WEBVIEW
+   335→    // ============================================
+   336→
+   337→    private WebView createWebViewSafely() {
+   338→        try {
+   339→            WebView wv = new WebView(this);
+   340→            Log.i(TAG, "WebView created successfully");
+   341→            return wv;
+   342→        } catch (Throwable t) {
+   343→            Log.e(TAG, "Failed to create WebView: " + t.getClass().getSimpleName(), t);
+   344→            return null;
+   345→        }
+   346→    }
+   347→
+   348→    private void configureWebView() {
+   349→        if (webView == null) return;
+   350→        try {
+   351→            WebSettings settings = webView.getSettings();
+   352→            settings.setJavaScriptEnabled(true);
+   353→            settings.setDomStorageEnabled(true);
+   354→            settings.setAllowFileAccess(true);
+   355→            settings.setAllowContentAccess(true);
+   356→            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+   357→                settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+   358→            }
+   359→            settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+   360→            settings.setBuiltInZoomControls(false);
+   361→            settings.setDisplayZoomControls(false);
+   362→
+   363→            String userAgent = settings.getUserAgentString();
+   364→            settings.setUserAgentString(userAgent + " PickupKiosk/" + APP_VERSION);
+   365→
+   366→            try {
+   367→                boolean isDebug = false;
+   368→                try { isDebug = BuildConfig.DEBUG; } catch (Throwable ignored) {}
+   369→                WebView.setWebContentsDebuggingEnabled(isDebug);
+   370→            } catch (Throwable t) { Log.w(TAG, "WebView debugging: " + t.getMessage()); }
+   371→
+   372→            webView.setWebViewClient(new KioskWebViewClient());
+   373→            webView.setWebChromeClient(new KioskWebChromeClient());
+   374→            webView.loadUrl(getKioskUrl());
+   375→        } catch (Throwable t) {
+   376→            Log.e(TAG, "WebView config failed: " + t.getMessage(), t);
+   377→            showErrorScreen("WebView configuration failed: " + t.getMessage());
+   378→        }
+   379→    }
+   380→
+   381→    // ============================================
+   382→    // WEBVIEW CLIENT
+   383→    // ============================================
+   384→
+   385→    private class KioskWebViewClient extends WebViewClient {
+   386→        @Override
+   387→        public void onPageFinished(WebView view, String url) {
+   388→            super.onPageFinished(view, url);
+   389→            if (url == null) return;
+   390→            if (OFFLINE_URL.equals(url)) {
+   391→                isShowingOfflinePage = true;
+   392→                Log.w(TAG, "Showing offline page");
+   393→            } else {
+   394→                isShowingOfflinePage = false;
+   395→                reconnectAttempts = 0;
+   396→                Log.i(TAG, "Page loaded: " + url);
+   397→            }
+   398→        }
+   399→
+   400→        @Override
+   401→        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+   402→            if (request != null && request.isForMainFrame()) {
+   403→                if (!isShowingOfflinePage) showOfflinePage();
+   404→            }
+   405→        }
+   406→
+   407→        @Override
+   408→        public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+   409→            if (!isShowingOfflinePage) showOfflinePage();
+   410→        }
+   411→
+   412→        @Override
+   413→        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+   414→            if (request == null) return false;
+   415→            String url = request.getUrl().toString();
+   416→            if (url == null) return true;
+   417→            // Allow kiosk domain, backend, assets, and payment API
+   418→            if (url.startsWith("https://pickuplocker.vercel.app") ||
+   419→                url.startsWith("file:///android_asset/") ||
+   420→                url.startsWith("https://api.dimepay.app")) {
+   421→                return false;
+   422→            }
+   423→            Log.w(TAG, "Blocked navigation to: " + url);
+   424→            return true;
+   425→        }
+   426→    }
+   427→
+   428→    private class KioskWebChromeClient extends WebChromeClient {
+   429→        @Override
+   430→        public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+   431→            if (consoleMessage == null) return true;
+   432→            switch (consoleMessage.messageLevel()) {
+   433→                case ERROR:
+   434→                    Log.e(TAG, "JS: " + consoleMessage.message());
+   435→                    break;
+   436→                case WARNING:
+   437→                    Log.w(TAG, "JS: " + consoleMessage.message());
+   438→                    break;
+   439→                default: break;
+   440→            }
+   441→            return true;
+   442→        }
+   443→    }
+   444→
+   445→    // ============================================
+   446→    // OFFLINE & RECONNECT
+   447→    // ============================================
+   448→
+   449→    private void showOfflinePage() {
+   450→        isShowingOfflinePage = true;
+   451→        if (webView != null && mainHandler != null) {
+   452→            mainHandler.post(() -> {
+   453→                if (webView != null && !isDestroyed) {
+   454→                    try { webView.loadUrl(OFFLINE_URL); } catch (Throwable t) { Log.e(TAG, t.getMessage()); }
+   455→                }
+   456→            });
+   457→        }
+   458→        scheduleReconnect();
+   459→    }
+   460→
+   461→    private void scheduleReconnect() {
+   462→        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return;
+   463→        reconnectAttempts++;
+   464→        if (mainHandler != null) {
+   465→            mainHandler.postDelayed(() -> {
+   466→                if (isShowingOfflinePage && !isDestroyed) checkAndReload();
+   467→            }, RECONNECT_DELAY_MS);
+   468→        }
+   469→    }
+   470→
+   471→    private void checkAndReload() {
+   472→        if (!isNetworkAvailable()) { scheduleReconnect(); return; }
+   473→        if (webView != null && mainHandler != null) {
+   474→            mainHandler.post(() -> {
+   475→                if (webView != null && !isDestroyed) {
+   476→                    try { webView.loadUrl(isViewingBackend ? getBackendUrl() : getKioskUrl()); }
+   477→                    catch (Throwable t) { Log.e(TAG, t.getMessage()); }
+   478→                }
+   479→            });
+   480→        }
+   481→    }
+   482→
+   483→    // ============================================
+   484→    // CONNECTIVITY MONITORING
+   485→    // ============================================
+   486→
+   487→    private void registerConnectivityMonitoring() {
+   488→        try {
+   489→            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   490→            if (cm == null) return;
+   491→            NetworkRequest request = new NetworkRequest.Builder()
+   492→                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+   493→                .build();
+   494→            networkCallback = new ConnectivityManager.NetworkCallback() {
+   495→                @Override
+   496→                public void onAvailable(Network network) {
+   497→                    if (isShowingOfflinePage && mainHandler != null) {
+   498→                        mainHandler.postDelayed(() -> {
+   499→                            if (isShowingOfflinePage && webView != null && !isDestroyed) {
+   500→                                reconnectAttempts = 0;
+   501→                                mainHandler.post(() -> {
+   502→                                    if (webView != null && !isDestroyed)
+   503→                                        try { webView.loadUrl(getKioskUrl()); } catch (Throwable t) {}
+   504→                                });
+   505→                            }
+   506→                        }, CONNECTIVITY_CHECK_MS);
+   507→                    }
+   508→                }
+   509→                @Override
+   510→                public void onLost(Network network) { Log.w(TAG, "Network lost"); }
+   511→                @Override
+   512→                public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+   513→                    if (caps == null) return;
+   514→                    boolean ok = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+   515→                            && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+   516→                    if (ok && isShowingOfflinePage && mainHandler != null) {
+   517→                        mainHandler.postDelayed(() -> {
+   518→                            if (isShowingOfflinePage && webView != null && !isDestroyed) {
+   519→                                reconnectAttempts = 0;
+   520→                                mainHandler.post(() -> {
+   521→                                    if (webView != null && !isDestroyed)
+   522→                                        try { webView.loadUrl(getKioskUrl()); } catch (Throwable t) {}
+   523→                                });
+   524→                            }
+   525→                        }, CONNECTIVITY_CHECK_MS);
+   526→                    }
+   527→                }
+   528→            };
+   529→            cm.registerNetworkCallback(request, networkCallback);
+   530→        } catch (Throwable t) {
+   531→            Log.e(TAG, "Network monitoring failed: " + t.getMessage());
+   532→        }
+   533→    }
+   534→
+   535→    private void unregisterConnectivityMonitoring() {
+   536→        if (networkCallback != null) {
+   537→            try {
+   538→                ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   539→                if (cm != null) cm.unregisterNetworkCallback(networkCallback);
+   540→            } catch (Throwable t) { Log.w(TAG, t.getMessage()); }
+   541→        }
+   542→    }
+   543→
+   544→    private boolean isNetworkAvailable() {
+   545→        try {
+   546→            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   547→            if (cm == null) return false;
+   548→            Network activeNetwork = cm.getActiveNetwork();
+   549→            if (activeNetwork == null) return false;
+   550→            NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
+   551→            return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+   552→        } catch (Throwable t) { return true; }
+   553→    }
+   554→
+   555→    // ============================================
+   556→    // BACK BUTTON
+   557→    // ============================================
+   558→
+   559→    @Override
+   560→    public void onBackPressed() {
+   561→        if (webView != null && webView.canGoBack()) {
+   562→            webView.goBack();
+   563→        }
+   564→    }
+   565→
+   566→    // ============================================
+   567→    // SECRET TRIGGER — 5-tap top-left corner
+   568→    // ============================================
+   569→
+   570→    @Override
+   571→    public boolean dispatchTouchEvent(MotionEvent ev) {
+   572→        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+   573→            try {
+   574→                float density = getResources().getDisplayMetrics().density;
+   575→                float hitAreaPx = SECRET_TAP_AREA_DP * density;
+   576→                float x = ev.getRawX();
+   577→                float y = ev.getRawY();
+   578→                if (x < hitAreaPx && y < hitAreaPx) {
+   579→                    long now = System.currentTimeMillis();
+   580→                    if (now - lastSecretTapTime > SECRET_TAP_TIMEOUT_MS) {
+   581→                        secretTapCount = 1;
+   582→                    } else {
+   583→                        secretTapCount++;
+   584→                    }
+   585→                    lastSecretTapTime = now;
+   586→                    if (secretTapCount >= SECRET_TAP_COUNT) {
+   587→                        secretTapCount = 0;
+   588→                        Log.i(TAG, "Secret trigger activated");
+   589→                        showPinDialog();
+   590→                    }
+   591→                }
+   592→            } catch (Throwable t) {
+   593→                Log.w(TAG, "Touch handler error: " + t.getMessage());
+   594→            }
+   595→        }
+   596→        return super.dispatchTouchEvent(ev);
+   597→    }
+   598→
+   599→    // ============================================
+   600→    // TWO-TIER PIN SYSTEM
+   601→    // ============================================
+   602→
+   603→    /**
+   604→     * PIN entry dialog — titled "Device Code" (no hint about admin).
+   605→     * Staff PIN → staff menu. Admin PIN → admin menu.
+   606→     * 3 wrong attempts → 5 minute lockout.
+   607→     */
+   608→    private void showPinDialog() {
+   609→        // Check lockout first
+   610→        long lockoutUntil = getPrefs().getLong(KEY_PIN_LOCKOUT_UNTIL, 0);
+   611→        if (System.currentTimeMillis() < lockoutUntil) {
+   612→            long remainingSec = (lockoutUntil - System.currentTimeMillis()) / 1000;
+   613→            Toast.makeText(this, "Locked. Try again in " + remainingSec + "s", Toast.LENGTH_LONG).show();
+   614→            Log.w(TAG, "PIN entry locked out for " + remainingSec + " more seconds");
+   615→            return;
+   616→        }
+   617→
+   618→        try {
+   619→            EditText pinInput = new EditText(this);
+   620→            pinInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   621→            pinInput.setHint("Enter device code");
+   622→            pinInput.setMaxLines(1);
+   623→
+   624→            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+   625→                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+   626→            lp.setMargins(50, 20, 50, 20);
+   627→            pinInput.setLayoutParams(lp);
+   628→
+   629→            LinearLayout container = new LinearLayout(this);
+   630→            container.setOrientation(LinearLayout.VERTICAL);
+   631→            container.setPadding(40, 20, 40, 20);
+   632→            container.addView(pinInput);
+   633→
+   634→            new AlertDialog.Builder(this)
+   635→                .setTitle("Device Code")
+   636→                .setMessage("Enter code to continue.")
+   637→                .setView(container)
+   638→                .setPositiveButton("Confirm", (dialog, which) -> {
+   639→                    String entered = pinInput.getText().toString().trim();
+   640→                    if (entered.equals(getAdminPin())) {
+   641→                        // Admin access — reset failed attempts
+   642→                        resetPinAttempts();
+   643→                        Log.i(TAG, "Admin access granted");
+   644→                        showAdminMenu();
+   645→                    } else if (entered.equals(getStaffPin())) {
+   646→                        // Staff access — reset failed attempts
+   647→                        resetPinAttempts();
+   648→                        Log.i(TAG, "Staff access granted");
+   649→                        showStaffMenu();
+   650→                    } else {
+   651→                        // Wrong PIN
+   652→                        handleWrongPin();
+   653→                    }
+   654→                })
+   655→                .setNegativeButton("Cancel", null)
+   656→                .setCancelable(true)
+   657→                .show();
+   658→        } catch (Throwable t) {
+   659→            Log.e(TAG, "PIN dialog failed: " + t.getMessage());
+   660→        }
+   661→    }
+   662→
+   663→    private void handleWrongPin() {
+   664→        int attempts = getPrefs().getInt(KEY_PIN_FAILED_ATTEMPTS, 0) + 1;
+   665→        getPrefs().edit().putInt(KEY_PIN_FAILED_ATTEMPTS, attempts).apply();
+   666→        Log.w(TAG, "Wrong PIN attempt " + attempts + "/" + MAX_PIN_ATTEMPTS);
+   667→
+   668→        if (attempts >= MAX_PIN_ATTEMPTS) {
+   669→            // Lock out for 5 minutes
+   670→            long lockoutUntil = System.currentTimeMillis() + PIN_LOCKOUT_DURATION_MS;
+   671→            getPrefs().edit()
+   672→                .putLong(KEY_PIN_LOCKOUT_UNTIL, lockoutUntil)
+   673→                .putInt(KEY_PIN_FAILED_ATTEMPTS, 0)
+   674→                .apply();
+   675→            Toast.makeText(this, "Too many attempts. Locked for 5 minutes.", Toast.LENGTH_LONG).show();
+   676→        } else {
+   677→            int remaining = MAX_PIN_ATTEMPTS - attempts;
+   678→            new AlertDialog.Builder(this)
+   679→                .setTitle("Incorrect Code")
+   680→                .setMessage("The code you entered is incorrect.\n" + remaining + " attempt(s) remaining.")
+   681→                .setPositiveButton("OK", null)
+   682→                .show();
+   683→        }
+   684→    }
+   685→
+   686→    private void resetPinAttempts() {
+   687→        getPrefs().edit()
+   688→            .putInt(KEY_PIN_FAILED_ATTEMPTS, 0)
+   689→            .putLong(KEY_PIN_LOCKOUT_UNTIL, 0)
+   690→            .apply();
+   691→    }
+   692→
+   693→    // ============================================
+   694→    // STAFF MENU — Basic access only
+   695→    // ============================================
+   696→
+   697→    private void showStaffMenu() {
+   698→        try {
+   699→            String[] options = {
+   700→                "WiFi Settings",
+   701→                "Screen Orientation",
+   702→                "Screen Brightness",
+   703→                "Reload Kiosk",
+   704→                "Close App"
+   705→            };
+   706→            new AlertDialog.Builder(this)
+   707→                .setTitle("Device Settings")
+   708→                .setItems(options, (dialog, which) -> {
+   709→                    switch (which) {
+   710→                        case 0: openWifiSettings(); break;
+   711→                        case 1: showOrientationDialog(); break;
+   712→                        case 2: showBrightnessDialog(); break;
+   713→                        case 3: reloadKiosk(); break;
+   714→                        case 4: closeApp(); break;
+   715→                    }
+   716→                })
+   717→                .setNegativeButton("Cancel", null)
+   718→                .setCancelable(true)
+   719→                .show();
+   720→        } catch (Throwable t) {
+   721→            Log.e(TAG, "Staff menu failed: " + t.getMessage());
+   722→        }
+   723→    }
+   724→
+   725→    // ============================================
+   726→    // ADMIN MENU — Full access
+   727→    // ============================================
+   728→
+   729→    private void showAdminMenu() {
+   730→        try {
+   731→            String[] options = {
+   732→                "Open Backend Panel",
+   733→                "Change Server URL",
+   734→                "Change Device Code (Staff)",
+   735→                "Change Admin Code",
+   736→                "Clear App Data & Cache",
+   737→                "WiFi Settings",
+   738→                "Screen Orientation",
+   739→                "Screen Brightness",
+   740→                "Toggle Screen Always-On",
+   741→                "Reload Kiosk",
+   742→                "Close App"
+   743→            };
+   744→            new AlertDialog.Builder(this)
+   745→                .setTitle("Admin Settings")
+   746→                .setItems(options, (dialog, which) -> {
+   747→                    switch (which) {
+   748→                        case 0: openBackendPanel(); break;
+   749→                        case 1: showChangeServerUrlDialog(); break;
+   750→                        case 2: showChangePinDialog("staff"); break;
+   751→                        case 3: showChangePinDialog("admin"); break;
+   752→                        case 4: showClearDataConfirmDialog(); break;
+   753→                        case 5: openWifiSettings(); break;
+   754→                        case 6: showOrientationDialog(); break;
+   755→                        case 7: showBrightnessDialog(); break;
+   756→                        case 8: showToggleScreenOnDialog(); break;
+   757→                        case 9: reloadKiosk(); break;
+   758→                        case 10: closeApp(); break;
+   759→                    }
+   760→                })
+   761→                .setNegativeButton("Cancel", null)
+   762→                .setCancelable(true)
+   763→                .show();
+   764→        } catch (Throwable t) {
+   765→            Log.e(TAG, "Admin menu failed: " + t.getMessage());
+   766→        }
+   767→    }
+   768→
+   769→    // ============================================
+   770→    // SETTINGS: ORIENTATION
+   771→    // ============================================
+   772→
+   773→    private void showOrientationDialog() {
+   774→        try {
+   775→            String current = getOrientation();
+   776→            String[] labels = {"Portrait (Vertical)", "Landscape (Horizontal)", "Auto-Rotate"};
+   777→            String[] values = {"portrait", "landscape", "auto"};
+   778→            int selectedIndex = 0;
+   779→            for (int i = 0; i < values.length; i++) {
+   780→                if (values[i].equals(current)) { selectedIndex = i; break; }
+   781→            }
+   782→            new AlertDialog.Builder(this)
+   783→                .setTitle("Screen Orientation")
+   784→                .setSingleChoiceItems(labels, selectedIndex, (dialog, which) -> {
+   785→                    String chosen = values[which];
+   786→                    getPrefs().edit().putString(KEY_ORIENTATION, chosen).apply();
+   787→                    applySavedOrientation();
+   788→                    Toast.makeText(this, "Orientation: " + labels[which], Toast.LENGTH_SHORT).show();
+   789→                    dialog.dismiss();
+   790→                })
+   791→                .setNegativeButton("Cancel", null)
+   792→                .setCancelable(true)
+   793→                .show();
+   794→        } catch (Throwable t) {
+   795→            Log.e(TAG, "Orientation dialog failed: " + t.getMessage());
+   796→        }
+   797→    }
+   798→
+   799→    // ============================================
+   800→    // SETTINGS: BRIGHTNESS
+   801→    // ============================================
+   802→
+   803→    private void showBrightnessDialog() {
+   804→        try {
+   805→            int currentBrightness = getPrefs().getInt(KEY_BRIGHTNESS, -1);
+   806→            // If system default, estimate current brightness for the slider
+   807→            if (currentBrightness < 0) {
+   808→                try {
+   809→                    currentBrightness = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
+   810→                } catch (Throwable t) {
+   811→                    currentBrightness = 128;
+   812→                }
+   813→            }
+   814→
+   815→            LinearLayout container = new LinearLayout(this);
+   816→            container.setOrientation(LinearLayout.VERTICAL);
+   817→            container.setPadding(40, 30, 40, 10);
+   818→
+   819→            SeekBar seekBar = new SeekBar(this);
+   820→            seekBar.setMax(255);
+   821→            seekBar.setProgress(currentBrightness);
+   822→            seekBar.setPadding(0, 20, 0, 20);
+   823→
+   824→            TextView label = new TextView(this);
+   825→            label.setText("Brightness: " + currentBrightness);
+   826→            label.setTextColor(0xFF999999);
+   827→            label.setTextSize(14);
+   828→            label.setGravity(Gravity.CENTER);
+   829→
+   830→            seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+   831→                @Override
+   832→                public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+   833→                    label.setText("Brightness: " + progress);
+   834→                    if (fromUser) {
+   835→                        WindowManager.LayoutParams lp = getWindow().getAttributes();
+   836→                        lp.screenBrightness = progress / 255f;
+   837→                        getWindow().setAttributes(lp);
+   838→                    }
+   839→                }
+   840→                @Override public void onStartTrackingTouch(SeekBar sb) {}
+   841→                @Override public void onStopTrackingTouch(SeekBar sb) {}
+   842→            });
+   843→
+   844→            container.addView(seekBar);
+   845→            container.addView(label);
+   846→
+   847→            new AlertDialog.Builder(this)
+   848→                .setTitle("Screen Brightness")
+   849→                .setView(container)
+   850→                .setPositiveButton("Save", (dialog, which) -> {
+   851→                    int val = seekBar.getProgress();
+   852→                    getPrefs().edit().putInt(KEY_BRIGHTNESS, val).apply();
+   853→                    Toast.makeText(this, "Brightness saved", Toast.LENGTH_SHORT).show();
+   854→                })
+   855→                .setNeutralButton("System Default", (dialog, which) -> {
+   856→                    getPrefs().edit().putInt(KEY_BRIGHTNESS, -1).apply();
+   857→                    WindowManager.LayoutParams lp = getWindow().getAttributes();
+   858→                    lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+   859→                    getWindow().setAttributes(lp);
+   860→                    Toast.makeText(this, "Brightness: system default", Toast.LENGTH_SHORT).show();
+   861→                })
+   862→                .setNegativeButton("Cancel", null)
+   863→                .setCancelable(true)
+   864→                .show();
+   865→        } catch (Throwable t) {
+   866→            Log.e(TAG, "Brightness dialog failed: " + t.getMessage());
+   867→        }
+   868→    }
+   869→
+   870→    // ============================================
+   871→    // SETTINGS: SERVER URL
+   872→    // ============================================
+   873→
+   874→    private void showChangeServerUrlDialog() {
+   875→        try {
+   876→            EditText input = new EditText(this);
+   877→            input.setText(getKioskUrl());
+   878→            input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+   879→            input.setSingleLine(true);
+   880→            input.setPadding(40, 20, 40, 20);
+   881→            input.setSelection(input.getText().length());
+   882→
+   883→            new AlertDialog.Builder(this)
+   884→                .setTitle("Server URL")
+   885→                .setMessage("Change the kiosk page URL. The app will reload after saving.")
+   886→                .setView(input)
+   887→                .setPositiveButton("Save & Reload", (dialog, which) -> {
+   888→                    String newUrl = input.getText().toString().trim();
+   889→                    if (!newUrl.isEmpty() && newUrl.startsWith("http")) {
+   890→                        getPrefs().edit().putString(KEY_SERVER_URL, newUrl).apply();
+   891→                        isViewingBackend = false;
+   892→                        reloadKiosk();
+   893→                        Toast.makeText(this, "Server URL updated", Toast.LENGTH_SHORT).show();
+   894→                    } else {
+   895→                        Toast.makeText(this, "Invalid URL", Toast.LENGTH_SHORT).show();
+   896→                    }
+   897→                })
+   898→                .setNeutralButton("Reset Default", (dialog, which) -> {
+   899→                    getPrefs().edit().putString(KEY_SERVER_URL, DEFAULT_KIOSK_URL).apply();
+   900→                    isViewingBackend = false;
+   901→                    reloadKiosk();
+   902→                    Toast.makeText(this, "Server URL reset to default", Toast.LENGTH_SHORT).show();
+   903→                })
+   904→                .setNegativeButton("Cancel", null)
+   905→                .setCancelable(true)
+   906→                .show();
+   907→        } catch (Throwable t) {
+   908→            Log.e(TAG, "Server URL dialog failed: " + t.getMessage());
+   909→        }
+   910→    }
+   911→
+   912→    // ============================================
+   913→    // SETTINGS: CHANGE PIN
+   914→    // ============================================
+   915→
+   916→    private void showChangePinDialog(String pinType) {
+   917→        try {
+   918→            String title = pinType.equals("admin") ? "Change Admin Code" : "Change Device Code";
+   919→
+   920→            EditText currentInput = new EditText(this);
+   921→            currentInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   922→            currentInput.setHint("Current code");
+   923→            currentInput.setMaxLines(1);
+   924→
+   925→            EditText newInput = new EditText(this);
+   926→            newInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   927→            newInput.setHint("New code (4+ digits)");
+   928→            newInput.setMaxLines(1);
+   929→
+   930→            EditText confirmInput = new EditText(this);
+   931→            confirmInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   932→            confirmInput.setHint("Confirm new code");
+   933→            confirmInput.setMaxLines(1);
+   934→
+   935→            LinearLayout container = new LinearLayout(this);
+   936→            container.setOrientation(LinearLayout.VERTICAL);
+   937→            container.setPadding(40, 20, 40, 20);
+   938→            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+   939→                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+   940→            lp.setMargins(0, 0, 0, 15);
+   941→            currentInput.setLayoutParams(lp);
+   942→            newInput.setLayoutParams(lp);
+   943→            confirmInput.setLayoutParams(lp);
+   944→            container.addView(currentInput);
+   945→            container.addView(newInput);
+   946→            container.addView(confirmInput);
+   947→
+   948→            new AlertDialog.Builder(this)
+   949→                .setTitle(title)
+   950→                .setView(container)
+   951→                .setPositiveButton("Save", (dialog, which) -> {
+   952→                    String current = currentInput.getText().toString().trim();
+   953→                    String newPin = newInput.getText().toString().trim();
+   954→                    String confirm = confirmInput.getText().toString().trim();
+   955→
+   956→                    String correctPin = pinType.equals("admin") ? getAdminPin() : getStaffPin();
+   957→                    String key = pinType.equals("admin") ? KEY_ADMIN_PIN : KEY_STAFF_PIN;
+   958→
+   959→                    if (!current.equals(correctPin)) {
+   960→                        Toast.makeText(this, "Current code is incorrect", Toast.LENGTH_LONG).show();
+   961→                        return;
+   962→                    }
+   963→                    if (newPin.length() < 4) {
+   964→                        Toast.makeText(this, "New code must be at least 4 digits", Toast.LENGTH_LONG).show();
+   965→                        return;
+   966→                    }
+   967→                    if (!newPin.equals(confirm)) {
+   968→                        Toast.makeText(this, "New codes do not match", Toast.LENGTH_LONG).show();
+   969→                        return;
+   970→                    }
+   971→                    // Don't allow staff and admin PINs to be the same
+   972→                    String otherPin = pinType.equals("admin") ? getStaffPin() : getAdminPin();
+   973→                    if (newPin.equals(otherPin)) {
+   974→                        Toast.makeText(this, "Cannot use the same code for both levels", Toast.LENGTH_LONG).show();
+   975→                        return;
+   976→                    }
+   977→                    getPrefs().edit().putString(key, newPin).apply();
+   978→                    Toast.makeText(this, "Code changed successfully", Toast.LENGTH_SHORT).show();
+   979→                    Log.i(TAG, pinType + " PIN changed");
+   980→                })
+   981→                .setNegativeButton("Cancel", null)
+   982→                .setCancelable(true)
+   983→                .show();
+   984→        } catch (Throwable t) {
+   985→            Log.e(TAG, "Change PIN dialog failed: " + t.getMessage());
+   986→        }
+   987→    }
+   988→
+   989→    // ============================================
+   990→    // SETTINGS: CLEAR DATA
+   991→    // ============================================
+   992→
+   993→    private void showClearDataConfirmDialog() {
+   994→        try {
+   995→            new AlertDialog.Builder(this)
+   996→                .setTitle("Clear App Data")
+   997→                .setMessage("This will clear the WebView cache, cookies, and stored data. Settings and PINs will be kept. The kiosk will reload after clearing.")
+   998→                .setPositiveButton("Clear & Reload", (dialog, which) -> {
+   999→                    try {
+  1000→                        if (webView != null) {
+  1001→                            webView.clearCache(true);
+  1002→                            webView.clearFormData();
+  1003→                            webView.clearHistory();
+  1004→                            android.webkit.CookieManager.getInstance().removeAllCookies(null);
+  1005→                            android.webkit.WebStorage.getInstance().deleteAllData();
+  1006→                        }
+  1007→                        Toast.makeText(this, "Data cleared — reloading", Toast.LENGTH_SHORT).show();
+  1008→                        reloadKiosk();
+  1009→                    } catch (Throwable t) {
+  1010→                        Log.e(TAG, "Failed to clear data: " + t.getMessage());
+  1011→                        Toast.makeText(this, "Error clearing data", Toast.LENGTH_SHORT).show();
+  1012→                    }
+  1013→                })
+  1014→                .setNegativeButton("Cancel", null)
+  1015→                .setCancelable(true)
+  1016→                .show();
+  1017→        } catch (Throwable t) {
+  1018→            Log.e(TAG, "Clear data dialog failed: " + t.getMessage());
+  1019→        }
+  1020→    }
+  1021→
+  1022→    // ============================================
+  1023→    // SETTINGS: TOGGLE SCREEN ALWAYS-ON
+  1024→    // ============================================
+  1025→
+  1026→    private void showToggleScreenOnDialog() {
+  1027→        try {
+  1028→            boolean isOn = getPrefs().getBoolean(KEY_KEEP_SCREEN_ON, true);
+  1029→            String label = isOn
+  1030→                ? "Screen is currently: ALWAYS ON\n\nDisable to allow screen timeout?"
+  1031→                : "Screen is currently: AUTO TIMEOUT\n\nEnable always-on for 24/7 kiosk operation?";
+  1032→
+  1033→            new AlertDialog.Builder(this)
+  1034→                .setTitle("Screen Always-On")
+  1035→                .setMessage(label)
+  1036→                .setPositiveButton(isOn ? "Disable Always-On" : "Enable Always-On", (dialog, which) -> {
+  1037→                    boolean newVal = !isOn;
+  1038→                    getPrefs().edit().putBoolean(KEY_KEEP_SCREEN_ON, newVal).apply();
+  1039→                    if (newVal) {
+  1040→                        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+  1041→                    } else {
+  1042→                        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+  1043→                    }
+  1044→                    Toast.makeText(this, "Screen: " + (newVal ? "Always On" : "Auto Timeout"), Toast.LENGTH_SHORT).show();
+  1045→                })
+  1046→                .setNegativeButton("Cancel", null)
+  1047→                .setCancelable(true)
+  1048→                .show();
+  1049→        } catch (Throwable t) {
+  1050→            Log.e(TAG, "Screen toggle dialog failed: " + t.getMessage());
+  1051→        }
+  1052→    }
+  1053→
+  1054→    // ============================================
+  1055→    // ACTIONS: BACKEND PANEL
+  1056→    // ============================================
+  1057→
+  1058→    private void openBackendPanel() {
+  1059→        try {
+  1060→            isViewingBackend = true;
+  1061→            String url = getBackendUrl();
+  1062→            if (webView != null) {
+  1063→                webView.loadUrl(url);
+  1064→                Log.i(TAG, "Loading backend panel: " + url);
+  1065→            }
+  1066→            Toast.makeText(this, "Backend Panel loaded\nUse 5-tap + code to return", Toast.LENGTH_LONG).show();
+  1067→        } catch (Throwable t) {
+  1068→            Log.e(TAG, "Failed to open backend: " + t.getMessage());
+  1069→        }
+  1070→    }
+  1071→
+  1072→    // ============================================
+  1073→    // ACTIONS: WIFI SETTINGS
+  1074→    // ============================================
+  1075→
+  1076→    private void openWifiSettings() {
+  1077→        try {
+  1078→            Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
+  1079→            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+  1080→            startActivity(intent);
+  1081→        } catch (Throwable t) {
+  1082→            // Fallback to general settings
+  1083→            try {
+  1084→                Intent intent = new Intent(Settings.ACTION_SETTINGS);
+  1085→                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+  1086→                startActivity(intent);
+  1087→            } catch (Throwable t2) {
+  1088→                Log.e(TAG, "Failed to open any settings: " + t2.getMessage());
+  1089→            }
+  1090→        }
+  1091→    }
+  1092→
+  1093→    // ============================================
+  1094→    // ACTIONS: RELOAD & CLOSE
+  1095→    // ============================================
+  1096→
+  1097→    private void reloadKiosk() {
+  1098→        isShowingOfflinePage = false;
+  1099→        isViewingBackend = false;
+  1100→        reconnectAttempts = 0;
+  1101→        if (webView != null) {
+  1102→            try {
+  1103→                webView.clearCache(true);
+  1104→                webView.loadUrl(getKioskUrl());
+  1105→            } catch (Throwable t) {
+  1106→                Log.e(TAG, "Failed to reload: " + t.getMessage());
+  1107→            }
+  1108→        }
+  1109→    }
+  1110→
+  1111→    private void closeApp() {
+  1112→        unregisterConnectivityMonitoring();
+  1113→        if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
+  1114→        finishAffinity();
+  1115→        System.exit(0);
+  1116→    }
+  1117→}
+  1118→

@@ -59,6 +59,12 @@ public class MainActivity extends BridgeActivity {
     private boolean isShowingOfflinePage = false;
     private int reconnectAttempts = 0;
 
+    // WebView health monitoring — detects frozen/white screens at the native level
+    private static final int HEALTH_CHECK_INTERVAL_MS = 120000;  // 2 minutes
+    private static final int HEALTH_RELOAD_THRESHOLD = 3;        // After 3 failed checks, force reload
+    private int healthCheckFailCount = 0;
+    private Runnable healthCheckRunnable;
+
     // Secret exit mechanism: tap top-left corner 5 times within 3 seconds
     private static final int SECRET_TAP_COUNT = 5;
     private static final int SECRET_TAP_TIMEOUT_MS = 3000;  // 3 seconds
@@ -92,6 +98,9 @@ public class MainActivity extends BridgeActivity {
 
         // Register network connectivity monitoring
         registerConnectivityMonitoring();
+
+        // Start WebView health monitoring
+        startHealthMonitoring();
     }
 
     @Override
@@ -119,6 +128,8 @@ public class MainActivity extends BridgeActivity {
         super.onDestroy();
         // Clean up network callback
         unregisterConnectivityMonitoring();
+        // Stop health monitoring
+        stopHealthMonitoring();
         // Remove any pending reconnect runnables
         mainHandler.removeCallbacksAndMessages(null);
     }
@@ -445,6 +456,96 @@ public class MainActivity extends BridgeActivity {
         } catch (SecurityException e) {
             // If we can't check, assume we have network (optimistic)
             return true;
+        }
+    }
+
+    // ============================================
+    // WEBVIEW HEALTH MONITORING — Detect frozen/white screens
+    // ============================================
+
+    /**
+     * Starts periodic health checks on the WebView.
+     * If the WebView appears unresponsive or has blank content for
+     * multiple consecutive checks, force a reload.
+     */
+    private void startHealthMonitoring() {
+        healthCheckRunnable = new Runnable() {
+            @Override
+            public void run() {
+                checkWebViewHealth();
+                // Schedule next check
+                mainHandler.postDelayed(this, HEALTH_CHECK_INTERVAL_MS);
+            }
+        };
+        // First check after 2 minutes
+        mainHandler.postDelayed(healthCheckRunnable, HEALTH_CHECK_INTERVAL_MS);
+        Log.i(TAG, "WebView health monitoring started (interval: " + HEALTH_CHECK_INTERVAL_MS + "ms)");
+    }
+
+    private void stopHealthMonitoring() {
+        if (healthCheckRunnable != null) {
+            mainHandler.removeCallbacks(healthCheckRunnable);
+            healthCheckRunnable = null;
+            Log.i(TAG, "WebView health monitoring stopped");
+        }
+    }
+
+    /**
+     * Check if the WebView is healthy by evaluating its content.
+     * If the page appears blank or frozen for several consecutive checks,
+     * force a reload to recover.
+     */
+    private void checkWebViewHealth() {
+        if (webView == null) {
+            healthCheckFailCount++;
+            Log.w(TAG, "Health check: WebView is null (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+            if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+                Log.w(TAG, "Health check: Too many failures — attempting full recovery");
+                healthCheckFailCount = 0;
+                reloadKiosk();
+            }
+            return;
+        }
+
+        // Use evaluateJavascript to check if the WebView's page has content
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            webView.evaluateJavascript("(function(){ try { var c = document.querySelector('.container'); return c ? 'ok' : 'empty'; } catch(e) { return 'error'; } })()", new android.webkit.ValueCallback<String>() {
+                @Override
+                public void onReceiveValue(String value) {
+                    if (value != null && (value.contains("ok") || value.contains("empty"))) {
+                        if (value.contains("empty")) {
+                            healthCheckFailCount++;
+                            Log.w(TAG, "Health check: Page content empty (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+                        } else {
+                            // Page is healthy
+                            if (healthCheckFailCount > 0) {
+                                Log.i(TAG, "Health check: Page recovered (was " + healthCheckFailCount + " fails)");
+                            }
+                            healthCheckFailCount = 0;
+                        }
+                    } else {
+                        healthCheckFailCount++;
+                        Log.w(TAG, "Health check: No response or unexpected value: " + value + " (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+                    }
+
+                    if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+                        Log.w(TAG, "Health check: Threshold reached — force reloading kiosk");
+                        healthCheckFailCount = 0;
+                        reloadKiosk();
+                    }
+                }
+            });
+        } else {
+            // Pre-KitKat: just check if we're showing offline page
+            if (isShowingOfflinePage) {
+                healthCheckFailCount++;
+                if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+                    healthCheckFailCount = 0;
+                    reloadKiosk();
+                }
+            } else {
+                healthCheckFailCount = 0;
+            }
         }
     }
 

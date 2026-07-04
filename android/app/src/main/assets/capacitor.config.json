@@ -1,0 +1,30 @@
+{
+	"appId": "com.pickupjamaica.kiosk",
+	"appName": "Pickup Kiosk",
+	"webDir": "public",
+	"server": {
+		"url": "https://pickuplocker.vercel.app/kiosk-lite",
+		"allowNavigation": [
+			"pickuplocker.vercel.app",
+			"api.pickuplocker.vercel.app"
+		]
+	},
+	"android": {
+		"allowMixedContent": true,
+		"useLegacyBridge": true
+	},
+	"plugins": {
+		"SplashScreen": {
+			"launchShowDuration": 2000,
+			"launchAutoHide": true,
+			"backgroundColor": "#111111",
+			"showSpinner": true,
+			"spinnerColor": "#FFD439",
+			"androidScaleType": "CENTER_CROP"
+		},
+		"StatusBar": {
+			"style": "DARK",
+			"backgroundColor": "#111111"
+		}
+	}
+}

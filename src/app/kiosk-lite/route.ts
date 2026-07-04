@@ -538,6 +538,72 @@ const KIOSK_JS = `
     tryFullscreen();
   }, { once: true });
 
+  // ---- White Screen Protection (ES5 compatible) ----
+  // When the kiosk is left on-screen for hours, the browser may throttle/freeze
+  // the WebView, causing a blank white screen. This monitors for that and recovers.
+  var _wsHiddenAt = null;
+  var _wsLastHeartbeat = Date.now();
+  var _wsHeartbeatInterval = null;
+
+  // Track when page goes hidden/visible
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      _wsHiddenAt = Date.now();
+    } else {
+      if (_wsHiddenAt !== null) {
+        var hiddenMs = Date.now() - _wsHiddenAt;
+        _wsHiddenAt = null;
+        if (hiddenMs > 300000) {
+          // Hidden for more than 5 minutes — full reload
+          window.location.reload();
+        } else if (hiddenMs > 30000) {
+          // Hidden 30s-5min — refresh data by reloading
+          window.location.reload();
+        }
+      }
+      _wsLastHeartbeat = Date.now();
+    }
+  }, false);
+
+  // Self-healing: check every 2 minutes for white screen or frozen state
+  _wsHeartbeatInterval = setInterval(function() {
+    var now = Date.now();
+    var elapsed = now - _wsLastHeartbeat;
+
+    // Update heartbeat (this line itself proves JS is running)
+    _wsLastHeartbeat = now;
+
+    // Check if body is empty/white (DOM might have been cleared by browser)
+    var body = document.body;
+    if (body) {
+      var hasContent = body.innerHTML && body.innerHTML.length > 50;
+      if (!hasContent) {
+        // Body is empty — force reload
+        window.location.reload();
+        return;
+      }
+    }
+
+    // Check if the main container exists
+    var container = document.querySelector('.container');
+    if (!container) {
+      // Main container missing — force reload
+      window.location.reload();
+      return;
+    }
+  }, 120000); // every 2 minutes
+
+  // Periodic data refresh: reload every 5 minutes to keep box data fresh
+  // Only if on the home/locker screen (no active payment or form)
+  setInterval(function() {
+    var activeForm = document.querySelector('form');
+    var paymentSection = document.getElementById('payment-qr');
+    if (!activeForm && !paymentSection) {
+      // Safe to refresh — no user activity in progress
+      window.location.reload();
+    }
+  }, 300000); // every 5 minutes
+
   // ---- AJAX Payment Polling (Chrome 37 compatible) ----
   // Replaces meta-refresh so QR code stays visible while checking payment status
   function startPaymentPolling(pollUrl, checkIntervalMs) {

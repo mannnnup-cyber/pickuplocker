@@ -54,7 +54,7 @@ import javax.net.ssl.SSLContext;
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "PickupKiosk";
-    private static final String APP_VERSION = "3.0";
+    private static final String APP_VERSION = "3.2";
 
     // URLs
     private static final String DEFAULT_KIOSK_URL = "https://pickuplocker.vercel.app/kiosk-lite";
@@ -74,6 +74,10 @@ public class MainActivity extends AppCompatActivity {
     // PIN lockout
     private static final int MAX_PIN_ATTEMPTS = 3;
     private static final long PIN_LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+    // WebView health monitoring — detects frozen/white screens at the native level
+    private static final int HEALTH_CHECK_INTERVAL_MS = 120000;  // 2 minutes
+    private static final int HEALTH_RELOAD_THRESHOLD = 3;        // After 3 failed checks, force reload
 
     // SharedPreferences keys
     private static final String PREFS_NAME = "pickup_kiosk_prefs";
@@ -102,6 +106,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean isDestroyed = false;
     private int secretTapCount = 0;
     private long lastSecretTapTime = 0;
+    private int healthCheckFailCount = 0;
+    private Runnable healthCheckRunnable;
 
     // ============================================
     // LIFECYCLE
@@ -144,6 +150,7 @@ public class MainActivity extends AppCompatActivity {
             hideSystemUI();
             configureWebView();
             registerConnectivityMonitoring();
+            startHealthMonitoring();
 
             Log.i(TAG, "Kiosk v" + APP_VERSION + " started — loading " + getKioskUrl());
         } catch (Throwable t) {
@@ -169,6 +176,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         isDestroyed = true;
         super.onDestroy();
+        stopHealthMonitoring();
         unregisterConnectivityMonitoring();
         if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
         if (webView != null) {
@@ -550,6 +558,94 @@ public class MainActivity extends AppCompatActivity {
             NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
             return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         } catch (Throwable t) { return true; }
+    }
+
+    // ============================================
+    // WEBVIEW HEALTH MONITORING — Detect frozen/white screens
+    // ============================================
+
+    /**
+     * Starts periodic health checks on the WebView.
+     * If the WebView appears unresponsive or has blank content for
+     * multiple consecutive checks, force a reload.
+     */
+    private void startHealthMonitoring() {
+        healthCheckRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (!isDestroyed) {
+                    checkWebViewHealth();
+                    mainHandler.postDelayed(this, HEALTH_CHECK_INTERVAL_MS);
+                }
+            }
+        };
+        mainHandler.postDelayed(healthCheckRunnable, HEALTH_CHECK_INTERVAL_MS);
+        Log.i(TAG, "WebView health monitoring started (interval: " + HEALTH_CHECK_INTERVAL_MS + "ms)");
+    }
+
+    private void stopHealthMonitoring() {
+        if (healthCheckRunnable != null) {
+            mainHandler.removeCallbacks(healthCheckRunnable);
+            healthCheckRunnable = null;
+            Log.i(TAG, "WebView health monitoring stopped");
+        }
+    }
+
+    /**
+     * Check if the WebView is healthy by evaluating its content.
+     * If the page appears blank or frozen for several consecutive checks,
+     * force a reload to recover from white screen issues.
+     */
+    private void checkWebViewHealth() {
+        if (webView == null) {
+            healthCheckFailCount++;
+            Log.w(TAG, "Health check: WebView is null (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+            if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+                Log.w(TAG, "Health check: Too many failures — attempting full recovery");
+                healthCheckFailCount = 0;
+                reloadKiosk();
+            }
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            webView.evaluateJavascript("(function(){ try { var c = document.querySelector('.container'); return c ? 'ok' : 'empty'; } catch(e) { return 'error'; } })()", new android.webkit.ValueCallback<String>() {
+                @Override
+                public void onReceiveValue(String value) {
+                    if (value != null && (value.contains("ok") || value.contains("empty"))) {
+                        if (value.contains("empty")) {
+                            healthCheckFailCount++;
+                            Log.w(TAG, "Health check: Page content empty (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+                        } else {
+                            if (healthCheckFailCount > 0) {
+                                Log.i(TAG, "Health check: Page recovered (was " + healthCheckFailCount + " fails)");
+                            }
+                            healthCheckFailCount = 0;
+                        }
+                    } else {
+                        healthCheckFailCount++;
+                        Log.w(TAG, "Health check: No response or unexpected value: " + value + " (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+                    }
+
+                    if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+                        Log.w(TAG, "Health check: Threshold reached — force reloading kiosk");
+                        healthCheckFailCount = 0;
+                        reloadKiosk();
+                    }
+                }
+            });
+        } else {
+            // Pre-KitKat: just check offline status
+            if (isShowingOfflinePage) {
+                healthCheckFailCount++;
+                if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+                    healthCheckFailCount = 0;
+                    reloadKiosk();
+                }
+            } else {
+                healthCheckFailCount = 0;
+            }
+        }
     }
 
     // ============================================
