@@ -438,12 +438,11 @@ public class MainActivity extends AppCompatActivity {
          * CRITICAL: Called when the WebView renderer process crashes (OOM kill, etc.)
          * This is the #1 cause of white screens — Android kills the renderer but
          * the Activity is still alive. Without this handler, the WebView shows blank.
-         * Available from API 26 (Android 8.0), which covers our target devices.
          */
         @Override
-        public boolean onRenderProcessGone(WebView view, int detail) {
-            Log.e(TAG, "WebView renderer process GONE! Detail: " + detail
-                + " (0=crash, 1=OOM killed). Rebuilding WebView immediately.");
+        public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+            Log.e(TAG, "WebView renderer process GONE! Did crash: " + detail.didCrash()
+                + ". Rebuilding WebView immediately.");
 
             if (isDestroyed) return true;
 
