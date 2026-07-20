@@ -599,8 +599,10 @@ const KIOSK_JS = `
     var activeForm = document.querySelector('form');
     var paymentSection = document.getElementById('payment-qr');
     if (!activeForm && !paymentSection) {
-      // Safe to refresh — no user activity in progress
-      window.location.reload();
+      // Check network before reloading to avoid reload loops during outages
+      if (navigator.onLine) {
+        window.location.reload();
+      }
     }
   }, 300000); // every 5 minutes
 

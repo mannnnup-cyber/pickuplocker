@@ -60,8 +60,8 @@ public class MainActivity extends BridgeActivity {
     private int reconnectAttempts = 0;
 
     // WebView health monitoring — detects frozen/white screens at the native level
-    private static final int HEALTH_CHECK_INTERVAL_MS = 120000;  // 2 minutes
-    private static final int HEALTH_RELOAD_THRESHOLD = 3;        // After 3 failed checks, force reload
+    private static final int HEALTH_CHECK_INTERVAL_MS = 60000;   // 1 minute
+    private static final int HEALTH_RELOAD_THRESHOLD = 2;        // After 2 failed checks, force reload (2 min total)
     private int healthCheckFailCount = 0;
     private Runnable healthCheckRunnable;
 
@@ -230,6 +230,7 @@ public class MainActivity extends BridgeActivity {
             } else {
                 isShowingOfflinePage = false;
                 reconnectAttempts = 0;
+                healthCheckFailCount = 0; // Reset health on successful page load
                 Log.i(TAG, "Page loaded successfully: " + url);
             }
         }
@@ -271,6 +272,45 @@ public class MainActivity extends BridgeActivity {
             // Block all other navigation (security: prevent phishing redirects)
             Log.w(TAG, "Blocked navigation to: " + url);
             return true;
+        }
+
+        /**
+         * CRITICAL: Called when the WebView renderer process crashes (OOM kill, etc.)
+         * This is the #1 cause of white screens — Android kills the renderer but
+         * the Activity is still alive. Without this handler, the WebView shows blank.
+         */
+        @Override
+        public boolean onRenderProcessGone(WebView view, int detail) {
+            Log.e(TAG, "WebView renderer process GONE! Detail: " + detail
+                + " (0=crash, 1=OOM killed). Rebuilding WebView immediately.");
+
+            if (webView != null) {
+                try {
+                    webView.stopLoading();
+                    webView.loadUrl("about:blank");
+                    webView.clearCache(true);
+                    webView.clearHistory();
+                    android.view.ViewGroup parent = (android.view.ViewGroup) webView.getParent();
+                    if (parent != null) parent.removeView(webView);
+                    webView.destroy();
+                } catch (Throwable t) {
+                    Log.e(TAG, "Error destroying dead WebView: " + t.getMessage());
+                }
+                webView = null;
+            }
+
+            // Rebuild a fresh WebView after a short delay
+            mainHandler.postDelayed(() -> {
+                try {
+                    // Re-initialize the Capacitor bridge with a new WebView
+                    recreate(); // Restart the entire activity — simplest and most reliable
+                } catch (Throwable t) {
+                    Log.e(TAG, "Failed to restart activity: " + t.getMessage());
+                    System.exit(0); // Last resort: kill the process, BootReceiver will restart it
+                }
+            }, 1000);
+
+            return true; // We handled it
         }
     }
 

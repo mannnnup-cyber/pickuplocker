@@ -18,6 +18,7 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.WebChromeClient;
@@ -76,8 +77,8 @@ public class MainActivity extends AppCompatActivity {
     private static final long PIN_LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
     // WebView health monitoring — detects frozen/white screens at the native level
-    private static final int HEALTH_CHECK_INTERVAL_MS = 120000;  // 2 minutes
-    private static final int HEALTH_RELOAD_THRESHOLD = 3;        // After 3 failed checks, force reload
+    private static final int HEALTH_CHECK_INTERVAL_MS = 60000;   // 1 minute
+    private static final int HEALTH_RELOAD_THRESHOLD = 2;        // After 2 failed checks, force reload (2 min total)
 
     // SharedPreferences keys
     private static final String PREFS_NAME = "pickup_kiosk_prefs";
@@ -401,6 +402,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 isShowingOfflinePage = false;
                 reconnectAttempts = 0;
+                healthCheckFailCount = 0; // Reset health on successful page load
                 Log.i(TAG, "Page loaded: " + url);
             }
         }
@@ -430,6 +432,61 @@ public class MainActivity extends AppCompatActivity {
             }
             Log.w(TAG, "Blocked navigation to: " + url);
             return true;
+        }
+
+        /**
+         * CRITICAL: Called when the WebView renderer process crashes (OOM kill, etc.)
+         * This is the #1 cause of white screens — Android kills the renderer but
+         * the Activity is still alive. Without this handler, the WebView shows blank.
+         * Available from API 26 (Android 8.0), which covers our target devices.
+         */
+        @Override
+        public boolean onRenderProcessGone(WebView view, int detail) {
+            Log.e(TAG, "WebView renderer process GONE! Detail: " + detail
+                + " (0=crash, 1=OOM killed). Rebuilding WebView immediately.");
+
+            if (isDestroyed) return true;
+
+            // Destroy the old WebView completely
+            if (webView != null) {
+                try {
+                    webView.stopLoading();
+                    webView.loadUrl("about:blank");
+                    webView.clearCache(true);
+                    webView.clearHistory();
+                    ViewGroup parent = (ViewGroup) webView.getParent();
+                    if (parent != null) parent.removeView(webView);
+                    webView.destroy();
+                } catch (Throwable t) {
+                    Log.e(TAG, "Error destroying dead WebView: " + t.getMessage());
+                }
+                webView = null;
+            }
+
+            // Rebuild a fresh WebView
+            mainHandler.post(() -> {
+                if (isDestroyed) return;
+                try {
+                    webView = createWebViewSafely();
+                    if (webView != null) {
+                        setContentView(webView);
+                        hideSystemUI();
+                        configureWebView();
+                        webView.loadUrl(getKioskUrl());
+                        isShowingOfflinePage = false;
+                        reconnectAttempts = 0;
+                        healthCheckFailCount = 0;
+                        Log.i(TAG, "WebView rebuilt after renderer crash — kiosk reloaded");
+                    } else {
+                        showErrorScreen("WebView failed to restart. Please reboot the device.");
+                    }
+                } catch (Throwable t) {
+                    Log.e(TAG, "Failed to rebuild WebView: " + t.getMessage());
+                    showErrorScreen("Critical error. Please reboot the device.");
+                }
+            });
+
+            return true; // We handled it — don't let WebView do its default (which does nothing)
         }
     }
 

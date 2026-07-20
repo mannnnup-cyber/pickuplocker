@@ -640,6 +640,11 @@ function KioskPage() {
 
       // Stop polling if tab is hidden
       if (document.visibilityState === 'hidden') {
+        // Remove any PREVIOUS orphaned listener before adding a new one
+        if (visibilityHandlerRef.current) {
+          document.removeEventListener('visibilitychange', visibilityHandlerRef.current)
+          visibilityHandlerRef.current = null
+        }
         // Resume when visible again - track listener for cleanup
         const handleVisible = () => {
           if (document.visibilityState === 'visible') {
@@ -811,6 +816,11 @@ function KioskPage() {
 
             // Stop polling if tab is hidden - track listener for cleanup
             if (document.visibilityState === 'hidden') {
+              // Remove any PREVIOUS orphaned listener before adding a new one
+              if (visibilityHandlerRef.current) {
+                document.removeEventListener('visibilitychange', visibilityHandlerRef.current)
+                visibilityHandlerRef.current = null
+              }
               const handleVisible = () => {
                 if (document.visibilityState === 'visible') {
                   document.removeEventListener('visibilitychange', handleVisible)
