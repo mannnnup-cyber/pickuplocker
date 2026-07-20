@@ -1,0 +1,1975 @@
+     1→"use client"
+     2→
+     3→import { useState, useEffect, useCallback, useRef } from "react"
+     4→import Link from "next/link"
+     5→import { Button } from "@/components/ui/button"
+     6→import { KioskErrorBoundary } from './kiosk-error-boundary'
+     7→import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+     8→import { Badge } from "@/components/ui/badge"
+     9→import { 
+    10→  Package, 
+    11→  QrCode, 
+    12→  MapPin,
+    13→  Truck,
+    14→  CheckCircle,
+    15→  Loader2,
+    16→  AlertCircle,
+    17→  ArrowLeft,
+    18→  CreditCard,
+    19→  Smartphone,
+    20→  User,
+    21→  Clock,
+    22→  Box,
+    23→  X,
+    24→  RefreshCw,
+    25→  Mail
+    26→} from "lucide-react"
+    27→
+    28→// Types
+    29→type View = 
+    30→  | "home" 
+    31→  | "dropoff" 
+    32→  | "dropoff-code" 
+    33→  | "dropoff-buy" 
+    34→  | "dropoff-payment-options"
+    35→  | "dropoff-courier"
+    36→  | "pickup" 
+    37→  | "payment" 
+    38→  | "success"
+    39→  | "courier-dashboard"
+    40→
+    41→interface OrderResult {
+    42→  success: boolean
+    43→  orderNo?: string
+    44→  saveCode?: string
+    45→  pickCode?: string
+    46→  boxName?: string
+    47→  boxSize?: string
+    48→  deviceName?: string
+    49→  deviceLocation?: string
+    50→  error?: string
+    51→  requiresPhone?: boolean
+    52→  requiresPayment?: boolean
+    53→  storageFee?: number
+    54→  storageDays?: number
+    55→  courierBalance?: number
+    56→}
+    57→
+    58→interface PaymentResult {
+    59→  success: boolean
+    60→  paymentId?: string
+    61→  paymentUrl?: string
+    62→  qrCodeDataUrl?: string
+    63→  amount?: number
+    64→  boxSize?: string
+    65→  saveCode?: string
+    66→  error?: string
+    67→  isDemoMode?: boolean
+    68→}
+    69→
+    70→// Courier session
+    71→interface CourierSession {
+    72→  id: string
+    73→  name: string
+    74→  phone: string
+    75→  balance: number
+    76→  totalDropOffs?: number
+    77→  totalSpent?: number
+    78→}
+    79→
+    80→// Box sizes with prices (static definition)
+    81→const ALL_BOX_SIZES = [
+    82→  { code: 'S', name: 'Small', price: 150, description: 'Phones, letters, small items' },
+    83→  { code: 'M', name: 'Medium', price: 200, description: 'Shoes, books, clothing' },
+    84→  { code: 'L', name: 'Large', price: 300, description: 'Larger packages' },
+    85→  { code: 'XL', name: 'Extra Large', price: 400, description: 'Bulky items' },
+    86→]
+    87→
+    88→// Auto-timeout duration (60 seconds)
+    89→const AUTO_TIMEOUT_MS = 60000
+    90→
+    91→// Fetch with timeout — prevents white screen when API calls hang
+    92→const FETCH_TIMEOUT_MS = 10000
+    93→
+    94→async function kioskFetch(url: string, options?: RequestInit, timeoutMs: number = FETCH_TIMEOUT_MS): Promise<Response> {
+    95→  const controller = new AbortController()
+    96→  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+    97→  try {
+    98→    const res = await fetch(url, { ...options, signal: controller.signal })
+    99→    if (!res.ok) {
+   100→      throw new Error(`HTTP ${res.status} from ${url}`)
+   101→    }
+   102→    return res
+   103→  } catch (error) {
+   104→    if (error instanceof DOMException && error.name === 'AbortError') {
+   105→      throw new Error(`Request to ${url} timed out after ${timeoutMs}ms`)
+   106→    }
+   107→    throw error
+   108→  } finally {
+   109→    clearTimeout(timeoutId)
+   110→  }
+   111→}
+   112→
+   113→// Box availability type
+   114→interface BoxAvailability {
+   115→  code: string
+   116→  available: number
+   117→}
+   118→
+   119→function KioskPage() {
+   120→  // View state
+   121→  const [view, setView] = useState<View>("home")
+   122→  
+   123→  // Form states
+   124→  const [code, setCode] = useState("")
+   125→  const [phoneNumber, setPhoneNumber] = useState("")
+   126→  const [courierPhone, setCourierPhone] = useState("")
+   127→  const [courierPin, setCourierPin] = useState("")
+   128→  const [courierSession, setCourierSession] = useState<CourierSession | null>(null)
+   129→  const [courierLoginStep, setCourierLoginStep] = useState<"phone" | "pin">("phone")
+   130→  const [selectedBoxSize, setSelectedBoxSize] = useState<string>("")
+   131→  const [senderName, setSenderName] = useState("")
+   132→  const [customerEmail, setCustomerEmail] = useState("")
+   133→  
+   134→  // Box availability
+   135→  const [boxAvailability, setBoxAvailability] = useState<BoxAvailability[]>([])
+   136→  const [loadingBoxes, setLoadingBoxes] = useState(true)
+   137→  
+   138→  // Loading and error states
+   139→  const [loading, setLoading] = useState(false)
+   140→  const [error, setError] = useState<string | null>(null)
+   141→  
+   142→  // Result data
+   143→  const [orderResult, setOrderResult] = useState<OrderResult | null>(null)
+   144→  const [paymentResult, setPaymentResult] = useState<PaymentResult | null>(null)
+   145→  
+   146→  // Auto-timeout
+   147→  const [lastActivity, setLastActivity] = useState(Date.now())
+   148→  const [showTimeoutWarning, setShowTimeoutWarning] = useState(false)
+   149→  const [secondsRemaining, setSecondsRemaining] = useState(10)
+   150→
+   151→  // Refs for timer cleanup (prevents memory leaks that cause white screen)
+   152→  const pollingTimerRef = useRef<NodeJS.Timeout | null>(null)
+   153→  const visibilityHandlerRef = useRef<(() => void) | null>(null)
+   154→  const isMountedRef = useRef(true)
+   155→  const loadingStartTimeRef = useRef<number | null>(null)
+   156→
+   157→  // Reset all state — defined early because it's referenced by recovery useEffects below
+   158→  const resetState = useCallback(() => {
+   159→    // Cancel any active polling
+   160→    if (pollingTimerRef.current) {
+   161→      clearTimeout(pollingTimerRef.current)
+   162→      pollingTimerRef.current = null
+   163→    }
+   164→    if (visibilityHandlerRef.current) {
+   165→      document.removeEventListener('visibilitychange', visibilityHandlerRef.current)
+   166→      visibilityHandlerRef.current = null
+   167→    }
+   168→    setView("home")
+   169→    setCode("")
+   170→    setPhoneNumber("")
+   171→    setCourierPhone("")
+   172→    setCourierPin("")
+   173→    setCourierSession(null)
+   174→    setCourierLoginStep("phone")
+   175→    setSelectedBoxSize("")
+   176→    setSenderName("")
+   177→    setCustomerEmail("")
+   178→    setLoading(false)
+   179→    setError(null)
+   180→    setOrderResult(null)
+   181→    setPaymentResult(null)
+   182→    setShowTimeoutWarning(false)
+   183→    setSecondsRemaining(10)
+   184→    setBoxAvailability([])
+   185→    setLoadingBoxes(true)
+   186→  }, [])
+   187→
+   188→  // Auto-recovery: reload page if it's been stuck/idle too long (prevents white screen)
+   189→  useEffect(() => {
+   190→    const HEARTBEAT_KEY = 'pickup_kiosk_heartbeat'
+   191→    const CRASH_KEY = 'pickup_kiosk_crashed'
+   192→    const RECOVERY_MS = 30 * 60 * 1000 // 30 minutes - if no heartbeat, something is wrong
+   193→    
+   194→    // Write heartbeat
+   195→    const heartbeat = setInterval(() => {
+   196→      try { localStorage.setItem(HEARTBEAT_KEY, Date.now().toString()) } catch {}
+   197→    }, 60000)
+   198→
+   199→    // Check if previous session crashed (no heartbeat for 30 min = white screen)
+   200→    try {
+   201→      const lastHeartbeat = parseInt(localStorage.getItem(HEARTBEAT_KEY) || '0')
+   202→      const hadCrash = localStorage.getItem(CRASH_KEY)
+   203→      if (hadCrash || (lastHeartbeat && (Date.now() - lastHeartbeat > RECOVERY_MS))) {
+   204→        console.log('[Kiosk] Previous session appears to have crashed. Recovering...')
+   205→        localStorage.removeItem(CRASH_KEY)
+   206→        localStorage.removeItem(HEARTBEAT_KEY)
+   207→        // Actually recover — reload the page to clear stuck state
+   208→        window.location.reload()
+   209→        return
+   210→      }
+   211→    } catch {}
+   212→
+   213→    // Mark crash on unload (beforeunload fires when page closes/crashes)
+   214→    const markCrash = () => {
+   215→      try { localStorage.setItem(CRASH_KEY, '1') } catch {}
+   216→    }
+   217→    window.addEventListener('beforeunload', markCrash)
+   218→
+   219→    // Clear crash flag on successful load (if we made it this far, we're alive)
+   220→    try { localStorage.removeItem(CRASH_KEY) } catch {}
+   221→
+   222→    // Write initial heartbeat
+   223→    try { localStorage.setItem(HEARTBEAT_KEY, Date.now().toString()) } catch {}
+   224→
+   225→    return () => {
+   226→      clearInterval(heartbeat)
+   227→      window.removeEventListener('beforeunload', markCrash)
+   228→      try { localStorage.removeItem(HEARTBEAT_KEY) } catch {}
+   229→    }
+   230→  }, [])
+   231→
+   232→  // Visibility change handler — prevents white screen when kiosk tab comes back from background
+   233→  // Browsers throttle/freeze tabs in background, which can corrupt React state
+   234→  useEffect(() => {
+   235→    let hiddenAt: number | null = null
+   236→    const MAX_BACKGROUND_MS = 5 * 60 * 1000 // 5 minutes — if hidden longer, force refresh
+   237→
+   238→    const handleVisibilityChange = () => {
+   239→      if (document.visibilityState === 'hidden') {
+   240→        // Record when the page went hidden
+   241→        hiddenAt = Date.now()
+   242→        console.log('[Kiosk] Page hidden at', new Date().toLocaleTimeString())
+   243→      } else if (document.visibilityState === 'visible') {
+   244→        // Page is visible again
+   245→        if (hiddenAt) {
+   246→          const hiddenDuration = Date.now() - hiddenAt
+   247→          console.log('[Kiosk] Page visible again after', Math.round(hiddenDuration / 1000), 'seconds')
+   248→
+   249→          // If hidden for too long, do a full page reload to clear any corrupted state
+   250→          if (hiddenDuration > MAX_BACKGROUND_MS) {
+   251→            console.log('[Kiosk] Page was hidden too long. Reloading to prevent white screen...')
+   252→            window.location.reload()
+   253→            return
+   254→          }
+   255→
+   256→          // If hidden for a moderate time, refresh box availability and reset if on home screen
+   257→          if (hiddenDuration > 30000) {
+   258→            // Refresh box data since it may be stale
+   259→            const refreshBoxes = async () => {
+   260→              try {
+   261→                const res = await kioskFetch('/api/boxes/availability', undefined, 15000)
+   262→                const data = await res.json()
+   263→                if (data.success) {
+   264→                  setBoxAvailability(data.sizes)
+   265→                }
+   266→              } catch (err) {
+   267→                console.error('[Kiosk] Failed to refresh box availability after visibility change:', err)
+   268→              }
+   269→            }
+   270→            refreshBoxes()
+   271→          }
+   272→        }
+   273→        hiddenAt = null
+   274→      }
+   275→    }
+   276→
+   277→    document.addEventListener('visibilitychange', handleVisibilityChange)
+   278→    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+   279→  }, [])
+   280→
+   281→  // Periodic self-healing check — detects and recovers from white/frozen screen states
+   282→  useEffect(() => {
+   283→    const CHECK_INTERVAL = 2 * 60 * 1000 // Every 2 minutes
+   284→    const WHITE_SCREEN_CHECK_KEY = 'pickup_kiosk_alive'
+   285→
+   286→    const selfHeal = () => {
+   287→      try {
+   288→        const now = Date.now()
+   289→        localStorage.setItem(WHITE_SCREEN_CHECK_KEY, now.toString())
+   290→
+   291→        // Check if the DOM is actually rendering — if the root element has no children
+   292→        // or has collapsed, the page is likely frozen/white
+   293→        const rootEl = document.getElementById('__next') || document.getElementById('root')
+   294→        if (rootEl) {
+   295→          const hasContent = rootEl.children.length > 0 || rootEl.textContent?.trim()
+   296→          if (!hasContent) {
+   297→            console.error('[Kiosk] White screen detected — root element is empty. Forcing reload.')
+   298→            window.location.reload()
+   299→            return
+   300→          }
+   301→        }
+   302→
+   303→        // Check if we've been on the same non-home view for too long (possible frozen state)
+   304→        // This is a soft check — the auto-timeout should handle most cases,
+   305→        // but if timers are frozen, we need this fallback
+   306→        const lastHeartbeat = parseInt(localStorage.getItem('pickup_kiosk_heartbeat') || '0')
+   307→        if (lastHeartbeat && (now - lastHeartbeat > 10 * 60 * 1000)) {
+   308→          // No heartbeat update for 10 minutes means timers are likely frozen
+   309→          console.error('[Kiosk] No heartbeat for 10 minutes — timers appear frozen. Reloading.')
+   310→          window.location.reload()
+   311→        }
+   312→      } catch (err) {
+   313→        console.error('[Kiosk] Self-heal check failed:', err)
+   314→      }
+   315→    }
+   316→
+   317→    const interval = setInterval(selfHeal, CHECK_INTERVAL)
+   318→    // Run once immediately on mount
+   319→    selfHeal()
+   320→    return () => clearInterval(interval)
+   321→  }, [])
+   322→
+   323→  // Cleanup all polling timers on unmount
+   324→  useEffect(() => {
+   325→    isMountedRef.current = true
+   326→    return () => {
+   327→      isMountedRef.current = false
+   328→      // Clear any active polling timer
+   329→      if (pollingTimerRef.current) {
+   330→        clearTimeout(pollingTimerRef.current)
+   331→        pollingTimerRef.current = null
+   332→      }
+   333→      // Remove any dangling visibilitychange listener
+   334→      if (visibilityHandlerRef.current) {
+   335→        document.removeEventListener('visibilitychange', visibilityHandlerRef.current)
+   336→        visibilityHandlerRef.current = null
+   337→      }
+   338→    }
+   339→  }, [])
+   340→
+   341→  // Global unhandled rejection handler — prevents white screen from uncaught promise errors
+   342→  useEffect(() => {
+   343→    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+   344→      console.error('[Kiosk] Unhandled promise rejection:', event.reason)
+   345→      event.preventDefault()
+   346→      // If we're in a loading state and get an unhandled rejection, recover
+   347→      setError('An unexpected error occurred. The kiosk will restart shortly.')
+   348→      setLoading(false)
+   349→      setLoadingBoxes(false)
+   350→      // Auto-recover after 5 seconds
+   351→      setTimeout(() => {
+   352→        resetState()
+   353→      }, 5000)
+   354→    }
+   355→    window.addEventListener('unhandledrejection', handleUnhandledRejection)
+   356→    return () => window.removeEventListener('unhandledrejection', handleUnhandledRejection)
+   357→  }, [resetState])
+   358→
+   359→  // Stuck-state watchdog — detects when loading has been stuck too long and forces recovery
+   360→  useEffect(() => {
+   361→    const STUCK_THRESHOLD_MS = 30000 // 30 seconds — if loading is stuck this long, something is wrong
+   362→    const CHECK_INTERVAL_MS = 5000   // Check every 5 seconds
+   363→
+   364→    const checkStuckState = () => {
+   365→      const isLoading = loading || loadingBoxes
+   366→      if (isLoading) {
+   367→        if (!loadingStartTimeRef.current) {
+   368→          loadingStartTimeRef.current = Date.now()
+   369→        }
+   370→        const stuckDuration = Date.now() - loadingStartTimeRef.current
+   371→        if (stuckDuration > STUCK_THRESHOLD_MS) {
+   372→          console.error(`[Kiosk] Stuck loading state detected for ${stuckDuration}ms. Forcing recovery.`)
+   373→          loadingStartTimeRef.current = null
+   374→          setLoading(false)
+   375→          setLoadingBoxes(false)
+   376→          setError('Connection issue. Restarting...')
+   377→          // Auto-recover after 3 seconds
+   378→          setTimeout(() => {
+   379→            resetState()
+   380→          }, 3000)
+   381→        }
+   382→      } else {
+   383→        loadingStartTimeRef.current = null
+   384→      }
+   385→    }
+   386→
+   387→    const interval = setInterval(checkStuckState, CHECK_INTERVAL_MS)
+   388→    return () => clearInterval(interval)
+   389→  }, [loading, loadingBoxes, resetState])
+   390→
+   391→  // Get available box sizes based on actual availability
+   392→  const BOX_SIZES = ALL_BOX_SIZES.filter(box => {
+   393→    const availability = boxAvailability.find(a => a.code === box.code)
+   394→    return availability && availability.available > 0
+   395→  }).map(box => {
+   396→    const availability = boxAvailability.find(a => a.code === box.code)
+   397→    return {
+   398→      ...box,
+   399→      available: availability?.available || 0,
+   400→    }
+   401→  })
+   402→
+   403→  // Fetch box availability on mount AND periodically (keeps kiosk alive + data fresh)
+   404→  useEffect(() => {
+   405→    const fetchBoxAvailability = async () => {
+   406→      try {
+   407→        const res = await kioskFetch('/api/boxes/availability', undefined, 15000)
+   408→        const data = await res.json()
+   409→        if (data.success) {
+   410→          setBoxAvailability(data.sizes)
+   411→        }
+   412→      } catch (err) {
+   413→        console.error('Failed to fetch box availability:', err)
+   414→        if (err instanceof Error && err.message.includes('timed out')) {
+   415→          console.error('[Kiosk] Box availability request timed out — server may be slow')
+   416→        }
+   417→      } finally {
+   418→        setLoadingBoxes(false)
+   419→      }
+   420→    }
+   421→    fetchBoxAvailability()
+   422→
+   423→    // Refresh box availability every 5 minutes to keep data fresh
+   424→    // and serve as a liveness check (if this stops running, the self-heal will detect it)
+   425→    const refreshInterval = setInterval(fetchBoxAvailability, 5 * 60 * 1000)
+   426→    return () => clearInterval(refreshInterval)
+   427→  }, [])
+   428→
+   429→  // Update last activity time
+   430→  const updateActivity = useCallback(() => {
+   431→    setLastActivity(Date.now())
+   432→    setShowTimeoutWarning(false)
+   433→    setSecondsRemaining(10)
+   434→  }, [])
+   435→
+   436→  // Auto-timeout effect (only active when not on home screen)
+   437→  useEffect(() => {
+   438→    // Skip timeout logic entirely on home screen
+   439→    if (view === "home") {
+   440→      setShowTimeoutWarning(false)
+   441→      return
+   442→    }
+   443→
+   444→    const checkTimeout = () => {
+   445→      const elapsed = Date.now() - lastActivity
+   446→      const remaining = AUTO_TIMEOUT_MS - elapsed
+   447→      
+   448→      if (remaining <= 10000 && remaining > 0 && !showTimeoutWarning) {
+   449→        setShowTimeoutWarning(true)
+   450→        setSecondsRemaining(Math.ceil(remaining / 1000))
+   451→      }
+   452→      
+   453→      if (elapsed >= AUTO_TIMEOUT_MS) {
+   454→        resetState()
+   455→      }
+   456→    }
+   457→
+   458→    const interval = setInterval(checkTimeout, 1000)
+   459→    return () => clearInterval(interval)
+   460→  }, [lastActivity, view, showTimeoutWarning, resetState])
+   461→
+   462→  // Countdown effect when warning is shown
+   463→  useEffect(() => {
+   464→    if (!showTimeoutWarning) return
+   465→    
+   466→    const countdownInterval = setInterval(() => {
+   467→      setSecondsRemaining(prev => {
+   468→        if (prev <= 1) {
+   469→          return 0
+   470→        }
+   471→        return prev - 1
+   472→      })
+   473→    }, 1000)
+   474→    
+   475→    return () => clearInterval(countdownInterval)
+   476→  }, [showTimeoutWarning])
+   477→
+   478→  // Handle screen touch/click to reset timeout
+   479→  useEffect(() => {
+   480→    const handleActivity = () => updateActivity()
+   481→    window.addEventListener('touchstart', handleActivity)
+   482→    window.addEventListener('click', handleActivity)
+   483→    return () => {
+   484→      window.removeEventListener('touchstart', handleActivity)
+   485→      window.removeEventListener('click', handleActivity)
+   486→    }
+   487→  }, [updateActivity])
+   488→
+   489→  // Render touch-friendly numeric keypad
+   490→  const renderKeypad = (value: string, onChange: (val: string) => void, maxLength: number = 6) => {
+   491→    const handleKeyPress = (key: string) => {
+   492→      if (key === "clear") {
+   493→        onChange("")
+   494→      } else if (key === "backspace") {
+   495→        onChange(value.slice(0, -1))
+   496→      } else if (value.length < maxLength) {
+   497→        onChange(value + key)
+   498→      }
+   499→    }
+   500→
+   501→    const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "backspace"]
+   502→
+   503→    return (
+   504→      <div className="w-full max-w-sm mx-auto">
+   505→        {/* Display */}
+   506→        <div className="bg-gray-100 rounded-xl p-4 mb-4">
+   507→          <div className="text-center text-4xl font-mono tracking-widest text-gray-800 min-h-[48px]">
+   508→            {value.split("").map((digit, i) => (
+   509→              <span key={i} className="inline-block w-8">{digit}</span>
+   510→            ))}
+   511→            {Array(maxLength - value.length).fill(0).map((_, i) => (
+   512→              <span key={`empty-${i}`} className="inline-block w-8 text-gray-300">_</span>
+   513→            ))}
+   514→          </div>
+   515→        </div>
+   516→
+   517→        {/* Keypad */}
+   518→        <div className="grid grid-cols-3 gap-2">
+   519→          {keys.map((key) => (
+   520→            <button
+   521→              key={key}
+   522→              onClick={() => handleKeyPress(key)}
+   523→              className={`
+   524→                h-16 rounded-xl text-2xl font-bold transition-all active:scale-95
+   525→                ${key === "clear" || key === "backspace"
+   526→                  ? "bg-gray-200 text-gray-600 hover:bg-gray-300"
+   527→                  : "bg-[#FFD439] text-[#111111] hover:bg-[#FFD439]/90"
+   528→                }
+   529→              `}
+   530→            >
+   531→              {key === "backspace" ? "⌫" : key === "clear" ? "CLR" : key}
+   532→            </button>
+   533→          ))}
+   534→        </div>
+   535→      </div>
+   536→    )
+   537→  }
+   538→
+   539→  // Handle drop-off with existing code
+   540→  const handleDropoffWithCode = async () => {
+   541→    if (code.length !== 6) {
+   542→      setError("Please enter a valid 6-digit code")
+   543→      return
+   544→    }
+   545→
+   546→    setLoading(true)
+   547→    setError(null)
+   548→
+   549→    try {
+   550→      const res = await kioskFetch("/api/kiosk/use-code", {
+   551→        method: "POST",
+   552→        headers: { "Content-Type": "application/json" },
+   553→        body: JSON.stringify({
+   554→          code,
+   555→          codeType: "save",
+   556→          recipientPhone: phoneNumber || undefined,
+   557→        }),
+   558→      })
+   559→      const data = await res.json()
+   560→      setOrderResult(data)
+   561→
+   562→      if (data.requiresPhone) {
+   563→        setView("dropoff-code")
+   564→        return
+   565→      }
+   566→
+   567→      if (data.success) {
+   568→        setView("success")
+   569→      } else {
+   570→        setError(data.error || "Failed to process drop-off")
+   571→      }
+   572→    } catch (err) {
+   573→      if (err instanceof Error && err.message.includes('timed out')) {
+   574→        setError("Server is taking too long to respond. Please try again.")
+   575→      } else {
+   576→        setError("Failed to connect to server. Please try again.")
+   577→      }
+   578→    } finally {
+   579→      setLoading(false)
+   580→    }
+   581→  }
+   582→
+   583→  // Handle drop-off payment
+   584→  const handleDropoffPayment = async () => {
+   585→    if (!selectedBoxSize || !phoneNumber) {
+   586→      setError("Please select a box size and enter phone number")
+   587→      return
+   588→    }
+   589→
+   590→    setLoading(true)
+   591→    setError(null)
+   592→
+   593→    try {
+   594→      const res = await kioskFetch("/api/kiosk/payment", {
+   595→        method: "POST",
+   596→        headers: { "Content-Type": "application/json" },
+   597→        body: JSON.stringify({
+   598→          action: "create_dropoff_payment",
+   599→          boxSize: selectedBoxSize,
+   600→          phone: phoneNumber,
+   601→          email: customerEmail || undefined,
+   602→        }),
+   603→      })
+   604→      const data = await res.json()
+   605→      setPaymentResult(data)
+   606→
+   607→      if (data.success) {
+   608→        // Start polling for payment
+   609→        pollPaymentStatus(data.paymentId)
+   610→      } else {
+   611→        setError(data.error || "Failed to create payment")
+   612→      }
+   613→      
+   614→      return data
+   615→    } catch (err) {
+   616→      if (err instanceof Error && err.message.includes('timed out')) {
+   617→        setError("Server is taking too long to respond. Please try again.")
+   618→      } else {
+   619→        setError("Failed to connect to server. Please try again.")
+   620→      }
+   621→      return null
+   622→    } finally {
+   623→      setLoading(false)
+   624→    }
+   625→  }
+   626→
+   627→  // Poll payment status with smart backoff
+   628→  const pollPaymentStatus = async (paymentId: string) => {
+   629→    const maxAttempts = 45 // ~6 minutes with backoff
+   630→    let attempts = 0
+   631→
+   632→    const poll = async () => {
+   633→      // Stop if component unmounted
+   634→      if (!isMountedRef.current) return
+   635→
+   636→      if (attempts >= maxAttempts) {
+   637→        setError("Payment timeout. Please try again.")
+   638→        return
+   639→      }
+   640→
+   641→      // Stop polling if tab is hidden
+   642→      if (document.visibilityState === 'hidden') {
+   643→        // Resume when visible again - track listener for cleanup
+   644→        const handleVisible = () => {
+   645→          if (document.visibilityState === 'visible') {
+   646→            document.removeEventListener('visibilitychange', handleVisible)
+   647→            if (visibilityHandlerRef.current === handleVisible) {
+   648→              visibilityHandlerRef.current = null
+   649→            }
+   650→            poll()
+   651→          }
+   652→        }
+   653→        visibilityHandlerRef.current = handleVisible
+   654→        document.addEventListener('visibilitychange', handleVisible)
+   655→        return
+   656→      }
+   657→
+   658→      attempts++
+   659→
+   660→      try {
+   661→        const res = await kioskFetch(`/api/kiosk/payment?paymentId=${paymentId}`, undefined, 10000)
+   662→        const data = await res.json()
+   663→
+   664→        if (!isMountedRef.current) return
+   665→
+   666→        if (data.status === "completed") {
+   667→          setCode(data.saveCode || "")
+   668→          // Go directly to dropoff-code view which shows the code
+   669→          setView("dropoff-code")
+   670→          setPaymentResult(null) // Clear payment result
+   671→          return
+   672→        }
+   673→
+   674→        if (data.status === "failed") {
+   675→          setError("Payment failed. Please try again.")
+   676→          return
+   677→        }
+   678→
+   679→        // Exponential backoff: 5s for first 10 attempts, then 8s, then 10s
+   680→        const delay = attempts < 10 ? 5000 : attempts < 25 ? 8000 : 10000
+   681→        pollingTimerRef.current = setTimeout(poll, delay)
+   682→      } catch {
+   683→        // Continue polling on error with longer delay
+   684→        pollingTimerRef.current = setTimeout(poll, 8000)
+   685→      }
+   686→    }
+   687→
+   688→    poll()
+   689→  }
+   690→
+   691→  // Handle immediate box opening after payment
+   692→  const handleOpenBoxImmediately = async () => {
+   693→    if (!code || code.length !== 6) {
+   694→      setError("No valid save code available")
+   695→      return
+   696→    }
+   697→
+   698→    setLoading(true)
+   699→    setError(null)
+   700→
+   701→    try {
+   702→      const res = await kioskFetch("/api/kiosk/payment", {
+   703→        method: "POST",
+   704→        headers: { "Content-Type": "application/json" },
+   705→        body: JSON.stringify({
+   706→          action: "open_box_after_payment",
+   707→          saveCode: code,
+   708→          recipientPhone: phoneNumber,
+   709→        }),
+   710→      })
+   711→      const data = await res.json()
+   712→
+   713→      if (data.success) {
+   714→        setOrderResult({
+   715→          success: true,
+   716→          boxName: data.boxName,
+   717→          pickCode: data.pickCode,
+   718→        })
+   719→        setView("success")
+   720→      } else {
+   721→        setError(data.error || "Failed to open locker")
+   722→      }
+   723→    } catch (err) {
+   724→      if (err instanceof Error && err.message.includes('timed out')) {
+   725→        setError("Server is taking too long to respond. Please try again.")
+   726→      } else {
+   727→        setError("Failed to connect to server. Please try again.")
+   728→      }
+   729→    } finally {
+   730→      setLoading(false)
+   731→    }
+   732→  }
+   733→
+   734→  // Handle pickup
+   735→  const handlePickup = async () => {
+   736→    if (code.length !== 6) {
+   737→      setError("Please enter a valid 6-digit code")
+   738→      return
+   739→    }
+   740→
+   741→    setLoading(true)
+   742→    setError(null)
+   743→
+   744→    try {
+   745→      const res = await kioskFetch("/api/kiosk/use-code", {
+   746→        method: "POST",
+   747→        headers: { "Content-Type": "application/json" },
+   748→        body: JSON.stringify({
+   749→          code,
+   750→          codeType: "pick",
+   751→        }),
+   752→      })
+   753→      const data = await res.json()
+   754→      setOrderResult(data)
+   755→
+   756→      if (data.requiresPayment) {
+   757→        setView("payment")
+   758→        return
+   759→      }
+   760→
+   761→      if (data.success) {
+   762→        setView("success")
+   763→      } else {
+   764→        setError(data.error || "Invalid pickup code")
+   765→      }
+   766→    } catch (err) {
+   767→      if (err instanceof Error && err.message.includes('timed out')) {
+   768→        setError("Server is taking too long to respond. Please try again.")
+   769→      } else {
+   770→        setError("Failed to connect to server. Please try again.")
+   771→      }
+   772→    } finally {
+   773→      setLoading(false)
+   774→    }
+   775→  }
+   776→
+   777→  // Handle storage fee payment
+   778→  const handleStorageFeePayment = async () => {
+   779→    if (!orderResult?.orderNo) return
+   780→
+   781→    setLoading(true)
+   782→    setError(null)
+   783→
+   784→    try {
+   785→      const res = await kioskFetch("/api/kiosk/payment", {
+   786→        method: "POST",
+   787→        headers: { "Content-Type": "application/json" },
+   788→        body: JSON.stringify({
+   789→          action: "create_storage_fee_payment",
+   790→          orderId: orderResult.orderNo,
+   791→          amount: orderResult.storageFee,
+   792→        }),
+   793→      })
+   794→      const data = await res.json()
+   795→      setPaymentResult(data)
+   796→
+   797→      if (data.success) {
+   798→        // Start polling for payment with smart backoff
+   799→        const pollStoragePayment = async (paymentId: string) => {
+   800→          const maxAttempts = 45 // ~6 minutes with backoff
+   801→          let attempts = 0
+   802→
+   803→          const poll = async () => {
+   804→            // Stop if component unmounted
+   805→            if (!isMountedRef.current) return
+   806→
+   807→            if (attempts >= maxAttempts) {
+   808→              setError("Payment timeout. Please try again.")
+   809→              return
+   810→            }
+   811→
+   812→            // Stop polling if tab is hidden - track listener for cleanup
+   813→            if (document.visibilityState === 'hidden') {
+   814→              const handleVisible = () => {
+   815→                if (document.visibilityState === 'visible') {
+   816→                  document.removeEventListener('visibilitychange', handleVisible)
+   817→                  if (visibilityHandlerRef.current === handleVisible) {
+   818→                    visibilityHandlerRef.current = null
+   819→                  }
+   820→                  poll()
+   821→                }
+   822→              }
+   823→              visibilityHandlerRef.current = handleVisible
+   824→              document.addEventListener('visibilitychange', handleVisible)
+   825→              return
+   826→            }
+   827→
+   828→            attempts++
+   829→
+   830→            try {
+   831→              const res = await kioskFetch(`/api/kiosk/payment?paymentId=${paymentId}`, undefined, 10000)
+   832→              const pollData = await res.json()
+   833→
+   834→              if (!isMountedRef.current) return
+   835→
+   836→              if (pollData.status === "completed") {
+   837→                // Payment successful, now process pickup
+   838→                const pickupRes = await kioskFetch("/api/kiosk/use-code", {
+   839→                  method: "POST",
+   840→                  headers: { "Content-Type": "application/json" },
+   841→                  body: JSON.stringify({
+   842→                    code,
+   843→                    codeType: "pick",
+   844→                    paymentMethod: "ONLINE",
+   845→                  }),
+   846→                })
+   847→                const pickupData = await pickupRes.json()
+   848→                setOrderResult(pickupData)
+   849→
+   850→                if (pickupData.success) {
+   851→                  setView("success")
+   852→                } else {
+   853→                  setError(pickupData.error || "Failed to open locker")
+   854→                }
+   855→                return
+   856→              }
+   857→
+   858→              if (pollData.status === "failed") {
+   859→                setError("Payment failed. Please try again.")
+   860→                return
+   861→              }
+   862→
+   863→              // Exponential backoff
+   864→              const delay = attempts < 10 ? 5000 : attempts < 25 ? 8000 : 10000
+   865→              pollingTimerRef.current = setTimeout(poll, delay)
+   866→            } catch {
+   867→              pollingTimerRef.current = setTimeout(poll, 8000)
+   868→            }
+   869→          }
+   870→
+   871→          poll()
+   872→        }
+   873→
+   874→        pollStoragePayment(data.paymentId)
+   875→      } else {
+   876→        setError(data.error || "Failed to create payment")
+   877→      }
+   878→    } catch (err) {
+   879→      if (err instanceof Error && err.message.includes('timed out')) {
+   880→        setError("Server is taking too long to respond. Please try again.")
+   881→      } else {
+   882→        setError("Failed to connect to server. Please try again.")
+   883→      }
+   884→    } finally {
+   885→      setLoading(false)
+   886→    }
+   887→  }
+   888→
+   889→  // Handle courier phone submission
+   890→  const handleCourierPhoneSubmit = async () => {
+   891→    if (courierPhone.length < 10) {
+   892→      setError("Please enter a valid phone number")
+   893→      return
+   894→    }
+   895→
+   896→    // Move to PIN step
+   897→    setCourierLoginStep("pin")
+   898→    setError(null)
+   899→  }
+   900→
+   901→  // Handle courier login
+   902→  const handleCourierLogin = async () => {
+   903→    if (courierPin.length !== 4) {
+   904→      setError("Please enter a valid 4-digit PIN")
+   905→      return
+   906→    }
+   907→
+   908→    setLoading(true)
+   909→    setError(null)
+   910→
+   911→    try {
+   912→      const res = await kioskFetch("/api/courier/login", {
+   913→        method: "POST",
+   914→        headers: { "Content-Type": "application/json" },
+   915→        body: JSON.stringify({
+   916→          phone: courierPhone,
+   917→          pin: courierPin
+   918→        })
+   919→      })
+   920→      const data = await res.json()
+   921→
+   922→      if (data.success) {
+   923→        if (data.requirePinSetup) {
+   924→          // First-time login - need to set PIN
+   925→          setError(`Welcome ${data.courierName}! Please visit pickupja.com/courier/pin?courierId=${data.courierId} to set your PIN.`)
+   926→        } else {
+   927→          // Login successful
+   928→          setCourierSession({
+   929→            id: data.courier.id,
+   930→            name: data.courier.name,
+   931→            phone: data.courier.phone,
+   932→            balance: data.courier.balance,
+   933→            totalDropOffs: data.courier.totalDropOffs,
+   934→            totalSpent: data.courier.totalSpent
+   935→          })
+   936→          setView("courier-dashboard")
+   937→        }
+   938→      } else {
+   939→        setError(data.error || "Login failed. Please try again.")
+   940→      }
+   941→    } catch (err) {
+   942→      if (err instanceof Error && err.message.includes('timed out')) {
+   943→        setError("Server is taking too long to respond. Please try again.")
+   944→      } else {
+   945→        setError("Failed to connect to server. Please try again.")
+   946→      }
+   947→    } finally {
+   948→      setLoading(false)
+   949→    }
+   950→  }
+   951→
+   952→  // Handle courier drop-off
+   953→  const handleCourierDropoff = async () => {
+   954→    if (!selectedBoxSize || !phoneNumber) {
+   955→      setError("Please select a box size and enter phone number")
+   956→      return
+   957→    }
+   958→
+   959→    if (!courierSession) {
+   960→      setError("Session expired. Please login again.")
+   961→      setView("dropoff-courier")
+   962→      return
+   963→    }
+   964→
+   965→    const boxPrice = BOX_SIZES.find(b => b.code === selectedBoxSize)?.price || 0
+   966→
+   967→    // Check if courier has enough balance
+   968→    if (courierSession.balance < boxPrice) {
+   969→      setError(`Insufficient balance. You need JMD $${boxPrice} but have JMD $${courierSession.balance}. Please top up your account.`)
+   970→      return
+   971→    }
+   972→
+   973→    setLoading(true)
+   974→    setError(null)
+   975→
+   976→    try {
+   977→      const res = await kioskFetch("/api/kiosk/order", {
+   978→        method: "POST",
+   979→        headers: { "Content-Type": "application/json" },
+   980→        body: JSON.stringify({
+   981→          action: "create_order",
+   982→          boxSize: selectedBoxSize,
+   983→          recipientPhone: phoneNumber,
+   984→          senderName: senderName || undefined,
+   985→          courierId: courierSession.id,
+   986→          courierPin,
+   987→        }),
+   988→      })
+   989→      const data = await res.json()
+   990→      setOrderResult(data)
+   991→
+   992→      if (data.success) {
+   993→        // Update local balance
+   994→        setCourierSession(prev => prev ? { ...prev, balance: prev.balance - boxPrice } : null)
+   995→        setView("success")
+   996→      } else {
+   997→        setError(data.error || "Failed to create order")
+   998→      }
+   999→    } catch (err) {
+  1000→      if (err instanceof Error && err.message.includes('timed out')) {
+  1001→        setError("Server is taking too long to respond. Please try again.")
+  1002→      } else {
+  1003→        setError("Failed to connect to server. Please try again.")
+  1004→      }
+  1005→    } finally {
+  1006→      setLoading(false)
+  1007→    }
+  1008→  }
+  1009→
+  1010→  // Render home screen
+  1011→  const renderHome = () => (
+  1012→    <div className="min-h-screen bg-[#111111] flex flex-col">
+  1013→      {/* Header */}
+  1014→      <header className="p-6">
+  1015→        <div className="flex items-center justify-center gap-3">
+  1016→          <img 
+  1017→            src="/logo-icon.png" 
+  1018→            alt="Pickup Logo" 
+  1019→            className="h-20 w-auto object-contain"
+  1020→          />
+  1021→          <div>
+  1022→            <h1 className="text-3xl font-bold text-white uppercase tracking-tight" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1023→              PICK<span className="text-[#FFD439]">UP</span>
+  1024→            </h1>
+  1025→            <p className="text-sm text-gray-400">SMART LOCKER SYSTEM</p>
+  1026→          </div>
+  1027→        </div>
+  1028→      </header>
+  1029→
+  1030→      {/* Main buttons */}
+  1031→      <main className="flex-1 flex flex-col items-center justify-center p-6 gap-8">
+  1032→        <button
+  1033→          onClick={() => setView("dropoff")}
+  1034→          className="w-full max-w-md h-40 bg-[#FFD439] rounded-2xl flex flex-col items-center justify-center gap-3 hover:bg-[#FFD439]/90 active:scale-95 transition-all shadow-lg"
+  1035→        >
+  1036→          <Package className="h-16 w-16 text-[#111111]" />
+  1037→          <span className="text-3xl font-bold text-[#111111] uppercase">DROP-OFF</span>
+  1038→        </button>
+  1039→
+  1040→        <button
+  1041→          onClick={() => setView("pickup")}
+  1042→          className="w-full max-w-md h-40 bg-white rounded-2xl flex flex-col items-center justify-center gap-3 hover:bg-gray-50 active:scale-95 transition-all shadow-lg"
+  1043→        >
+  1044→          <QrCode className="h-16 w-16 text-[#111111]" />
+  1045→          <span className="text-3xl font-bold text-[#111111] uppercase">PICKUP</span>
+  1046→        </button>
+  1047→      </main>
+  1048→
+  1049→      {/* Footer */}
+  1050→      <footer className="p-6">
+  1051→        <div className="flex flex-col items-center gap-4">
+  1052→          <div className="flex items-center gap-2 text-gray-400">
+  1053→            <Clock className="h-5 w-5" />
+  1054→            <span>Available 24/7</span>
+  1055→          </div>
+  1056→          <Link href="/login" className="text-gray-500 text-sm underline">
+  1057→            Staff Login
+  1058→          </Link>
+  1059→        </div>
+  1060→      </footer>
+  1061→    </div>
+  1062→  )
+  1063→
+  1064→  // Render drop-off options
+  1065→  const renderDropoffOptions = () => (
+  1066→    <div className="min-h-screen bg-gray-100 flex flex-col">
+  1067→      {/* Header */}
+  1068→      <header className="bg-[#111111] p-6">
+  1069→        <div className="flex items-center gap-4">
+  1070→          <button onClick={resetState} className="text-white">
+  1071→            <ArrowLeft className="h-8 w-8" />
+  1072→          </button>
+  1073→          <h1 className="text-2xl font-bold text-white uppercase" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1074→            DROP-OFF
+  1075→          </h1>
+  1076→        </div>
+  1077→      </header>
+  1078→
+  1079→      {/* Options */}
+  1080→      <main className="flex-1 flex flex-col items-center justify-center p-6 gap-6">
+  1081→        <button
+  1082→          onClick={() => setView("dropoff-code")}
+  1083→          className="w-full max-w-md h-32 bg-white rounded-2xl flex flex-col items-center justify-center gap-2 hover:bg-gray-50 active:scale-95 transition-all shadow-lg p-4"
+  1084→        >
+  1085→          <QrCode className="h-10 w-10 text-[#111111]" />
+  1086→          <span className="text-xl font-bold text-[#111111] uppercase">I have a Drop-off Code</span>
+  1087→          <span className="text-sm text-gray-500">Enter your existing save code</span>
+  1088→        </button>
+  1089→
+  1090→        <button
+  1091→          onClick={() => setView("dropoff-buy")}
+  1092→          className="w-full max-w-md h-32 bg-[#FFD439] rounded-2xl flex flex-col items-center justify-center gap-2 hover:bg-[#FFD439]/90 active:scale-95 transition-all shadow-lg p-4"
+  1093→        >
+  1094→          <CreditCard className="h-10 w-10 text-[#111111]" />
+  1095→          <span className="text-xl font-bold text-[#111111] uppercase">Buy a Drop-off Code</span>
+  1096→          <span className="text-sm text-gray-700">Pay via DimePay QR - Starting at $150 JMD</span>
+  1097→        </button>
+  1098→
+  1099→        <button
+  1100→          onClick={() => setView("dropoff-courier")}
+  1101→          className="w-full max-w-md h-32 bg-white rounded-2xl flex flex-col items-center justify-center gap-2 hover:bg-gray-50 active:scale-95 transition-all shadow-lg p-4 border-2 border-[#111111]"
+  1102→        >
+  1103→          <Truck className="h-10 w-10 text-[#111111]" />
+  1104→          <span className="text-xl font-bold text-[#111111] uppercase">I'm a Courier</span>
+  1105→          <span className="text-sm text-gray-500">Login with courier PIN</span>
+  1106→        </button>
+  1107→      </main>
+  1108→    </div>
+  1109→  )
+  1110→
+  1111→  // Render drop-off with code
+  1112→  const renderDropoffCode = () => (
+  1113→    <div className="min-h-screen bg-gray-100 flex flex-col">
+  1114→      {/* Header */}
+  1115→      <header className="bg-[#111111] p-6">
+  1116→        <div className="flex items-center gap-4">
+  1117→          <button onClick={() => setView("dropoff")} className="text-white">
+  1118→            <ArrowLeft className="h-8 w-8" />
+  1119→          </button>
+  1120→          <h1 className="text-2xl font-bold text-white uppercase" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1121→            {code.length === 6 ? "DROP-OFF READY" : "ENTER DROP-OFF CODE"}
+  1122→          </h1>
+  1123→        </div>
+  1124→      </header>
+  1125→
+  1126→      {/* Content */}
+  1127→      <main className="flex-1 flex flex-col p-6">
+  1128→        <Card className="max-w-md mx-auto w-full shadow-lg">
+  1129→          <CardContent className="p-6">
+  1130→            {/* If we have a pre-filled code from payment success */}
+  1131→            {code.length === 6 ? (
+  1132→              <div className="text-center">
+  1133→                <CheckCircle className="h-16 w-16 mx-auto text-green-500 mb-4" />
+  1134→                <h2 className="text-xl font-bold mb-2">Payment Successful!</h2>
+  1135→                <p className="text-gray-600 mb-4">Your drop-off code is ready</p>
+  1136→                
+  1137→                {/* Show the save code */}
+  1138→                <div className="bg-[#FFD439] p-4 rounded-xl mb-6">
+  1139→                  <p className="text-sm text-gray-600">Your Save Code</p>
+  1140→                  <p className="text-3xl font-bold tracking-widest">{code}</p>
+  1141→                </div>
+  1142→
+  1143→                {/* Immediate deposit option */}
+  1144→                <button
+  1145→                  onClick={handleOpenBoxImmediately}
+  1146→                  disabled={loading}
+  1147→                  className="w-full h-16 bg-green-500 rounded-xl text-xl font-bold text-white uppercase hover:bg-green-600 active:scale-95 transition-all disabled:opacity-50 mb-4"
+  1148→                >
+  1149→                  {loading ? (
+  1150→                    <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+  1151→                  ) : (
+  1152→                    "📦 DEPOSIT NOW"
+  1153→                  )}
+  1154→                </button>
+  1155→
+  1156→                <p className="text-xs text-gray-400 mb-4">
+  1157→                  This will open a locker immediately. Place your package inside and close the door.
+  1158→                </p>
+  1159→
+  1160→                <hr className="my-4" />
+  1161→
+  1162→                <p className="text-sm text-gray-500">
+  1163→                  Or enter this code later at any Pickup locker
+  1164→                </p>
+  1165→              </div>
+  1166→            ) : (
+  1167→              <>
+  1168→                <p className="text-center text-gray-600 mb-6">
+  1169→                  Enter your 6-digit drop-off code
+  1170→                </p>
+  1171→
+  1172→                {renderKeypad(code, setCode, 6)}
+  1173→
+  1174→                {/* Phone number input if needed */}
+  1175→                {orderResult?.requiresPhone && (
+  1176→                  <div className="mt-6">
+  1177→                    <label className="block text-sm font-medium text-gray-700 mb-2">
+  1178→                      Recipient Phone Number
+  1179→                    </label>
+  1180→                    {renderKeypad(phoneNumber, setPhoneNumber, 10)}
+  1181→                  </div>
+  1182→                )}
+  1183→
+  1184→                {error && (
+  1185→                  <div className="mt-4 p-4 bg-red-50 rounded-lg flex items-center gap-2 text-red-700">
+  1186→                    <AlertCircle className="h-5 w-5 flex-shrink-0" />
+  1187→                    <span>{error}</span>
+  1188→                  </div>
+  1189→                )}
+  1190→
+  1191→                <button
+  1192→                  onClick={handleDropoffWithCode}
+  1193→                  disabled={loading || code.length !== 6}
+  1194→                  className="w-full mt-6 h-16 bg-[#FFD439] rounded-xl text-xl font-bold text-[#111111] uppercase hover:bg-[#FFD439]/90 active:scale-95 transition-all disabled:opacity-50"
+  1195→                >
+  1196→                  {loading ? (
+  1197→                    <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+  1198→                  ) : (
+  1199→                    "OPEN LOCKER"
+  1200→                  )}
+  1201→                </button>
+  1202→              </>
+  1203→            )}
+  1204→          </CardContent>
+  1205→        </Card>
+  1206→      </main>
+  1207→    </div>
+  1208→  )
+  1209→
+  1210→  // Render buy drop-off code
+  1211→  const renderDropoffBuy = () => (
+  1212→    <div className="min-h-screen bg-gray-100 flex flex-col">
+  1213→      {/* Header */}
+  1214→      <header className="bg-[#111111] p-6">
+  1215→        <div className="flex items-center gap-4">
+  1216→          <button onClick={() => setView("dropoff")} className="text-white">
+  1217→            <ArrowLeft className="h-8 w-8" />
+  1218→          </button>
+  1219→          <h1 className="text-2xl font-bold text-white uppercase" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1220→            BUY DROP-OFF CODE
+  1221→          </h1>
+  1222→        </div>
+  1223→      </header>
+  1224→
+  1225→      {/* Content */}
+  1226→      <main className="flex-1 flex flex-col p-6">
+  1227→        <Card className="max-w-md mx-auto w-full shadow-lg">
+  1228→          <CardContent className="p-6">
+  1229→            {/* Box size selection */}
+  1230→            <p className="text-center text-gray-600 mb-4">Select Box Size</p>
+  1231→            
+  1232→            {loadingBoxes ? (
+  1233→              <div className="text-center py-8">
+  1234→                <Loader2 className="h-8 w-8 animate-spin mx-auto text-[#FFD439]" />
+  1235→                <p className="mt-2 text-gray-600">Checking availability...</p>
+  1236→              </div>
+  1237→            ) : BOX_SIZES.length === 0 ? (
+  1238→              <div className="text-center py-8">
+  1239→                <Package className="h-12 w-12 mx-auto text-gray-400 mb-4" />
+  1240→                <p className="text-gray-600 font-medium">No boxes available</p>
+  1241→                <p className="text-gray-500 text-sm mt-2">All lockers are currently in use. Please try again later.</p>
+  1242→              </div>
+  1243→            ) : (
+  1244→              <div className="grid grid-cols-2 gap-3 mb-6">
+  1245→                {BOX_SIZES.map((box) => (
+  1246→                  <button
+  1247→                    key={box.code}
+  1248→                    onClick={() => setSelectedBoxSize(box.code)}
+  1249→                    className={`p-4 rounded-xl text-left transition-all ${
+  1250→                      selectedBoxSize === box.code
+  1251→                        ? "bg-[#FFD439] text-[#111111]"
+  1252→                        : "bg-white border-2 border-gray-200 hover:border-[#FFD439]"
+  1253→                    }`}
+  1254→                  >
+  1255→                    <div className="font-bold text-lg uppercase">{box.code} - ${box.price}</div>
+  1256→                    <div className="text-sm opacity-70">{box.description}</div>
+  1257→                    <div className="text-xs mt-1 opacity-60">{box.available} available</div>
+  1258→                  </button>
+  1259→                ))}
+  1260→              </div>
+  1261→            )}
+  1262→
+  1263→            {/* Phone number */}
+  1264→            <p className="text-center text-gray-600 mb-4">Enter Phone Number</p>
+  1265→            {renderKeypad(phoneNumber, setPhoneNumber, 10)}
+  1266→
+  1267→            {/* Email (optional) */}
+  1268→            <div className="mt-6">
+  1269→              <label className="block text-sm font-medium text-gray-700 mb-2 text-center">
+  1270→                Email (Optional - Receive your code via email)
+  1271→              </label>
+  1272→              <div className="relative">
+  1273→                <Mail className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+  1274→                <input
+  1275→                  type="email"
+  1276→                  value={customerEmail}
+  1277→                  onChange={(e) => setCustomerEmail(e.target.value)}
+  1278→                  placeholder="your@email.com"
+  1279→                  className="w-full h-14 pl-12 pr-4 rounded-xl border-2 border-gray-200 focus:border-[#FFD439] outline-none text-lg"
+  1280→                />
+  1281→              </div>
+  1282→            </div>
+  1283→
+  1284→            {error && (
+  1285→              <div className="mt-4 p-4 bg-red-50 rounded-lg flex items-center gap-2 text-red-700">
+  1286→                <AlertCircle className="h-5 w-5 flex-shrink-0" />
+  1287→                <span>{error}</span>
+  1288→              </div>
+  1289→            )}
+  1290→
+  1291→            {paymentResult?.success && (
+  1292→              <div className="mt-6 text-center">
+  1293→                {/* Demo mode indicator */}
+  1294→                {paymentResult.isDemoMode && (
+  1295→                  <div className="bg-orange-100 text-orange-800 px-4 py-2 rounded-lg mb-4 font-bold uppercase text-sm">
+  1296→                    🎮 DEMO MODE - For Testing Only
+  1297→                  </div>
+  1298→                )}
+  1299→                
+  1300→                <p className="text-lg font-bold mb-2">Amount: JMD ${paymentResult.amount}</p>
+  1301→                <p className="text-sm text-gray-500 mb-4">
+  1302→                  Payment ID: {paymentResult.paymentId}
+  1303→                </p>
+  1304→                
+  1305→                {paymentResult.isDemoMode ? (
+  1306→                  <div className="space-y-4">
+  1307→                    <p className="text-sm text-gray-600">
+  1308→                      Click below to simulate a successful payment
+  1309→                    </p>
+  1310→                    <button
+  1311→                      onClick={async () => {
+  1312→                        // Complete payment and show options
+  1313→                        setCode(paymentResult.saveCode || "");
+  1314→                        // Start polling for completion
+  1315→                        pollPaymentStatus(paymentResult.paymentId || "");
+  1316→                      }}
+  1317→                      className="w-full h-16 bg-green-500 rounded-xl text-xl font-bold text-white uppercase hover:bg-green-600 active:scale-95 transition-all"
+  1318→                    >
+  1319→                      ✓ SIMULATE PAYMENT SUCCESS
+  1320→                    </button>
+  1321→                    <p className="text-xs text-gray-400">
+  1322→                      In production, this would show a real DimePay QR code
+  1323→                    </p>
+  1324→                  </div>
+  1325→                ) : (
+  1326→                  <>
+  1327→                    <img 
+  1328→                      src={paymentResult.qrCodeDataUrl} 
+  1329→                      alt="Payment QR Code" 
+  1330→                      className="mx-auto w-64 h-64 rounded-lg"
+  1331→                    />
+  1332→                    <p className="text-sm text-gray-500 mt-4">
+  1333→                      Scan with DimePay app to complete payment
+  1334→                    </p>
+  1335→                    <Loader2 className="h-6 w-6 animate-spin mx-auto mt-2 text-[#FFD439]" />
+  1336→                  </>
+  1337→                )}
+  1338→              </div>
+  1339→            )}
+  1340→
+  1341→            {!paymentResult && (
+  1342→              <button
+  1343→                onClick={() => setView("dropoff-payment-options")}
+  1344→                disabled={loading || !selectedBoxSize || phoneNumber.length < 7}
+  1345→                className="w-full mt-6 h-16 bg-[#FFD439] rounded-xl text-xl font-bold text-[#111111] uppercase hover:bg-[#FFD439]/90 active:scale-95 transition-all disabled:opacity-50"
+  1346→              >
+  1347→                {loading ? (
+  1348→                  <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+  1349→                ) : (
+  1350→                  `CONTINUE - $${BOX_SIZES.find(b => b.code === selectedBoxSize)?.price || 0} JMD`
+  1351→                )}
+  1352→              </button>
+  1353→            )}
+  1354→          </CardContent>
+  1355→        </Card>
+  1356→      </main>
+  1357→    </div>
+  1358→  )
+  1359→
+  1360→  // Render payment options screen
+  1361→  const renderDropoffPaymentOptions = () => {
+  1362→    
+  1363→    // Handle Pay Here - redirect to payment page on this device
+  1364→    const handlePayHere = async () => {
+  1365→      setLoading(true)
+  1366→      setError(null)
+  1367→      
+  1368→      try {
+  1369→        const res = await kioskFetch("/api/kiosk/payment", {
+  1370→          method: "POST",
+  1371→          headers: { "Content-Type": "application/json" },
+  1372→          body: JSON.stringify({
+  1373→            action: "create_dropoff_payment",
+  1374→            boxSize: selectedBoxSize,
+  1375→            phone: phoneNumber,
+  1376→            email: customerEmail || undefined,
+  1377→          }),
+  1378→        })
+  1379→        const data = await res.json()
+  1380→        
+  1381→        if (data.success && data.paymentUrl) {
+  1382→          // Redirect to payment page
+  1383→          window.location.href = data.paymentUrl
+  1384→        } else {
+  1385→          setError(data.error || "Failed to create payment")
+  1386→          setLoading(false)
+  1387→        }
+  1388→      } catch (err) {
+  1389→        if (err instanceof Error && err.message.includes('timed out')) {
+  1390→          setError("Server is taking too long to respond. Please try again.")
+  1391→        } else {
+  1392→          setError("Failed to connect to server. Please try again.")
+  1393→        }
+  1394→        setLoading(false)
+  1395→      }
+  1396→    }
+  1397→    
+  1398→    // Handle Pay on Phone - show QR code
+  1399→    const handlePayOnPhone = async () => {
+  1400→      setLoading(true)
+  1401→      setError(null)
+  1402→      
+  1403→      try {
+  1404→        const res = await kioskFetch("/api/kiosk/payment", {
+  1405→          method: "POST",
+  1406→          headers: { "Content-Type": "application/json" },
+  1407→          body: JSON.stringify({
+  1408→            action: "create_dropoff_payment",
+  1409→            boxSize: selectedBoxSize,
+  1410→            phone: phoneNumber,
+  1411→            email: customerEmail || undefined,
+  1412→          }),
+  1413→        })
+  1414→        const data = await res.json()
+  1415→        setPaymentResult(data)
+  1416→        
+  1417→        if (data.success) {
+  1418→          // Start polling for payment completion
+  1419→          pollPaymentStatus(data.paymentId)
+  1420→        } else {
+  1421→          setError(data.error || "Failed to create payment")
+  1422→        }
+  1423→      } catch (err) {
+  1424→        if (err instanceof Error && err.message.includes('timed out')) {
+  1425→          setError("Server is taking too long to respond. Please try again.")
+  1426→        } else {
+  1427→          setError("Failed to connect to server. Please try again.")
+  1428→        }
+  1429→      } finally {
+  1430→        setLoading(false)
+  1431→      }
+  1432→    }
+  1433→    
+  1434→    const selectedBox = BOX_SIZES.find(b => b.code === selectedBoxSize)
+  1435→    
+  1436→    return (
+  1437→      <div className="min-h-screen bg-gray-100 flex flex-col">
+  1438→        {/* Header */}
+  1439→        <header className="bg-[#111111] p-6">
+  1440→          <div className="flex items-center gap-4">
+  1441→            <button onClick={() => { setPaymentResult(null); setView("dropoff-buy") }} className="text-white">
+  1442→              <ArrowLeft className="h-8 w-8" />
+  1443→            </button>
+  1444→            <h1 className="text-2xl font-bold text-white uppercase" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1445→              CHOOSE PAYMENT METHOD
+  1446→            </h1>
+  1447→          </div>
+  1448→        </header>
+  1449→
+  1450→        {/* Content */}
+  1451→        <main className="flex-1 flex flex-col p-6">
+  1452→          <Card className="max-w-md mx-auto w-full shadow-lg">
+  1453→            <CardContent className="p-6">
+  1454→              {/* Amount Summary */}
+  1455→              <div className="text-center mb-6">
+  1456→                <p className="text-gray-600 mb-2">Total Amount</p>
+  1457→                <p className="text-4xl font-bold text-[#111111]">
+  1458→                  JMD ${selectedBox?.price || 0}
+  1459→                </p>
+  1460→                <p className="text-sm text-gray-500 mt-1">
+  1461→                  {selectedBoxSize} Box - 7 days storage
+  1462→                </p>
+  1463→              </div>
+  1464→
+  1465→              {/* Payment Options - only show if no QR code yet */}
+  1466→              {!paymentResult?.success && (
+  1467→                <div className="space-y-4">
+  1468→                  {/* Option 1: Pay on this device */}
+  1469→                  <button
+  1470→                    onClick={handlePayHere}
+  1471→                    disabled={loading}
+  1472→                    className="w-full p-6 bg-[#FFD439] rounded-xl text-left hover:bg-[#FFD439]/90 active:scale-95 transition-all disabled:opacity-50"
+  1473→                  >
+  1474→                    <div className="flex items-center gap-4">
+  1475→                      <div className="w-14 h-14 rounded-full bg-[#111111] flex items-center justify-center">
+  1476→                        <CreditCard className="h-7 w-7 text-[#FFD439]" />
+  1477→                      </div>
+  1478→                      <div className="flex-1">
+  1479→                        <p className="text-xl font-bold text-[#111111] uppercase">PAY HERE</p>
+  1480→                        <p className="text-sm text-gray-700">Continue payment on this device</p>
+  1481→                      </div>
+  1482→                      {loading ? (
+  1483→                        <Loader2 className="h-6 w-6 animate-spin text-[#111111]" />
+  1484→                      ) : (
+  1485→                        <ArrowLeft className="h-6 w-6 text-[#111111] rotate-180" />
+  1486→                      )}
+  1487→                    </div>
+  1488→                  </button>
+  1489→
+  1490→                  {/* Option 2: Pay on another device via QR */}
+  1491→                  <button
+  1492→                    onClick={handlePayOnPhone}
+  1493→                    disabled={loading}
+  1494→                    className="w-full p-6 bg-white border-2 border-gray-200 rounded-xl text-left hover:border-[#FFD439] active:scale-95 transition-all disabled:opacity-50"
+  1495→                  >
+  1496→                    <div className="flex items-center gap-4">
+  1497→                      <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center">
+  1498→                        <QrCode className="h-7 w-7 text-[#111111]" />
+  1499→                      </div>
+  1500→                      <div className="flex-1">
+  1501→                        <p className="text-xl font-bold text-[#111111] uppercase">PAY ON YOUR PHONE</p>
+  1502→                        <p className="text-sm text-gray-500">Scan QR code with another device</p>
+  1503→                      </div>
+  1504→                      {loading ? (
+  1505→                        <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+  1506→                      ) : (
+  1507→                        <ArrowLeft className="h-6 w-6 text-gray-400 rotate-180" />
+  1508→                      )}
+  1509→                    </div>
+  1510→                  </button>
+  1511→                </div>
+  1512→              )}
+  1513→
+  1514→              {/* Show QR Code if payment created */}
+  1515→              {paymentResult?.success && paymentResult.qrCodeDataUrl && (
+  1516→                <div className="mt-6 text-center">
+  1517→                  <div className="bg-gray-50 rounded-xl p-6">
+  1518→                    <p className="text-lg font-bold mb-4">Scan to Pay</p>
+  1519→                    <img 
+  1520→                      src={paymentResult.qrCodeDataUrl} 
+  1521→                      alt="Payment QR Code" 
+  1522→                      className="mx-auto w-64 h-64 rounded-lg"
+  1523→                    />
+  1524→                    <p className="text-sm text-gray-500 mt-4">
+  1525→                      Scan with your phone camera to complete payment
+  1526→                    </p>
+  1527→                    <div className="flex items-center justify-center gap-2 mt-4">
+  1528→                      <Loader2 className="h-5 w-5 animate-spin text-[#FFD439]" />
+  1529→                      <span className="text-gray-600">Waiting for payment...</span>
+  1530→                    </div>
+  1531→                    
+  1532→                    {/* Cancel button */}
+  1533→                    <button
+  1534→                      onClick={() => { setPaymentResult(null); setLoading(false) }}
+  1535→                      className="mt-4 text-sm text-gray-500 hover:text-gray-700 underline"
+  1536→                    >
+  1537→                      Cancel and go back
+  1538→                    </button>
+  1539→                  </div>
+  1540→                </div>
+  1541→              )}
+  1542→
+  1543→              {loading && !paymentResult && (
+  1544→                <div className="mt-6 text-center">
+  1545→                  <Loader2 className="h-8 w-8 animate-spin mx-auto text-[#FFD439]" />
+  1546→                  <p className="mt-2 text-gray-600">Preparing payment...</p>
+  1547→                </div>
+  1548→              )}
+  1549→
+  1550→              {error && (
+  1551→                <div className="mt-4 p-4 bg-red-50 rounded-lg flex items-center gap-2 text-red-700">
+  1552→                  <AlertCircle className="h-5 w-5 flex-shrink-0" />
+  1553→                  <span>{error}</span>
+  1554→                </div>
+  1555→              )}
+  1556→            </CardContent>
+  1557→          </Card>
+  1558→        </main>
+  1559→      </div>
+  1560→    )
+  1561→  }
+  1562→
+  1563→  // Render courier login
+  1564→  const renderCourierLogin = () => (
+  1565→    <div className="min-h-screen bg-gray-100 flex flex-col">
+  1566→      {/* Header */}
+  1567→      <header className="bg-[#111111] p-6">
+  1568→        <div className="flex items-center gap-4">
+  1569→          <button onClick={() => {
+  1570→            if (courierLoginStep === "pin") {
+  1571→              setCourierLoginStep("phone")
+  1572→              setCourierPin("")
+  1573→              setError(null)
+  1574→            } else {
+  1575→              setView("dropoff")
+  1576→            }
+  1577→          }} className="text-white">
+  1578→            <ArrowLeft className="h-8 w-8" />
+  1579→          </button>
+  1580→          <h1 className="text-2xl font-bold text-white uppercase" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1581→            COURIER LOGIN
+  1582→          </h1>
+  1583→        </div>
+  1584→      </header>
+  1585→
+  1586→      {/* Content */}
+  1587→      <main className="flex-1 flex flex-col p-6">
+  1588→        <Card className="max-w-md mx-auto w-full shadow-lg">
+  1589→          <CardContent className="p-6">
+  1590→            <div className="text-center mb-6">
+  1591→              <Truck className="h-16 w-16 mx-auto text-[#FFD439] mb-4" />
+  1592→              {courierLoginStep === "phone" ? (
+  1593→                <p className="text-gray-600">Enter your phone number</p>
+  1594→              ) : (
+  1595→                <p className="text-gray-600">Enter your 4-digit PIN</p>
+  1596→              )}
+  1597→            </div>
+  1598→
+  1599→            {courierLoginStep === "phone" ? (
+  1600→              <>
+  1601→                {renderKeypad(courierPhone, setCourierPhone, 10)}
+  1602→                <button
+  1603→                  onClick={handleCourierPhoneSubmit}
+  1604→                  disabled={loading || courierPhone.length < 10}
+  1605→                  className="w-full mt-6 h-16 bg-[#FFD439] rounded-xl text-xl font-bold text-[#111111] uppercase hover:bg-[#FFD439]/90 active:scale-95 transition-all disabled:opacity-50"
+  1606→                >
+  1607→                  {loading ? (
+  1608→                    <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+  1609→                  ) : (
+  1610→                    "CONTINUE"
+  1611→                  )}
+  1612→                </button>
+  1613→              </>
+  1614→            ) : (
+  1615→              <>
+  1616→                <p className="text-center text-sm text-gray-500 mb-4">
+  1617→                  Phone: {courierPhone.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3")}
+  1618→                </p>
+  1619→                {renderKeypad(courierPin, setCourierPin, 4)}
+  1620→                <button
+  1621→                  onClick={handleCourierLogin}
+  1622→                  disabled={loading || courierPin.length !== 4}
+  1623→                  className="w-full mt-6 h-16 bg-[#FFD439] rounded-xl text-xl font-bold text-[#111111] uppercase hover:bg-[#FFD439]/90 active:scale-95 transition-all disabled:opacity-50"
+  1624→                >
+  1625→                  {loading ? (
+  1626→                    <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+  1627→                  ) : (
+  1628→                    "LOGIN"
+  1629→                  )}
+  1630→                </button>
+  1631→              </>
+  1632→            )}
+  1633→
+  1634→            {error && (
+  1635→              <div className="mt-4 p-4 bg-red-50 rounded-lg flex items-center gap-2 text-red-700">
+  1636→                <AlertCircle className="h-5 w-5 flex-shrink-0" />
+  1637→                <span className="text-sm">{error}</span>
+  1638→              </div>
+  1639→            )}
+  1640→          </CardContent>
+  1641→        </Card>
+  1642→      </main>
+  1643→    </div>
+  1644→  )
+  1645→
+  1646→  // Render courier dashboard
+  1647→  const renderCourierDashboard = () => (
+  1648→    <div className="min-h-screen bg-gray-100 flex flex-col">
+  1649→      {/* Header */}
+  1650→      <header className="bg-[#111111] p-6">
+  1651→        <div className="flex items-center justify-between">
+  1652→          <div className="flex items-center gap-4">
+  1653→            <button onClick={resetState} className="text-white">
+  1654→              <ArrowLeft className="h-8 w-8" />
+  1655→            </button>
+  1656→            <div>
+  1657→              <h1 className="text-2xl font-bold text-white uppercase" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1658→                COURIER DASHBOARD
+  1659→              </h1>
+  1660→              <p className="text-sm text-gray-400">{courierSession?.name}</p>
+  1661→            </div>
+  1662→          </div>
+  1663→          <Badge className="bg-[#FFD439] text-[#111111] text-lg px-4 py-2">
+  1664→            Balance: JMD ${(courierSession?.balance || 0).toLocaleString()}
+  1665→          </Badge>
+  1666→        </div>
+  1667→      </header>
+  1668→
+  1669→      {/* Content */}
+  1670→      <main className="flex-1 flex flex-col p-6">
+  1671→        <Card className="max-w-md mx-auto w-full shadow-lg">
+  1672→          <CardContent className="p-6">
+  1673→            {/* Sender name */}
+  1674→            <div className="mb-4">
+  1675→              <label className="block text-sm font-medium text-gray-700 mb-2">
+  1676→                Sender Name (Optional)
+  1677→              </label>
+  1678→              <input
+  1679→                type="text"
+  1680→                value={senderName}
+  1681→                onChange={(e) => setSenderName(e.target.value)}
+  1682→                placeholder="Courier Company"
+  1683→                className="w-full h-14 px-4 rounded-xl border-2 border-gray-200 focus:border-[#FFD439] outline-none text-lg"
+  1684→              />
+  1685→            </div>
+  1686→
+  1687→            {/* Box size selection */}
+  1688→            <p className="text-center text-gray-600 mb-4">Select Box Size</p>
+  1689→            <div className="grid grid-cols-2 gap-3 mb-6">
+  1690→              {BOX_SIZES.map((box) => (
+  1691→                <button
+  1692→                  key={box.code}
+  1693→                  onClick={() => setSelectedBoxSize(box.code)}
+  1694→                  className={`p-4 rounded-xl text-left transition-all ${
+  1695→                    selectedBoxSize === box.code
+  1696→                      ? "bg-[#FFD439] text-[#111111]"
+  1697→                      : "bg-white border-2 border-gray-200 hover:border-[#FFD439]"
+  1698→                  }`}
+  1699→                >
+  1700→                  <div className="font-bold text-lg uppercase">{box.code} - ${box.price}</div>
+  1701→                  <div className="text-sm opacity-70">{box.description}</div>
+  1702→                </button>
+  1703→              ))}
+  1704→            </div>
+  1705→
+  1706→            {/* Recipient phone */}
+  1707→            <p className="text-center text-gray-600 mb-4">Recipient Phone Number</p>
+  1708→            {renderKeypad(phoneNumber, setPhoneNumber, 10)}
+  1709→
+  1710→            {error && (
+  1711→              <div className="mt-4 p-4 bg-red-50 rounded-lg flex items-center gap-2 text-red-700">
+  1712→                <AlertCircle className="h-5 w-5 flex-shrink-0" />
+  1713→                <span>{error}</span>
+  1714→              </div>
+  1715→            )}
+  1716→
+  1717→            <button
+  1718→              onClick={handleCourierDropoff}
+  1719→              disabled={loading || !selectedBoxSize || phoneNumber.length < 7}
+  1720→              className="w-full mt-6 h-16 bg-[#111111] rounded-xl text-xl font-bold text-white uppercase hover:bg-gray-800 active:scale-95 transition-all disabled:opacity-50"
+  1721→            >
+  1722→              {loading ? (
+  1723→                <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+  1724→              ) : (
+  1725→                `DROP OFF - $${BOX_SIZES.find(b => b.code === selectedBoxSize)?.price || 0}`
+  1726→              )}
+  1727→            </button>
+  1728→          </CardContent>
+  1729→        </Card>
+  1730→      </main>
+  1731→    </div>
+  1732→  )
+  1733→
+  1734→  // Render pickup
+  1735→  const renderPickup = () => (
+  1736→    <div className="min-h-screen bg-gray-100 flex flex-col">
+  1737→      {/* Header */}
+  1738→      <header className="bg-[#111111] p-6">
+  1739→        <div className="flex items-center gap-4">
+  1740→          <button onClick={resetState} className="text-white">
+  1741→            <ArrowLeft className="h-8 w-8" />
+  1742→          </button>
+  1743→          <h1 className="text-2xl font-bold text-white uppercase" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1744→            PICKUP
+  1745→          </h1>
+  1746→        </div>
+  1747→      </header>
+  1748→
+  1749→      {/* Content */}
+  1750→      <main className="flex-1 flex flex-col p-6">
+  1751→        <Card className="max-w-md mx-auto w-full shadow-lg">
+  1752→          <CardContent className="p-6">
+  1753→            <div className="text-center mb-6">
+  1754→              <QrCode className="h-16 w-16 mx-auto text-[#FFD439] mb-4" />
+  1755→              <p className="text-gray-600">Enter your 6-digit pickup code</p>
+  1756→            </div>
+  1757→
+  1758→            {renderKeypad(code, setCode, 6)}
+  1759→
+  1760→            {error && (
+  1761→              <div className="mt-4 p-4 bg-red-50 rounded-lg flex items-center gap-2 text-red-700">
+  1762→                <AlertCircle className="h-5 w-5 flex-shrink-0" />
+  1763→                <span>{error}</span>
+  1764→              </div>
+  1765→            )}
+  1766→
+  1767→            <button
+  1768→              onClick={handlePickup}
+  1769→              disabled={loading || code.length !== 6}
+  1770→              className="w-full mt-6 h-16 bg-[#FFD439] rounded-xl text-xl font-bold text-[#111111] uppercase hover:bg-[#FFD439]/90 active:scale-95 transition-all disabled:opacity-50"
+  1771→            >
+  1772→              {loading ? (
+  1773→                <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+  1774→              ) : (
+  1775→                "FIND MY PACKAGE"
+  1776→              )}
+  1777→            </button>
+  1778→          </CardContent>
+  1779→        </Card>
+  1780→      </main>
+  1781→    </div>
+  1782→  )
+  1783→
+  1784→  // Render payment
+  1785→  const renderPayment = () => (
+  1786→    <div className="min-h-screen bg-gray-100 flex flex-col">
+  1787→      {/* Header */}
+  1788→      <header className="bg-[#111111] p-6">
+  1789→        <div className="flex items-center gap-4">
+  1790→          <button onClick={resetState} className="text-white">
+  1791→            <X className="h-8 w-8" />
+  1792→          </button>
+  1793→          <h1 className="text-2xl font-bold text-white uppercase" style={{ fontFamily: "Montserrat, sans-serif" }}>
+  1794→            STORAGE FEE
+  1795→          </h1>
+  1796→        </div>
+  1797→      </header>
+  1798→
+  1799→      {/* Content */}
+  1800→      <main className="flex-1 flex flex-col p-6">
+  1801→        <Card className="max-w-md mx-auto w-full shadow-lg">
+  1802→          <CardContent className="p-6">
+  1803→            {/* Storage fee info */}
+  1804→            <div className="text-center mb-6">
+  1805→              <Clock className="h-16 w-16 mx-auto text-[#FFD439] mb-4" />
+  1806→              <p className="text-gray-600">Storage Fee Required</p>
+  1807→              <p className="text-4xl font-bold text-[#111111] mt-2">
+  1808→                JMD ${orderResult?.storageFee || 0}
+  1809→              </p>
+  1810→              <p className="text-sm text-gray-500 mt-2">
+  1811→                {orderResult?.storageDays || 0} days stored (3 days free)
+  1812→              </p>
+  1813→            </div>
+  1814→
+  1815→            {paymentResult?.qrCodeDataUrl ? (
+  1816→              <div className="text-center">
+  1817→                <p className="text-lg font-bold mb-4">Scan to Pay</p>
+  1818→                <img 
+  1819→                  src={paymentResult.qrCodeDataUrl} 
+  1820→                  alt="Payment QR Code" 
+  1821→                  className="mx-auto w-64 h-64 rounded-lg"
+  1822→                />
+  1823→                <p className="text-sm text-gray-500 mt-4">
+  1824→                  Waiting for payment confirmation...
+  1825→                </p>
+  1826→                <Loader2 className="h-6 w-6 animate-spin mx-auto mt-2 text-[#FFD439]" />
+  1827→              </div>
+  1828→            ) : (
+  1829→              <>
+  1830→                {/* Box info */}
+  1831→                <div className="bg-gray-50 rounded-xl p-4 mb-6">
+  1832→                  <div className="flex items-center justify-between">
+  1833→                    <span className="text-gray-600">Box Number</span>
+  1834→                    <span className="font-bold text-lg">#{orderResult?.boxName}</span>
+  1835→                  </div>
+  1836→                </div>
+  1837→
+  1838→                {error && (
+  1839→                  <div className="mb-4 p-4 bg-red-50 rounded-lg flex items-center gap-2 text-red-700">
+  1840→                    <AlertCircle className="h-5 w-5 flex-shrink-0" />
+  1841→                    <span>{error}</span>
+  1842→                  </div>
+  1843→                )}
+  1844→
+  1845→                <button
+  1846→                  onClick={handleStorageFeePayment}
+  1847→                  disabled={loading}
+  1848→                  className="w-full h-16 bg-[#FFD439] rounded-xl text-xl font-bold text-[#111111] uppercase hover:bg-[#FFD439]/90 active:scale-95 transition-all disabled:opacity-50"
+  1849→                >
+  1850→                  {loading ? (
+  1851→                    <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+  1852→                  ) : (
+  1853→                    "PAY WITH DIMEPAY"
+  1854→                  )}
+  1855→                </button>
+  1856→
+  1857→                <button
+  1858→                  onClick={() => {
+  1859→                    // Process with cash payment
+  1860→                    handlePickup()
+  1861→                  }}
+  1862→                  className="w-full mt-4 h-14 bg-gray-200 rounded-xl text-lg font-bold text-[#111111] uppercase hover:bg-gray-300 active:scale-95 transition-all"
+  1863→                >
+  1864→                  PAY WITH CASH (STAFF)
+  1865→                </button>
+  1866→              </>
+  1867→            )}
+  1868→          </CardContent>
+  1869→        </Card>
+  1870→      </main>
+  1871→    </div>
+  1872→  )
+  1873→
+  1874→  // Render success
+  1875→  const renderSuccess = () => (
+  1876→    <div className="min-h-screen bg-gray-100 flex flex-col">
+  1877→      {/* Content */}
+  1878→      <main className="flex-1 flex flex-col items-center justify-center p-6">
+  1879→        <Card className="max-w-md mx-auto w-full shadow-lg text-center">
+  1880→          <CardContent className="p-8">
+  1881→            <div className="h-24 w-24 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-6">
+  1882→              <CheckCircle className="h-12 w-12 text-green-600" />
+  1883→            </div>
+  1884→            
+  1885→            <h2 className="text-3xl font-bold text-[#111111] uppercase mb-2">
+  1886→              LOCKER OPENED!
+  1887→            </h2>
+  1888→            
+  1889→            <p className="text-gray-600 mb-6">
+  1890→              Box #{orderResult?.boxName} is now open. Please {view === "dropoff-code" ? "place your package inside" : "collect your package"} and close the door.
+  1891→            </p>
+  1892→
+  1893→            {/* Order details */}
+  1894→            <div className="bg-gray-50 rounded-xl p-4 mb-6 text-left">
+  1895→              <div className="flex items-center justify-between mb-2">
+  1896→                <span className="text-gray-600">Box Number</span>
+  1897→                <span className="font-bold text-lg">#{orderResult?.boxName}</span>
+  1898→              </div>
+  1899→              {orderResult?.pickCode && (
+  1900→                <div className="flex items-center justify-between mb-2">
+  1901→                  <span className="text-gray-600">Pickup Code</span>
+  1902→                  <span className="font-bold text-lg text-[#FFD439]">{orderResult.pickCode}</span>
+  1903→                </div>
+  1904→              )}
+  1905→              <div className="flex items-center justify-between">
+  1906→                <span className="text-gray-600">Order #</span>
+  1907→                <span className="font-medium">{orderResult?.orderNo}</span>
+  1908→              </div>
+  1909→            </div>
+  1910→
+  1911→            {orderResult?.pickCode && (
+  1912→              <p className="text-sm text-gray-500 mb-6">
+  1913→                A pickup notification has been sent to the recipient.
+  1914→              </p>
+  1915→            )}
+  1916→
+  1917→            <button
+  1918→              onClick={resetState}
+  1919→              className="w-full h-16 bg-[#FFD439] rounded-xl text-xl font-bold text-[#111111] uppercase hover:bg-[#FFD439]/90 active:scale-95 transition-all"
+  1920→            >
+  1921→              DONE
+  1922→            </button>
+  1923→          </CardContent>
+  1924→        </Card>
+  1925→      </main>
+  1926→    </div>
+  1927→  )
+  1928→
+  1929→  // Timeout warning banner
+  1930→  const renderTimeoutWarning = () => {
+  1931→    if (!showTimeoutWarning) return null
+  1932→    
+  1933→    return (
+  1934→      <div className="fixed top-0 left-0 right-0 bg-orange-500 text-white p-4 text-center z-50 animate-pulse">
+  1935→        <p className="text-lg font-bold">
+  1936→          Session will reset in <span className="text-2xl">{secondsRemaining}</span> seconds due to inactivity
+  1937→        </p>
+  1938→        <button
+  1939→          onClick={updateActivity}
+  1940→          className="mt-2 bg-white text-orange-500 px-4 py-2 rounded-lg font-bold hover:bg-orange-100 transition-colors"
+  1941→        >
+  1942→          Continue Session
+  1943→        </button>
+  1944→      </div>
+  1945→    )
+  1946→  }
+  1947→
+  1948→  // Main render
+  1949→  return (
+  1950→    <div onClick={updateActivity} onTouchStart={updateActivity}>
+  1951→      {renderTimeoutWarning()}
+  1952→      
+  1953→      {view === "home" && renderHome()}
+  1954→      {view === "dropoff" && renderDropoffOptions()}
+  1955→      {view === "dropoff-code" && renderDropoffCode()}
+  1956→      {view === "dropoff-buy" && renderDropoffBuy()}
+  1957→      {view === "dropoff-payment-options" && renderDropoffPaymentOptions()}
+  1958→      {view === "dropoff-courier" && renderCourierLogin()}
+  1959→      {view === "courier-dashboard" && renderCourierDashboard()}
+  1960→      {view === "pickup" && renderPickup()}
+  1961→      {view === "payment" && renderPayment()}
+  1962→      {view === "success" && renderSuccess()}
+  1963→    </div>
+  1964→  )
+  1965→}
+  1966→
+  1967→// Wrap with kiosk error boundary for auto-recovery on white screen crashes
+  1968→export default function KioskPageWithErrorBoundary() {
+  1969→  return (
+  1970→    <KioskErrorBoundary>
+  1971→      <KioskPage />
+  1972→    </KioskErrorBoundary>
+  1973→  )
+  1974→}
+  1975→
