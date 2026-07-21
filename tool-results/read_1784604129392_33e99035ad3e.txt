@@ -1,0 +1,567 @@
+    50→   704→        }
+    51→   705→    }
+    52→   706→
+    53→   707→    // ============================================
+    54→   708→    // BACK BUTTON
+    55→   709→    // ============================================
+    56→   710→
+    57→   711→    @Override
+    58→   712→    public void onBackPressed() {
+    59→   713→        if (webView != null && webView.canGoBack()) {
+    60→   714→            webView.goBack();
+    61→   715→        }
+    62→   716→    }
+    63→   717→
+    64→   718→    // ============================================
+    65→   719→    // SECRET TRIGGER — 5-tap top-left corner
+    66→   720→    // ============================================
+    67→   721→
+    68→   722→    @Override
+    69→   723→    public boolean dispatchTouchEvent(MotionEvent ev) {
+    70→   724→        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+    71→   725→            try {
+    72→   726→                float density = getResources().getDisplayMetrics().density;
+    73→   727→                float hitAreaPx = SECRET_TAP_AREA_DP * density;
+    74→   728→                float x = ev.getRawX();
+    75→   729→                float y = ev.getRawY();
+    76→   730→                if (x < hitAreaPx && y < hitAreaPx) {
+    77→   731→                    long now = System.currentTimeMillis();
+    78→   732→                    if (now - lastSecretTapTime > SECRET_TAP_TIMEOUT_MS) {
+    79→   733→                        secretTapCount = 1;
+    80→   734→                    } else {
+    81→   735→                        secretTapCount++;
+    82→   736→                    }
+    83→   737→                    lastSecretTapTime = now;
+    84→   738→                    if (secretTapCount >= SECRET_TAP_COUNT) {
+    85→   739→                        secretTapCount = 0;
+    86→   740→                        Log.i(TAG, "Secret trigger activated");
+    87→   741→                        showPinDialog();
+    88→   742→                    }
+    89→   743→                }
+    90→   744→            } catch (Throwable t) {
+    91→   745→                Log.w(TAG, "Touch handler error: " + t.getMessage());
+    92→   746→            }
+    93→   747→        }
+    94→   748→        return super.dispatchTouchEvent(ev);
+    95→   749→    }
+    96→   750→
+    97→   751→    // ============================================
+    98→   752→    // TWO-TIER PIN SYSTEM
+    99→   753→    // ============================================
+   100→   754→
+   101→   755→    /**
+   102→   756→     * PIN entry dialog — titled "Device Code" (no hint about admin).
+   103→   757→     * Staff PIN → staff menu. Admin PIN → admin menu.
+   104→   758→     * 3 wrong attempts → 5 minute lockout.
+   105→   759→     */
+   106→   760→    private void showPinDialog() {
+   107→   761→        // Check lockout first
+   108→   762→        long lockoutUntil = getPrefs().getLong(KEY_PIN_LOCKOUT_UNTIL, 0);
+   109→   763→        if (System.currentTimeMillis() < lockoutUntil) {
+   110→   764→            long remainingSec = (lockoutUntil - System.currentTimeMillis()) / 1000;
+   111→   765→            Toast.makeText(this, "Locked. Try again in " + remainingSec + "s", Toast.LENGTH_LONG).show();
+   112→   766→            Log.w(TAG, "PIN entry locked out for " + remainingSec + " more seconds");
+   113→   767→            return;
+   114→   768→        }
+   115→   769→
+   116→   770→        try {
+   117→   771→            EditText pinInput = new EditText(this);
+   118→   772→            pinInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   119→   773→            pinInput.setHint("Enter device code");
+   120→   774→            pinInput.setMaxLines(1);
+   121→   775→
+   122→   776→            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+   123→   777→                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+   124→   778→            lp.setMargins(50, 20, 50, 20);
+   125→   779→            pinInput.setLayoutParams(lp);
+   126→   780→
+   127→   781→            LinearLayout container = new LinearLayout(this);
+   128→   782→            container.setOrientation(LinearLayout.VERTICAL);
+   129→   783→            container.setPadding(40, 20, 40, 20);
+   130→   784→            container.addView(pinInput);
+   131→   785→
+   132→   786→            new AlertDialog.Builder(this)
+   133→   787→                .setTitle("Device Code")
+   134→   788→                .setMessage("Enter code to continue.")
+   135→   789→                .setView(container)
+   136→   790→                .setPositiveButton("Confirm", (dialog, which) -> {
+   137→   791→                    String entered = pinInput.getText().toString().trim();
+   138→   792→                    if (entered.equals(getAdminPin())) {
+   139→   793→                        // Admin access — reset failed attempts
+   140→   794→                        resetPinAttempts();
+   141→   795→                        Log.i(TAG, "Admin access granted");
+   142→   796→                        showAdminMenu();
+   143→   797→                    } else if (entered.equals(getStaffPin())) {
+   144→   798→                        // Staff access — reset failed attempts
+   145→   799→                        resetPinAttempts();
+   146→   800→                        Log.i(TAG, "Staff access granted");
+   147→   801→                        showStaffMenu();
+   148→   802→                    } else {
+   149→   803→                        // Wrong PIN
+   150→   804→                        handleWrongPin();
+   151→   805→                    }
+   152→   806→                })
+   153→   807→                .setNegativeButton("Cancel", null)
+   154→   808→                .setCancelable(true)
+   155→   809→                .show();
+   156→   810→        } catch (Throwable t) {
+   157→   811→            Log.e(TAG, "PIN dialog failed: " + t.getMessage());
+   158→   812→        }
+   159→   813→    }
+   160→   814→
+   161→   815→    private void handleWrongPin() {
+   162→   816→        int attempts = getPrefs().getInt(KEY_PIN_FAILED_ATTEMPTS, 0) + 1;
+   163→   817→        getPrefs().edit().putInt(KEY_PIN_FAILED_ATTEMPTS, attempts).apply();
+   164→   818→        Log.w(TAG, "Wrong PIN attempt " + attempts + "/" + MAX_PIN_ATTEMPTS);
+   165→   819→
+   166→   820→        if (attempts >= MAX_PIN_ATTEMPTS) {
+   167→   821→            // Lock out for 5 minutes
+   168→   822→            long lockoutUntil = System.currentTimeMillis() + PIN_LOCKOUT_DURATION_MS;
+   169→   823→            getPrefs().edit()
+   170→   824→                .putLong(KEY_PIN_LOCKOUT_UNTIL, lockoutUntil)
+   171→   825→                .putInt(KEY_PIN_FAILED_ATTEMPTS, 0)
+   172→   826→                .apply();
+   173→   827→            Toast.makeText(this, "Too many attempts. Locked for 5 minutes.", Toast.LENGTH_LONG).show();
+   174→   828→        } else {
+   175→   829→            int remaining = MAX_PIN_ATTEMPTS - attempts;
+   176→   830→            new AlertDialog.Builder(this)
+   177→   831→                .setTitle("Incorrect Code")
+   178→   832→                .setMessage("The code you entered is incorrect.\n" + remaining + " attempt(s) remaining.")
+   179→   833→                .setPositiveButton("OK", null)
+   180→   834→                .show();
+   181→   835→        }
+   182→   836→    }
+   183→   837→
+   184→   838→    private void resetPinAttempts() {
+   185→   839→        getPrefs().edit()
+   186→   840→            .putInt(KEY_PIN_FAILED_ATTEMPTS, 0)
+   187→   841→            .putLong(KEY_PIN_LOCKOUT_UNTIL, 0)
+   188→   842→            .apply();
+   189→   843→    }
+   190→   844→
+   191→   845→    // ============================================
+   192→   846→    // STAFF MENU — Basic access only
+   193→   847→    // ============================================
+   194→   848→
+   195→   849→    private void showStaffMenu() {
+   196→   850→        try {
+   197→   851→            String[] options = {
+   198→   852→                "WiFi Settings",
+   199→   853→                "Screen Orientation",
+   200→   854→                "Screen Brightness",
+   201→   855→                "Reload Kiosk",
+   202→   856→                "Close App"
+   203→   857→            };
+   204→   858→            new AlertDialog.Builder(this)
+   205→   859→                .setTitle("Device Settings")
+   206→   860→                .setItems(options, (dialog, which) -> {
+   207→   861→                    switch (which) {
+   208→   862→                        case 0: openWifiSettings(); break;
+   209→   863→                        case 1: showOrientationDialog(); break;
+   210→   864→                        case 2: showBrightnessDialog(); break;
+   211→   865→                        case 3: reloadKiosk(); break;
+   212→   866→                        case 4: closeApp(); break;
+   213→   867→                    }
+   214→   868→                })
+   215→   869→                .setNegativeButton("Cancel", null)
+   216→   870→                .setCancelable(true)
+   217→   871→                .show();
+   218→   872→        } catch (Throwable t) {
+   219→   873→            Log.e(TAG, "Staff menu failed: " + t.getMessage());
+   220→   874→        }
+   221→   875→    }
+   222→   876→
+   223→   877→    // ============================================
+   224→   878→    // ADMIN MENU — Full access
+   225→   879→    // ============================================
+   226→   880→
+   227→   881→    private void showAdminMenu() {
+   228→   882→        try {
+   229→   883→            String[] options = {
+   230→   884→                "Open Backend Panel",
+   231→   885→                "Change Server URL",
+   232→   886→                "Change Device Code (Staff)",
+   233→   887→                "Change Admin Code",
+   234→   888→                "Clear App Data & Cache",
+   235→   889→                "WiFi Settings",
+   236→   890→                "Screen Orientation",
+   237→   891→                "Screen Brightness",
+   238→   892→                "Toggle Screen Always-On",
+   239→   893→                "Reload Kiosk",
+   240→   894→                "Close App"
+   241→   895→            };
+   242→   896→            new AlertDialog.Builder(this)
+   243→   897→                .setTitle("Admin Settings")
+   244→   898→                .setItems(options, (dialog, which) -> {
+   245→   899→                    switch (which) {
+   246→   900→                        case 0: openBackendPanel(); break;
+   247→   901→                        case 1: showChangeServerUrlDialog(); break;
+   248→   902→                        case 2: showChangePinDialog("staff"); break;
+   249→   903→                        case 3: showChangePinDialog("admin"); break;
+   250→   904→                        case 4: showClearDataConfirmDialog(); break;
+   251→   905→                        case 5: openWifiSettings(); break;
+   252→   906→                        case 6: showOrientationDialog(); break;
+   253→   907→                        case 7: showBrightnessDialog(); break;
+   254→   908→                        case 8: showToggleScreenOnDialog(); break;
+   255→   909→                        case 9: reloadKiosk(); break;
+   256→   910→                        case 10: closeApp(); break;
+   257→   911→                    }
+   258→   912→                })
+   259→   913→                .setNegativeButton("Cancel", null)
+   260→   914→                .setCancelable(true)
+   261→   915→                .show();
+   262→   916→        } catch (Throwable t) {
+   263→   917→            Log.e(TAG, "Admin menu failed: " + t.getMessage());
+   264→   918→        }
+   265→   919→    }
+   266→   920→
+   267→   921→    // ============================================
+   268→   922→    // SETTINGS: ORIENTATION
+   269→   923→    // ============================================
+   270→   924→
+   271→   925→    private void showOrientationDialog() {
+   272→   926→        try {
+   273→   927→            String current = getOrientation();
+   274→   928→            String[] labels = {"Portrait (Vertical)", "Landscape (Horizontal)", "Auto-Rotate"};
+   275→   929→            String[] values = {"portrait", "landscape", "auto"};
+   276→   930→            int selectedIndex = 0;
+   277→   931→            for (int i = 0; i < values.length; i++) {
+   278→   932→                if (values[i].equals(current)) { selectedIndex = i; break; }
+   279→   933→            }
+   280→   934→            new AlertDialog.Builder(this)
+   281→   935→                .setTitle("Screen Orientation")
+   282→   936→                .setSingleChoiceItems(labels, selectedIndex, (dialog, which) -> {
+   283→   937→                    String chosen = values[which];
+   284→   938→                    getPrefs().edit().putString(KEY_ORIENTATION, chosen).apply();
+   285→   939→                    applySavedOrientation();
+   286→   940→                    Toast.makeText(this, "Orientation: " + labels[which], Toast.LENGTH_SHORT).show();
+   287→   941→                    dialog.dismiss();
+   288→   942→                })
+   289→   943→                .setNegativeButton("Cancel", null)
+   290→   944→                .setCancelable(true)
+   291→   945→                .show();
+   292→   946→        } catch (Throwable t) {
+   293→   947→            Log.e(TAG, "Orientation dialog failed: " + t.getMessage());
+   294→   948→        }
+   295→   949→    }
+   296→   950→
+   297→   951→    // ============================================
+   298→   952→    // SETTINGS: BRIGHTNESS
+   299→   953→    // ============================================
+   300→   954→
+   301→   955→    private void showBrightnessDialog() {
+   302→   956→        try {
+   303→   957→            int currentBrightness = getPrefs().getInt(KEY_BRIGHTNESS, -1);
+   304→   958→            // If system default, estimate current brightness for the slider
+   305→   959→            if (currentBrightness < 0) {
+   306→   960→                try {
+   307→   961→                    currentBrightness = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
+   308→   962→                } catch (Throwable t) {
+   309→   963→                    currentBrightness = 128;
+   310→   964→                }
+   311→   965→            }
+   312→   966→
+   313→   967→            LinearLayout container = new LinearLayout(this);
+   314→   968→            container.setOrientation(LinearLayout.VERTICAL);
+   315→   969→            container.setPadding(40, 30, 40, 10);
+   316→   970→
+   317→   971→            SeekBar seekBar = new SeekBar(this);
+   318→   972→            seekBar.setMax(255);
+   319→   973→            seekBar.setProgress(currentBrightness);
+   320→   974→            seekBar.setPadding(0, 20, 0, 20);
+   321→   975→
+   322→   976→            TextView label = new TextView(this);
+   323→   977→            label.setText("Brightness: " + currentBrightness);
+   324→   978→            label.setTextColor(0xFF999999);
+   325→   979→            label.setTextSize(14);
+   326→   980→            label.setGravity(Gravity.CENTER);
+   327→   981→
+   328→   982→            seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+   329→   983→                @Override
+   330→   984→                public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+   331→   985→                    label.setText("Brightness: " + progress);
+   332→   986→                    if (fromUser) {
+   333→   987→                        WindowManager.LayoutParams lp = getWindow().getAttributes();
+   334→   988→                        lp.screenBrightness = progress / 255f;
+   335→   989→                        getWindow().setAttributes(lp);
+   336→   990→                    }
+   337→   991→                }
+   338→   992→                @Override public void onStartTrackingTouch(SeekBar sb) {}
+   339→   993→                @Override public void onStopTrackingTouch(SeekBar sb) {}
+   340→   994→            });
+   341→   995→
+   342→   996→            container.addView(seekBar);
+   343→   997→            container.addView(label);
+   344→   998→
+   345→   999→            new AlertDialog.Builder(this)
+   346→  1000→                .setTitle("Screen Brightness")
+   347→  1001→                .setView(container)
+   348→  1002→                .setPositiveButton("Save", (dialog, which) -> {
+   349→  1003→                    int val = seekBar.getProgress();
+   350→  1004→                    getPrefs().edit().putInt(KEY_BRIGHTNESS, val).apply();
+   351→  1005→                    Toast.makeText(this, "Brightness saved", Toast.LENGTH_SHORT).show();
+   352→  1006→                })
+   353→  1007→                .setNeutralButton("System Default", (dialog, which) -> {
+   354→  1008→                    getPrefs().edit().putInt(KEY_BRIGHTNESS, -1).apply();
+   355→  1009→                    WindowManager.LayoutParams lp = getWindow().getAttributes();
+   356→  1010→                    lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+   357→  1011→                    getWindow().setAttributes(lp);
+   358→  1012→                    Toast.makeText(this, "Brightness: system default", Toast.LENGTH_SHORT).show();
+   359→  1013→                })
+   360→  1014→                .setNegativeButton("Cancel", null)
+   361→  1015→                .setCancelable(true)
+   362→  1016→                .show();
+   363→  1017→        } catch (Throwable t) {
+   364→  1018→            Log.e(TAG, "Brightness dialog failed: " + t.getMessage());
+   365→  1019→        }
+   366→  1020→    }
+   367→  1021→
+   368→  1022→    // ============================================
+   369→  1023→    // SETTINGS: SERVER URL
+   370→  1024→    // ============================================
+   371→  1025→
+   372→  1026→    private void showChangeServerUrlDialog() {
+   373→  1027→        try {
+   374→  1028→            EditText input = new EditText(this);
+   375→  1029→            input.setText(getKioskUrl());
+   376→  1030→            input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+   377→  1031→            input.setSingleLine(true);
+   378→  1032→            input.setPadding(40, 20, 40, 20);
+   379→  1033→            input.setSelection(input.getText().length());
+   380→  1034→
+   381→  1035→            new AlertDialog.Builder(this)
+   382→  1036→                .setTitle("Server URL")
+   383→  1037→                .setMessage("Change the kiosk page URL. The app will reload after saving.")
+   384→  1038→                .setView(input)
+   385→  1039→                .setPositiveButton("Save & Reload", (dialog, which) -> {
+   386→  1040→                    String newUrl = input.getText().toString().trim();
+   387→  1041→                    if (!newUrl.isEmpty() && newUrl.startsWith("http")) {
+   388→  1042→                        getPrefs().edit().putString(KEY_SERVER_URL, newUrl).apply();
+   389→  1043→                        isViewingBackend = false;
+   390→  1044→                        reloadKiosk();
+   391→  1045→                        Toast.makeText(this, "Server URL updated", Toast.LENGTH_SHORT).show();
+   392→  1046→                    } else {
+   393→  1047→                        Toast.makeText(this, "Invalid URL", Toast.LENGTH_SHORT).show();
+   394→  1048→                    }
+   395→  1049→                })
+   396→  1050→                .setNeutralButton("Reset Default", (dialog, which) -> {
+   397→  1051→                    getPrefs().edit().putString(KEY_SERVER_URL, DEFAULT_KIOSK_URL).apply();
+   398→  1052→                    isViewingBackend = false;
+   399→  1053→                    reloadKiosk();
+   400→  1054→                    Toast.makeText(this, "Server URL reset to default", Toast.LENGTH_SHORT).show();
+   401→  1055→                })
+   402→  1056→                .setNegativeButton("Cancel", null)
+   403→  1057→                .setCancelable(true)
+   404→  1058→                .show();
+   405→  1059→        } catch (Throwable t) {
+   406→  1060→            Log.e(TAG, "Server URL dialog failed: " + t.getMessage());
+   407→  1061→        }
+   408→  1062→    }
+   409→  1063→
+   410→  1064→    // ============================================
+   411→  1065→    // SETTINGS: CHANGE PIN
+   412→  1066→    // ============================================
+   413→  1067→
+   414→  1068→    private void showChangePinDialog(String pinType) {
+   415→  1069→        try {
+   416→  1070→            String title = pinType.equals("admin") ? "Change Admin Code" : "Change Device Code";
+   417→  1071→
+   418→  1072→            EditText currentInput = new EditText(this);
+   419→  1073→            currentInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   420→  1074→            currentInput.setHint("Current code");
+   421→  1075→            currentInput.setMaxLines(1);
+   422→  1076→
+   423→  1077→            EditText newInput = new EditText(this);
+   424→  1078→            newInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   425→  1079→            newInput.setHint("New code (4+ digits)");
+   426→  1080→            newInput.setMaxLines(1);
+   427→  1081→
+   428→  1082→            EditText confirmInput = new EditText(this);
+   429→  1083→            confirmInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   430→  1084→            confirmInput.setHint("Confirm new code");
+   431→  1085→            confirmInput.setMaxLines(1);
+   432→  1086→
+   433→  1087→            LinearLayout container = new LinearLayout(this);
+   434→  1088→            container.setOrientation(LinearLayout.VERTICAL);
+   435→  1089→            container.setPadding(40, 20, 40, 20);
+   436→  1090→            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+   437→  1091→                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+   438→  1092→            lp.setMargins(0, 0, 0, 15);
+   439→  1093→            currentInput.setLayoutParams(lp);
+   440→  1094→            newInput.setLayoutParams(lp);
+   441→  1095→            confirmInput.setLayoutParams(lp);
+   442→  1096→            container.addView(currentInput);
+   443→  1097→            container.addView(newInput);
+   444→  1098→            container.addView(confirmInput);
+   445→  1099→
+   446→  1100→            new AlertDialog.Builder(this)
+   447→  1101→                .setTitle(title)
+   448→  1102→                .setView(container)
+   449→  1103→                .setPositiveButton("Save", (dialog, which) -> {
+   450→  1104→                    String current = currentInput.getText().toString().trim();
+   451→  1105→                    String newPin = newInput.getText().toString().trim();
+   452→  1106→                    String confirm = confirmInput.getText().toString().trim();
+   453→  1107→
+   454→  1108→                    String correctPin = pinType.equals("admin") ? getAdminPin() : getStaffPin();
+   455→  1109→                    String key = pinType.equals("admin") ? KEY_ADMIN_PIN : KEY_STAFF_PIN;
+   456→  1110→
+   457→  1111→                    if (!current.equals(correctPin)) {
+   458→  1112→                        Toast.makeText(this, "Current code is incorrect", Toast.LENGTH_LONG).show();
+   459→  1113→                        return;
+   460→  1114→                    }
+   461→  1115→                    if (newPin.length() < 4) {
+   462→  1116→                        Toast.makeText(this, "New code must be at least 4 digits", Toast.LENGTH_LONG).show();
+   463→  1117→                        return;
+   464→  1118→                    }
+   465→  1119→                    if (!newPin.equals(confirm)) {
+   466→  1120→                        Toast.makeText(this, "New codes do not match", Toast.LENGTH_LONG).show();
+   467→  1121→                        return;
+   468→  1122→                    }
+   469→  1123→                    // Don't allow staff and admin PINs to be the same
+   470→  1124→                    String otherPin = pinType.equals("admin") ? getStaffPin() : getAdminPin();
+   471→  1125→                    if (newPin.equals(otherPin)) {
+   472→  1126→                        Toast.makeText(this, "Cannot use the same code for both levels", Toast.LENGTH_LONG).show();
+   473→  1127→                        return;
+   474→  1128→                    }
+   475→  1129→                    getPrefs().edit().putString(key, newPin).apply();
+   476→  1130→                    Toast.makeText(this, "Code changed successfully", Toast.LENGTH_SHORT).show();
+   477→  1131→                    Log.i(TAG, pinType + " PIN changed");
+   478→  1132→                })
+   479→  1133→                .setNegativeButton("Cancel", null)
+   480→  1134→                .setCancelable(true)
+   481→  1135→                .show();
+   482→  1136→        } catch (Throwable t) {
+   483→  1137→            Log.e(TAG, "Change PIN dialog failed: " + t.getMessage());
+   484→  1138→        }
+   485→  1139→    }
+   486→  1140→
+   487→  1141→    // ============================================
+   488→  1142→    // SETTINGS: CLEAR DATA
+   489→  1143→    // ============================================
+   490→  1144→
+   491→  1145→    private void showClearDataConfirmDialog() {
+   492→  1146→        try {
+   493→  1147→            new AlertDialog.Builder(this)
+   494→  1148→                .setTitle("Clear App Data")
+   495→  1149→                .setMessage("This will clear the WebView cache, cookies, and stored data. Settings and PINs will be kept. The kiosk will reload after clearing.")
+   496→  1150→                .setPositiveButton("Clear & Reload", (dialog, which) -> {
+   497→  1151→                    try {
+   498→  1152→                        if (webView != null) {
+   499→  1153→                            webView.clearCache(true);
+   500→  1154→                            webView.clearFormData();
+   501→  1155→                            webView.clearHistory();
+   502→  1156→                            android.webkit.CookieManager.getInstance().removeAllCookies(null);
+   503→  1157→                            android.webkit.WebStorage.getInstance().deleteAllData();
+   504→  1158→                        }
+   505→  1159→                        Toast.makeText(this, "Data cleared — reloading", Toast.LENGTH_SHORT).show();
+   506→  1160→                        reloadKiosk();
+   507→  1161→                    } catch (Throwable t) {
+   508→  1162→                        Log.e(TAG, "Failed to clear data: " + t.getMessage());
+   509→  1163→                        Toast.makeText(this, "Error clearing data", Toast.LENGTH_SHORT).show();
+   510→  1164→                    }
+   511→  1165→                })
+   512→  1166→                .setNegativeButton("Cancel", null)
+   513→  1167→                .setCancelable(true)
+   514→  1168→                .show();
+   515→  1169→        } catch (Throwable t) {
+   516→  1170→            Log.e(TAG, "Clear data dialog failed: " + t.getMessage());
+   517→  1171→        }
+   518→  1172→    }
+   519→  1173→
+   520→  1174→    // ============================================
+   521→  1175→    // SETTINGS: TOGGLE SCREEN ALWAYS-ON
+   522→  1176→    // ============================================
+   523→  1177→
+   524→  1178→    private void showToggleScreenOnDialog() {
+   525→  1179→        try {
+   526→  1180→            boolean isOn = getPrefs().getBoolean(KEY_KEEP_SCREEN_ON, true);
+   527→  1181→            String label = isOn
+   528→  1182→                ? "Screen is currently: ALWAYS ON\n\nDisable to allow screen timeout?"
+   529→  1183→                : "Screen is currently: AUTO TIMEOUT\n\nEnable always-on for 24/7 kiosk operation?";
+   530→  1184→
+   531→  1185→            new AlertDialog.Builder(this)
+   532→  1186→                .setTitle("Screen Always-On")
+   533→  1187→                .setMessage(label)
+   534→  1188→                .setPositiveButton(isOn ? "Disable Always-On" : "Enable Always-On", (dialog, which) -> {
+   535→  1189→                    boolean newVal = !isOn;
+   536→  1190→                    getPrefs().edit().putBoolean(KEY_KEEP_SCREEN_ON, newVal).apply();
+   537→  1191→                    if (newVal) {
+   538→  1192→                        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+   539→  1193→                    } else {
+   540→  1194→                        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+   541→  1195→                    }
+   542→  1196→                    Toast.makeText(this, "Screen: " + (newVal ? "Always On" : "Auto Timeout"), Toast.LENGTH_SHORT).show();
+   543→  1197→                })
+   544→  1198→                .setNegativeButton("Cancel", null)
+   545→  1199→                .setCancelable(true)
+   546→  1200→                .show();
+   547→  1201→        } catch (Throwable t) {
+   548→  1202→            Log.e(TAG, "Screen toggle dialog failed: " + t.getMessage());
+   549→  1203→        }
+   550→  1204→    }
+   551→  1205→
+   552→  1206→    // ============================================
+   553→  1207→    // ACTIONS: BACKEND PANEL
+   554→  1208→    // ============================================
+   555→  1209→
+   556→  1210→    private void openBackendPanel() {
+   557→  1211→        try {
+   558→  1212→            isViewingBackend = true;
+   559→  1213→            String url = getBackendUrl();
+   560→  1214→            if (webView != null) {
+   561→  1215→                webView.loadUrl(url);
+   562→  1216→                Log.i(TAG, "Loading backend panel: " + url);
+   563→  1217→            }
+   564→  1218→            Toast.makeText(this, "Backend Panel loaded\nUse 5-tap + code to return", Toast.LENGTH_LONG).show();
+   565→  1219→        } catch (Throwable t) {
+   566→  1220→            Log.e(TAG, "Failed to open backend: " + t.getMessage());
+   567→  1221→        }
+   568→  1222→    }
+   569→  1223→
+   570→  1224→    // ============================================
+   571→  1225→    // ACTIONS: WIFI SETTINGS
+   572→  1226→    // ============================================
+   573→  1227→
+   574→  1228→    private void openWifiSettings() {
+   575→  1229→        try {
+   576→  1230→            Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
+   577→  1231→            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+   578→  1232→            startActivity(intent);
+   579→  1233→        } catch (Throwable t) {
+   580→  1234→            // Fallback to general settings
+   581→  1235→            try {
+   582→  1236→                Intent intent = new Intent(Settings.ACTION_SETTINGS);
+   583→  1237→                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+   584→  1238→                startActivity(intent);
+   585→  1239→            } catch (Throwable t2) {
+   586→  1240→                Log.e(TAG, "Failed to open any settings: " + t2.getMessage());
+   587→  1241→            }
+   588→  1242→        }
+   589→  1243→    }
+   590→  1244→
+   591→  1245→    // ============================================
+   592→  1246→    // ACTIONS: RELOAD & CLOSE
+   593→  1247→    // ============================================
+   594→  1248→
+   595→  1249→    private void reloadKiosk() {
+   596→  1250→        isShowingOfflinePage = false;
+   597→  1251→        isViewingBackend = false;
+   598→  1252→        reconnectAttempts = 0;
+   599→  1253→        if (webView != null) {
+   600→  1254→            try {
+   601→  1255→                webView.clearCache(true);
+   602→  1256→                webView.loadUrl(getKioskUrl());
+   603→  1257→            } catch (Throwable t) {
+   604→  1258→                Log.e(TAG, "Failed to reload: " + t.getMessage());
+   605→  1259→            }
+   606→  1260→        }
+   607→  1261→    }
+   608→  1262→
+   609→  1263→    private void closeApp() {
+   610→  1264→        unregisterConnectivityMonitoring();
+   611→  1265→        if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
+   612→  1266→        finishAffinity();
+   613→  1267→        System.exit(0);
+   614→  1268→    }
+   615→  1269→}
+   616→  1270→

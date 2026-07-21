@@ -1,5 +1,9 @@
 [
     {
+        "merged": "com.pickupjamaica.kiosk.app-merged_res-20:/xml_file_paths.xml.flat",
+        "source": "com.pickupjamaica.kiosk.app-main-21:/xml/file_paths.xml"
+    },
+    {
         "merged": "com.pickupjamaica.kiosk.app-merged_res-20:/mipmap-xxhdpi_ic_launcher.png.flat",
         "source": "com.pickupjamaica.kiosk.app-main-21:/mipmap-xxhdpi/ic_launcher.png"
     },

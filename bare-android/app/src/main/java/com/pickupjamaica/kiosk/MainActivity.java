@@ -1,13 +1,16 @@
 package com.pickupjamaica.kiosk;
 
 import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInstaller;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -34,18 +37,31 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.FileProvider;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.security.MessageDigest;
+
+import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 
 /**
- * Pickup Jamaica Kiosk — Bare WebView Activity v3.0
+ * Pickup Jamaica Kiosk — Bare WebView Activity v3.3
  *
  * Two-tier security: Staff PIN (basic access) vs Admin PIN (full access).
+ * In-app update: checks server for new APK, downloads & installs.
  * Settings are persisted via SharedPreferences.
  *
  * Access Levels:
- *   Staff PIN → basic menu (WiFi, orientation, brightness, reload, close)
- *   Admin PIN → full menu (backend, server URL, change PINs, clear data + all staff options)
+ *   Staff PIN → basic menu (WiFi, orientation, brightness, reload, check updates, close)
+ *   Admin PIN → full menu (backend, server URL, change PINs, install updates, clear data + all staff options)
  *
  * The PIN dialog shows "Device Code" — no hint about admin access exists in the UI.
  * Staff never sees admin options. Admin access is invisible.
@@ -55,7 +71,8 @@ import javax.net.ssl.SSLContext;
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "PickupKiosk";
-    private static final String APP_VERSION = "3.2";
+    private static final String APP_VERSION = "3.3";
+    private static final int APP_VERSION_CODE = 7;
 
     // URLs
     private static final String DEFAULT_KIOSK_URL = "https://pickuplocker.vercel.app/kiosk-lite";
@@ -80,6 +97,13 @@ public class MainActivity extends AppCompatActivity {
     private static final int HEALTH_CHECK_INTERVAL_MS = 60000;   // 1 minute
     private static final int HEALTH_RELOAD_THRESHOLD = 2;        // After 2 failed checks, force reload (2 min total)
 
+    // In-app update settings
+    private static final String UPDATE_CHECK_URL = "/api/app-version";
+    private static final int UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
+    private static final int UPDATE_CHECK_DELAY_MS = 30000; // 30s after startup
+    private static final String UPDATE_DIR = "Updates";
+    private static final String APK_FILENAME = "pickup-update.apk";
+
     // SharedPreferences keys
     private static final String PREFS_NAME = "pickup_kiosk_prefs";
     private static final String KEY_STAFF_PIN = "staff_pin";
@@ -91,6 +115,16 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_PIN_FAILED_ATTEMPTS = "pin_failed_attempts";
     private static final String KEY_PIN_LOCKOUT_UNTIL = "pin_lockout_until";
     private static final String KEY_BRIGHTNESS = "brightness";       // 0-255, -1 = system default
+
+    // Update-related keys
+    private static final String KEY_LAST_UPDATE_CHECK = "last_update_check";
+    private static final String KEY_AVAILABLE_VERSION = "available_version";
+    private static final String KEY_AVAILABLE_VERSION_CODE = "available_version_code";
+    private static final String KEY_AVAILABLE_APK_URL = "available_apk_url";
+    private static final String KEY_AVAILABLE_CHECKSUM = "available_checksum";
+    private static final String KEY_AVAILABLE_CHANGELOG = "available_changelog";
+    private static final String KEY_FORCE_UPDATE = "force_update";
+    private static final String KEY_UPDATE_SKIPPED_VERSION = "update_skipped_version";
 
     // Defaults
     private static final String DEFAULT_STAFF_PIN = "1111";
@@ -109,6 +143,9 @@ public class MainActivity extends AppCompatActivity {
     private long lastSecretTapTime = 0;
     private int healthCheckFailCount = 0;
     private Runnable healthCheckRunnable;
+    private Runnable updateCheckRunnable;
+    private boolean isDownloadingUpdate = false;
+    private String pendingUpdateVersion = null;
 
     // ============================================
     // LIFECYCLE
@@ -152,6 +189,7 @@ public class MainActivity extends AppCompatActivity {
             configureWebView();
             registerConnectivityMonitoring();
             startHealthMonitoring();
+            scheduleUpdateChecks();
 
             Log.i(TAG, "Kiosk v" + APP_VERSION + " started — loading " + getKioskUrl());
         } catch (Throwable t) {
@@ -178,6 +216,7 @@ public class MainActivity extends AppCompatActivity {
         isDestroyed = true;
         super.onDestroy();
         stopHealthMonitoring();
+        stopUpdateChecks();
         unregisterConnectivityMonitoring();
         if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
         if (webView != null) {
@@ -853,6 +892,7 @@ public class MainActivity extends AppCompatActivity {
                 "Screen Orientation",
                 "Screen Brightness",
                 "Reload Kiosk",
+                "Check for Updates",
                 "Close App"
             };
             new AlertDialog.Builder(this)
@@ -863,7 +903,8 @@ public class MainActivity extends AppCompatActivity {
                         case 1: showOrientationDialog(); break;
                         case 2: showBrightnessDialog(); break;
                         case 3: reloadKiosk(); break;
-                        case 4: closeApp(); break;
+                        case 4: checkForUpdatesNow(); break;
+                        case 5: closeApp(); break;
                     }
                 })
                 .setNegativeButton("Cancel", null)
@@ -880,11 +921,17 @@ public class MainActivity extends AppCompatActivity {
 
     private void showAdminMenu() {
         try {
+            // Build version info label
+            String updateLabel = pendingUpdateVersion != null
+                ? "Install Update (v" + pendingUpdateVersion + ")"
+                : "Check for Updates";
+
             String[] options = {
                 "Open Backend Panel",
                 "Change Server URL",
                 "Change Device Code (Staff)",
                 "Change Admin Code",
+                updateLabel,
                 "Clear App Data & Cache",
                 "WiFi Settings",
                 "Screen Orientation",
@@ -894,20 +941,21 @@ public class MainActivity extends AppCompatActivity {
                 "Close App"
             };
             new AlertDialog.Builder(this)
-                .setTitle("Admin Settings")
+                .setTitle("Admin Settings (v" + APP_VERSION + ")")
                 .setItems(options, (dialog, which) -> {
                     switch (which) {
                         case 0: openBackendPanel(); break;
                         case 1: showChangeServerUrlDialog(); break;
                         case 2: showChangePinDialog("staff"); break;
                         case 3: showChangePinDialog("admin"); break;
-                        case 4: showClearDataConfirmDialog(); break;
-                        case 5: openWifiSettings(); break;
-                        case 6: showOrientationDialog(); break;
-                        case 7: showBrightnessDialog(); break;
-                        case 8: showToggleScreenOnDialog(); break;
-                        case 9: reloadKiosk(); break;
-                        case 10: closeApp(); break;
+                        case 4: showUpdateMenu(); break;
+                        case 5: showClearDataConfirmDialog(); break;
+                        case 6: openWifiSettings(); break;
+                        case 7: showOrientationDialog(); break;
+                        case 8: showBrightnessDialog(); break;
+                        case 9: showToggleScreenOnDialog(); break;
+                        case 10: reloadKiosk(); break;
+                        case 11: closeApp(); break;
                     }
                 })
                 .setNegativeButton("Cancel", null)
@@ -1200,6 +1248,631 @@ public class MainActivity extends AppCompatActivity {
                 .show();
         } catch (Throwable t) {
             Log.e(TAG, "Screen toggle dialog failed: " + t.getMessage());
+        }
+    }
+
+    // ============================================
+    // IN-APP UPDATE SYSTEM
+    // ============================================
+
+    /**
+     * Schedules periodic update checks.
+     * First check happens 30s after startup, then every 4 hours.
+     */
+    private void scheduleUpdateChecks() {
+        updateCheckRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (!isDestroyed) {
+                    checkForUpdatesInBackground();
+                    mainHandler.postDelayed(this, UPDATE_CHECK_INTERVAL_MS);
+                }
+            }
+        };
+        // Delay first check — don't slow down startup
+        mainHandler.postDelayed(updateCheckRunnable, UPDATE_CHECK_DELAY_MS);
+        Log.i(TAG, "Update checks scheduled (first in " + UPDATE_CHECK_DELAY_MS + "ms, then every " + UPDATE_CHECK_INTERVAL_MS + "ms)");
+    }
+
+    private void stopUpdateChecks() {
+        if (updateCheckRunnable != null) {
+            mainHandler.removeCallbacks(updateCheckRunnable);
+            updateCheckRunnable = null;
+            Log.i(TAG, "Update checks stopped");
+        }
+    }
+
+    /**
+     * Checks for updates in the background (no UI).
+     * If an update is found and forceUpdate is true, shows a blocking dialog.
+     * Otherwise, stores the info for the admin to install later.
+     */
+    private void checkForUpdatesInBackground() {
+        new Thread(() -> {
+            try {
+                String baseUrl = getKioskUrl();
+                // Extract origin from kiosk URL
+                String origin = baseUrl;
+                if (baseUrl.contains("//")) {
+                    int pathStart = baseUrl.indexOf("//", baseUrl.indexOf("//") + 1);
+                    if (pathStart > 0) {
+                        // Find the first / after the host
+                        int slashIndex = baseUrl.indexOf("/", baseUrl.indexOf("//") + 2);
+                        if (slashIndex > 0) {
+                            origin = baseUrl.substring(0, slashIndex);
+                        } else {
+                            origin = baseUrl;
+                        }
+                    }
+                }
+                String checkUrl = origin + UPDATE_CHECK_URL;
+                Log.i(TAG, "Checking for updates: " + checkUrl);
+
+                URL url = new URL(checkUrl);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(15000);
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("User-Agent", "PickupKiosk/" + APP_VERSION);
+
+                int responseCode = conn.getResponseCode();
+                if (responseCode != 200) {
+                    Log.w(TAG, "Update check failed: HTTP " + responseCode);
+                    return;
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder response = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                }
+                reader.close();
+
+                String jsonResponse = response.toString();
+                Log.i(TAG, "Update check response: " + jsonResponse);
+
+                // Parse JSON manually (no Gson/Jackson in bare build)
+                String serverVersion = extractJsonString(jsonResponse, "version");
+                int serverVersionCode = extractJsonInt(jsonResponse, "versionCode");
+                String apkUrl = extractJsonString(jsonResponse, "apkUrl");
+                String checksum = extractJsonString(jsonResponse, "checksum");
+                String changelog = extractJsonString(jsonResponse, "changelog");
+                boolean forceUpdate = extractJsonBoolean(jsonResponse, "forceUpdate");
+
+                if (serverVersion == null || serverVersion.isEmpty()) {
+                    Log.w(TAG, "Update check: no version info in response");
+                    return;
+                }
+
+                // Store update info
+                getPrefs().edit()
+                    .putString(KEY_AVAILABLE_VERSION, serverVersion)
+                    .putInt(KEY_AVAILABLE_VERSION_CODE, serverVersionCode)
+                    .putString(KEY_AVAILABLE_APK_URL, apkUrl)
+                    .putString(KEY_AVAILABLE_CHECKSUM, checksum)
+                    .putString(KEY_AVAILABLE_CHANGELOG, changelog)
+                    .putBoolean(KEY_FORCE_UPDATE, forceUpdate)
+                    .putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis())
+                    .apply();
+
+                // Compare versions
+                if (serverVersionCode > APP_VERSION_CODE) {
+                    pendingUpdateVersion = serverVersion;
+                    Log.i(TAG, "Update available: v" + serverVersion + " (code " + serverVersionCode + "), force=" + forceUpdate);
+
+                    // If force update, show blocking dialog on main thread
+                    if (forceUpdate && mainHandler != null) {
+                        mainHandler.post(() -> {
+                            if (!isDestroyed) showForceUpdateDialog(serverVersion, changelog);
+                        });
+                    }
+                } else {
+                    pendingUpdateVersion = null;
+                    Log.i(TAG, "App is up to date (v" + APP_VERSION + ")");
+                }
+
+            } catch (Throwable t) {
+                Log.e(TAG, "Update check error: " + t.getMessage());
+            }
+        }).start();
+    }
+
+    /**
+     * Manual update check — triggered from menu. Shows result to user.
+     */
+    private void checkForUpdatesNow() {
+        if (isDownloadingUpdate) {
+            Toast.makeText(this, "Update is already downloading...", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Toast.makeText(this, "Checking for updates...", Toast.LENGTH_SHORT).show();
+
+        new Thread(() -> {
+            try {
+                String baseUrl = getKioskUrl();
+                String origin = baseUrl;
+                if (baseUrl.contains("//")) {
+                    int slashIndex = baseUrl.indexOf("/", baseUrl.indexOf("//") + 2);
+                    if (slashIndex > 0) {
+                        origin = baseUrl.substring(0, slashIndex);
+                    }
+                }
+                String checkUrl = origin + UPDATE_CHECK_URL;
+
+                URL url = new URL(checkUrl);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(15000);
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("User-Agent", "PickupKiosk/" + APP_VERSION);
+
+                int responseCode = conn.getResponseCode();
+                if (responseCode != 200) {
+                    mainHandler.post(() ->
+                        Toast.makeText(this, "Update check failed (HTTP " + responseCode + ")", Toast.LENGTH_LONG).show()
+                    );
+                    return;
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder response = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                }
+                reader.close();
+
+                String jsonResponse = response.toString();
+
+                String serverVersion = extractJsonString(jsonResponse, "version");
+                int serverVersionCode = extractJsonInt(jsonResponse, "versionCode");
+                String apkUrl = extractJsonString(jsonResponse, "apkUrl");
+                String checksum = extractJsonString(jsonResponse, "checksum");
+                String changelog = extractJsonString(jsonResponse, "changelog");
+                boolean forceUpdate = extractJsonBoolean(jsonResponse, "forceUpdate");
+
+                // Store update info
+                getPrefs().edit()
+                    .putString(KEY_AVAILABLE_VERSION, serverVersion)
+                    .putInt(KEY_AVAILABLE_VERSION_CODE, serverVersionCode)
+                    .putString(KEY_AVAILABLE_APK_URL, apkUrl)
+                    .putString(KEY_AVAILABLE_CHECKSUM, checksum)
+                    .putString(KEY_AVAILABLE_CHANGELOG, changelog)
+                    .putBoolean(KEY_FORCE_UPDATE, forceUpdate)
+                    .putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis())
+                    .apply();
+
+                if (serverVersionCode > APP_VERSION_CODE) {
+                    pendingUpdateVersion = serverVersion;
+                    mainHandler.post(() -> {
+                        if (!isDestroyed) {
+                            showUpdateAvailableDialog(serverVersion, changelog, apkUrl);
+                        }
+                    });
+                } else {
+                    pendingUpdateVersion = null;
+                    mainHandler.post(() ->
+                        Toast.makeText(this, "App is up to date (v" + APP_VERSION + ")", Toast.LENGTH_LONG).show()
+                    );
+                }
+
+            } catch (Throwable t) {
+                mainHandler.post(() ->
+                    Toast.makeText(this, "Update check failed: " + t.getMessage(), Toast.LENGTH_LONG).show()
+                );
+                Log.e(TAG, "Manual update check error: " + t.getMessage());
+            }
+        }).start();
+    }
+
+    /**
+     * Shows the update sub-menu with details and actions.
+     */
+    private void showUpdateMenu() {
+        try {
+            String availableVersion = getPrefs().getString(KEY_AVAILABLE_VERSION, "");
+            String changelog = getPrefs().getString(KEY_AVAILABLE_CHANGELOG, "");
+            long lastCheck = getPrefs().getLong(KEY_LAST_UPDATE_CHECK, 0);
+
+            String lastCheckStr = lastCheck > 0
+                ? new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date(lastCheck))
+                : "Never";
+
+            if (availableVersion != null && !availableVersion.isEmpty() && pendingUpdateVersion != null) {
+                // Update available — show details
+                String message = "Current version: v" + APP_VERSION + "\n"
+                    + "Available: v" + availableVersion + "\n"
+                    + "Last checked: " + lastCheckStr + "\n\n"
+                    + (changelog != null && !changelog.isEmpty() ? "What's new:\n" + changelog : "");
+
+                new AlertDialog.Builder(this)
+                    .setTitle("Update Available")
+                    .setMessage(message)
+                    .setPositiveButton("Download & Install", (dialog, which) -> {
+                        downloadAndInstallUpdate();
+                    })
+                    .setNeutralButton("Check Again", (dialog, which) -> {
+                        checkForUpdatesNow();
+                    })
+                    .setNegativeButton("Later", null)
+                    .setCancelable(true)
+                    .show();
+            } else {
+                // No update available
+                String message = "Current version: v" + APP_VERSION + "\n"
+                    + "Last checked: " + lastCheckStr;
+
+                new AlertDialog.Builder(this)
+                    .setTitle("App Updates")
+                    .setMessage(message)
+                    .setPositiveButton("Check Now", (dialog, which) -> {
+                        checkForUpdatesNow();
+                    })
+                    .setNegativeButton("Close", null)
+                    .setCancelable(true)
+                    .show();
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "Update menu failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Shows a non-dismissable dialog when forceUpdate is true.
+     */
+    private void showForceUpdateDialog(String version, String changelog) {
+        try {
+            String message = "A critical update (v" + version + ") is available.\n\n"
+                + (changelog != null && !changelog.isEmpty() ? changelog + "\n\n" : "")
+                + "The app must be updated to continue.";
+
+            new AlertDialog.Builder(this)
+                .setTitle("Critical Update Required")
+                .setMessage(message)
+                .setCancelable(false)
+                .setPositiveButton("Update Now", (dialog, which) -> {
+                    downloadAndInstallUpdate();
+                })
+                .show();
+        } catch (Throwable t) {
+            Log.e(TAG, "Force update dialog failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Shows a dismissable dialog when an optional update is available.
+     */
+    private void showUpdateAvailableDialog(String version, String changelog, String apkUrl) {
+        try {
+            String message = "A new version (v" + version + ") is available.\n\n"
+                + (changelog != null && !changelog.isEmpty() ? "What's new:\n" + changelog : "");
+
+            new AlertDialog.Builder(this)
+                .setTitle("Update Available")
+                .setMessage(message)
+                .setPositiveButton("Download & Install", (dialog, which) -> {
+                    downloadAndInstallUpdate();
+                })
+                .setNeutralButton("Skip This Version", (dialog, which) -> {
+                    getPrefs().edit().putString(KEY_UPDATE_SKIPPED_VERSION, version).apply();
+                    Toast.makeText(this, "v" + version + " skipped. Admin can still install from menu.", Toast.LENGTH_LONG).show();
+                })
+                .setNegativeButton("Later", null)
+                .setCancelable(true)
+                .show();
+        } catch (Throwable t) {
+            Log.e(TAG, "Update available dialog failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Downloads the APK update and triggers installation.
+     * Shows a progress dialog during download.
+     */
+    private void downloadAndInstallUpdate() {
+        if (isDownloadingUpdate) {
+            Toast.makeText(this, "Update is already downloading...", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String apkUrl = getPrefs().getString(KEY_AVAILABLE_APK_URL, "");
+        if (apkUrl == null || apkUrl.isEmpty()) {
+            // Construct download URL from server
+            String baseUrl = getKioskUrl();
+            String origin = baseUrl;
+            if (baseUrl.contains("//")) {
+                int slashIndex = baseUrl.indexOf("/", baseUrl.indexOf("//") + 2);
+                if (slashIndex > 0) {
+                    origin = baseUrl.substring(0, slashIndex);
+                }
+            }
+            apkUrl = origin + "/api/app-version/download";
+        }
+
+        final String downloadUrl = apkUrl;
+        isDownloadingUpdate = true;
+
+        ProgressDialog progressDialog = new ProgressDialog(this);
+        progressDialog.setTitle("Downloading Update");
+        progressDialog.setMessage("Preparing download...");
+        progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+        progressDialog.setMax(100);
+        progressDialog.setProgress(0);
+        progressDialog.setCancelable(false);
+        progressDialog.show();
+
+        new Thread(() -> {
+            try {
+                // Create update directory
+                File updateDir = new File(getExternalFilesDir(null), UPDATE_DIR);
+                if (!updateDir.exists()) {
+                    updateDir.mkdirs();
+                }
+                File apkFile = new File(updateDir, APK_FILENAME);
+
+                // Delete any previous download
+                if (apkFile.exists()) {
+                    apkFile.delete();
+                }
+
+                Log.i(TAG, "Downloading update from: " + downloadUrl);
+
+                URL url = new URL(downloadUrl);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(30000);
+                conn.setReadTimeout(120000); // 2 min read timeout for large APK
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("User-Agent", "PickupKiosk/" + APP_VERSION);
+
+                int responseCode = conn.getResponseCode();
+                if (responseCode != 200) {
+                    mainHandler.post(() -> {
+                        progressDialog.dismiss();
+                        isDownloadingUpdate = false;
+                        Toast.makeText(this, "Download failed (HTTP " + responseCode + ")", Toast.LENGTH_LONG).show();
+                    });
+                    return;
+                }
+
+                int contentLength = conn.getContentLength();
+                InputStream input = conn.getInputStream();
+                FileOutputStream output = new FileOutputStream(apkFile);
+
+                byte[] buffer = new byte[8192];
+                long totalRead = 0;
+                int bytesRead;
+
+                while ((bytesRead = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, bytesRead);
+                    totalRead += bytesRead;
+
+                    if (contentLength > 0) {
+                        int progress = (int) ((totalRead * 100) / contentLength);
+                        final int p = progress;
+                        final long mb = totalRead / (1024 * 1024);
+                        mainHandler.post(() -> {
+                            if (!isDestroyed) {
+                                progressDialog.setProgress(p);
+                                progressDialog.setMessage("Downloaded: " + mb + " MB");
+                            }
+                        });
+                    }
+                }
+
+                output.flush();
+                output.close();
+                input.close();
+
+                // Verify checksum if available
+                String expectedChecksum = getPrefs().getString(KEY_AVAILABLE_CHECKSUM, "");
+                if (expectedChecksum != null && !expectedChecksum.isEmpty() && expectedChecksum.startsWith("sha256:")) {
+                    String expectedHash = expectedChecksum.substring(7);
+                    String actualHash = computeSHA256(apkFile);
+                    if (!expectedHash.equalsIgnoreCase(actualHash)) {
+                        Log.e(TAG, "Checksum mismatch! Expected: " + expectedHash + " Got: " + actualHash);
+                        apkFile.delete();
+                        mainHandler.post(() -> {
+                            progressDialog.dismiss();
+                            isDownloadingUpdate = false;
+                            new AlertDialog.Builder(this)
+                                .setTitle("Update Failed")
+                                .setMessage("Downloaded file is corrupted (checksum mismatch). Please try again.")
+                                .setPositiveButton("OK", null)
+                                .show();
+                        });
+                        return;
+                    }
+                    Log.i(TAG, "Checksum verified OK");
+                }
+
+                // Download complete — install
+                mainHandler.post(() -> {
+                    if (isDestroyed) return;
+                    progressDialog.dismiss();
+                    isDownloadingUpdate = false;
+                    installApk(apkFile);
+                });
+
+            } catch (Throwable t) {
+                Log.e(TAG, "Download failed: " + t.getMessage(), t);
+                mainHandler.post(() -> {
+                    if (!isDestroyed) {
+                        progressDialog.dismiss();
+                        isDownloadingUpdate = false;
+                        new AlertDialog.Builder(this)
+                            .setTitle("Download Failed")
+                            .setMessage("Could not download update: " + t.getMessage())
+                            .setPositiveButton("OK", null)
+                            .show();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /**
+     * Installs the downloaded APK file.
+     * On Android 7+, uses FileProvider for the content URI.
+     * On Android 5-6, uses a file:// URI directly.
+     */
+    private void installApk(File apkFile) {
+        try {
+            if (!apkFile.exists()) {
+                Toast.makeText(this, "APK file not found", Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            Log.i(TAG, "Installing APK: " + apkFile.getAbsolutePath() + " (" + apkFile.length() + " bytes)");
+
+            Intent installIntent;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                // Android 7+: Must use FileProvider
+                Uri apkUri = FileProvider.getUriForFile(
+                    this,
+                    "com.pickupjamaica.kiosk.fileprovider",
+                    apkFile
+                );
+                installIntent = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+                installIntent.setData(apkUri);
+                installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                // Android 5-6: Can use file:// URI
+                installIntent = new Intent(Intent.ACTION_VIEW);
+                installIntent.setDataAndType(
+                    Uri.fromFile(apkFile),
+                    "application/vnd.android.package-archive"
+                );
+            }
+
+            installIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            // Check if we can install packages (Android 8+ requires permission)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!getPackageManager().canRequestPackageInstalls()) {
+                    // Need to prompt user to enable install permission
+                    new AlertDialog.Builder(this)
+                        .setTitle("Install Permission Required")
+                        .setMessage("To install updates, this app needs permission to install unknown apps.\n\nPlease enable it in Settings and then try again.")
+                        .setPositiveButton("Open Settings", (dialog, which) -> {
+                            Intent settingsIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+                            settingsIntent.setData(Uri.parse("package:com.pickupjamaica.kiosk"));
+                            settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(settingsIntent);
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                    return;
+                }
+            }
+
+            startActivity(installIntent);
+
+        } catch (Throwable t) {
+            Log.e(TAG, "Install failed: " + t.getMessage(), t);
+            Toast.makeText(this, "Install failed: " + t.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /**
+     * Computes SHA-256 hash of a file.
+     */
+    private String computeSHA256(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        FileInputStream fis = new FileInputStream(file);
+        byte[] buffer = new byte[8192];
+        int bytesRead;
+        while ((bytesRead = fis.read(buffer)) != -1) {
+            digest.update(buffer, 0, bytesRead);
+        }
+        fis.close();
+
+        byte[] hash = digest.digest();
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : hash) {
+            String hex = Integer.toHexString(0xff & b);
+            if (hex.length() == 1) hexString.append('0');
+            hexString.append(hex);
+        }
+        return hexString.toString();
+    }
+
+    /**
+     * Simple JSON string extractor (no external JSON library).
+     * Handles: "key": "value"
+     */
+    private String extractJsonString(String json, String key) {
+        try {
+            String searchKey = "\"" + key + "\"";
+            int keyIndex = json.indexOf(searchKey);
+            if (keyIndex < 0) return "";
+
+            // Find the colon after the key
+            int colonIndex = json.indexOf(":", keyIndex + searchKey.length());
+            if (colonIndex < 0) return "";
+
+            // Find the opening quote of the value
+            int openQuote = json.indexOf("\"", colonIndex + 1);
+            if (openQuote < 0) return "";
+
+            // Find the closing quote
+            int closeQuote = json.indexOf("\"", openQuote + 1);
+            if (closeQuote < 0) return "";
+
+            return json.substring(openQuote + 1, closeQuote);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * Simple JSON integer extractor.
+     */
+    private int extractJsonInt(String json, String key) {
+        try {
+            String searchKey = "\"" + key + "\"";
+            int keyIndex = json.indexOf(searchKey);
+            if (keyIndex < 0) return 0;
+
+            int colonIndex = json.indexOf(":", keyIndex + searchKey.length());
+            if (colonIndex < 0) return 0;
+
+            // Skip whitespace
+            int start = colonIndex + 1;
+            while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+
+            // Find end of number
+            int end = start;
+            while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) end++;
+
+            if (start >= end) return 0;
+            return Integer.parseInt(json.substring(start, end));
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /**
+     * Simple JSON boolean extractor.
+     */
+    private boolean extractJsonBoolean(String json, String key) {
+        try {
+            String searchKey = "\"" + key + "\"";
+            int keyIndex = json.indexOf(searchKey);
+            if (keyIndex < 0) return false;
+
+            int colonIndex = json.indexOf(":", keyIndex + searchKey.length());
+            if (colonIndex < 0) return false;
+
+            // Check if "true" appears before the next comma or closing brace
+            int start = colonIndex + 1;
+            while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+
+            return json.substring(start, Math.min(start + 4, json.length())).equals("true");
+        } catch (Throwable t) {
+            return false;
         }
     }
 

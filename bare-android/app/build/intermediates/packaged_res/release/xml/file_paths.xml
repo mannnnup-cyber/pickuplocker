@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- External storage for downloaded APK updates -->
+    <external-path name="external_files" path="." />
+    <!-- App-specific external storage -->
+    <external-files-path name="apk_updates" path="Updates/" />
+    <!-- Internal cache for APK downloads -->
+    <cache-path name="cache" path="." />
+    <!-- Files directory -->
+    <files-path name="files" path="." />
+</paths>

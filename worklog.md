@@ -49,3 +49,49 @@ Stage Summary:
   5. Stuck loading states auto-recover after 30 seconds
   6. Crashed sessions auto-reload on next page visit
   7. Server-side Bestwond API calls timeout after 15 seconds (prevents server hangs)
+
+---
+Task ID: 3
+Agent: main
+Task: Implement in-app update system for the PICKUP kiosk APK + update documentation
+
+Work Log:
+- Created /api/app-version endpoint (GET + POST) for version checking and config updates
+- Created /api/app-version/download endpoint for serving APK files
+- Created app-version.json config file for version management
+- Added in-app update system to MainActivity.java:
+  - Auto-checks for updates on startup (30s delay) and every 4 hours
+  - Manual "Check for Updates" in both Staff and Admin menus
+  - "Install Update" option in Admin menu (shows pending version)
+  - Downloads APK with progress dialog (MB counter)
+  - SHA-256 checksum verification
+  - FileProvider for Android 7+ APK install
+  - Android 8+ install permission handling
+  - Force update support (blocking dialog)
+  - Skip version support
+- Added new permissions to AndroidManifest.xml:
+  - REQUEST_INSTALL_PACKAGES
+  - WRITE_EXTERNAL_STORAGE
+  - READ_EXTERNAL_STORAGE
+- Added FileProvider declaration to AndroidManifest.xml
+- Created file_paths.xml for FileProvider configuration
+- Updated build.gradle version to 3.3 (code 7)
+- Updated build script for v3.3
+- Installed JDK 17 (required for Gradle build due to AGP jlink bug with JDK 21)
+- Installed Android SDK Platform 34 + Build Tools
+- Successfully built v3.3 APK via full Gradle build
+- Updated README.md comprehensively with all missing features:
+  - In-app update documentation
+  - Kiosk app details (PINs, menus, release history)
+  - Manual payment system
+  - Staff/courier invitations
+  - API endpoint updates
+  - Full feature list
+
+Stage Summary:
+- In-app update system fully implemented in v3.3 APK
+- API endpoints created: /api/app-version (GET/POST), /api/app-version/download (GET)
+- APK built: PickupJamaica-kiosk-v3.3.apk (3.0MB, versionCode 7)
+- SHA-256: 8f5d217220ce8f0a76ffd5c4f06004dedd6aa5040840e21d63e78479ec54f6fb
+- README.md fully updated with all current features
+- To deploy an update: edit app-version.json, place APK in /releases/, redeploy

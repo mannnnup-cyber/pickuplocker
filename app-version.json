@@ -1,0 +1,9 @@
+{
+  "version": "3.3",
+  "versionCode": 7,
+  "apkUrl": "https://pickuplocker.vercel.app/api/app-version/download",
+  "checksum": "sha256:8f5d217220ce8f0a76ffd5c4f06004dedd6aa5040840e21d63e78479ec54f6fb",
+  "changelog": "v3.3: In-app update system - check, download and install updates directly from the kiosk app. New permissions for APK install and storage access.",
+  "minVersion": "3.0",
+  "forceUpdate": false
+}
