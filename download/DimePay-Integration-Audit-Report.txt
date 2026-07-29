@@ -1,0 +1,557 @@
+================================================================================
+  DIMEPAY INTEGRATION AUDIT REPORT — PICKUP JAMAICA
+  Generated: 2026-07-30
+  Security: All sensitive values (API keys, tokens, customer data) are REDACTED
+================================================================================
+
+
+1. WHICH DIMEPAY FLOW IS ACTUALLY BEING USED?
+──────────────────────────────────────────────
+  @dimepay/web-sdk embedded widget — the initPayment() SDK flow.
+
+  The app does NOT use POST /orders returning order_url, nor /payments/hosted-page,
+  nor a standalone card-request/tokenization endpoint. Instead, the server generates
+  a JWT signed with the Secret Key, bundles it into an SDKInitConfig object, and the
+  frontend calls initPayment() from @dimepay/web-sdk@1.0.15 loaded via CDN
+  (https://unpkg.com/@dimepay/web-sdk@1.0.15/dist/dimepay.es.js). The widget mounts
+  into a <div id="dimepay-widget"> on the /pay/[reference] page.
+
+  The chargeCardToken() function does make a server-to-server POST /api/v1/charges
+  call, but this is for future/saved-card charges, not the primary checkout flow.
+
+
+2. EXACT PRODUCTION API BASE URL AND ENDPOINT
+──────────────────────────────────────────────
+  SDK widget (client-side):     No direct API call — the widget handles its own
+                                communication with DimePay
+  Server-to-server charges:     POST https://api.dimepay.app/api/v1/charges
+  Server-to-server authoriz.:   POST https://api.dimepay.app/api/v1/authorizations
+  Capture:                      POST https://api.dimepay.app/api/v1/charges/{chargeId}/capture
+  Webhook receiver:             POST https://pickupja.com/api/webhooks/dimepay
+
+  NOTE: The same base URL (https://api.dimepay.app) is used for both sandbox and
+  live. Environment is determined by the test: boolean flag in the SDK init config
+  and by which credentials (sandbox vs live) are used.
+
+
+3. HTTP METHOD USED
+────────────────────
+  SDK widget flow:       No direct HTTP call from the server to DimePay for order
+                         creation. The JWT is generated server-side and passed to
+                         the frontend widget.
+  Charge card token:     POST
+  Capture authorization: POST
+  Webhook:               Receives POST from DimePay
+
+
+4. AUTHENTICATION HEADERS SENT (names only, values redacted)
+────────────────────────────────────────────────────────────
+  For the server-to-server chargeCardToken() and captureAuthorization() calls:
+
+    Header            Redacted Value
+    ────────────────  ──────────────────
+    Content-Type      application/json
+    Authorization     Bearer [REDACTED]
+    X-Client-Id       [REDACTED]
+
+  For the SDK widget flow, authentication is via the JWT itself (signed with the
+  Secret Key), not HTTP headers.
+
+
+5. API ACCESS KEY UNDER client_key? BEARER AUTH USED?
+──────────────────────────────────────────────────────
+  client_key:   NOT used anywhere in the codebase. The SDK uses client_id (passed
+                as clientId in the init config).
+
+  Bearer auth:  YES, used for server-to-server calls (chargeCardToken,
+                captureAuthorization). The Secret Key is sent as
+                "Bearer [secretKey]" in the Authorization header.
+
+
+6. WHICH CREDENTIAL SIGNS THE JWT?
+───────────────────────────────────
+  The Secret Key (prefixed sk_). The JWT is signed with:
+
+    crypto.createHmac('sha256', config.secretKey)
+
+  The Client ID is NOT used for signing — it is passed separately as clientId in
+  the SDK init config.
+
+
+7. ARE API KEY AND SIGNING SECRET FROM THE SAME MERCHANT/ACCOUNT/ENVIRONMENT?
+──────────────────────────────────────────────────────────────────────────────
+  The system stores BOTH sandbox and live credential pairs:
+
+    Setting Key                    Purpose
+    ─────────────────────────────  ──────────────────
+    dimepay_sandbox_clientId       Sandbox Client ID
+    dimepay_sandbox_secretKey      Sandbox Secret Key
+    dimepay_live_clientId          Live Client ID
+    dimepay_live_secretKey         Live Secret Key
+    dimepay_sandboxMode            true = sandbox, false = live
+
+  The effective credentials are selected based on the sandboxMode setting. When
+  sandboxMode is false, the LIVE Client ID and Secret Key are used together. There
+  is no cross-mixing of sandbox and live credentials in the code — they are always
+  paired. The code logs show the live Client ID prefix is ck_rdq-r7tqOqdZ,
+  confirming it is a live credential.
+
+
+8. CREDENTIAL DETAILS (redacted)
+─────────────────────────────────
+  ┌──────────────────────┬───────────────────────────────┬──────────┬────────┬────────┐
+  │ Credential           │ Env Var / DB Key               │ Mode     │ Length │ Prefix │
+  ├──────────────────────┼───────────────────────────────┼──────────┼────────┼────────┤
+  │ Client ID (live)     │ dimepay_live_clientId          │ Live     │ ~30    │ ck_    │
+  │ Secret Key (live)    │ dimepay_live_secretKey         │ Live     │ ~30    │ sk_    │
+  │ Client ID (sandbox)  │ dimepay_sandbox_clientId       │ Sandbox  │ ~30    │ ck_    │
+  │ Secret Key (sandbox) │ dimepay_sandbox_secretKey      │ Sandbox  │ ~30    │ sk_    │
+  └──────────────────────┴───────────────────────────────┴──────────┴────────┴────────┘
+
+  From the test script (test-jwt-gen.ts):
+    Client ID:  starts with ck_rdq-r7tqOqdZ-, length ~30
+    Secret Key: starts with sk_zPS5d7zPpXxcT, length ~30
+
+  SHA-256 fingerprints cannot be computed without the actual values.
+
+
+9. IS THE SIGNING SECRET USED AS STORED, TRIMMED, BASE64-DECODED, OR TRANSFORMED?
+──────────────────────────────────────────────────────────────────────────────────
+  Used EXACTLY as stored. No trimming, no Base64 decoding, no transformation.
+
+    crypto.createHmac('sha256', config.secretKey)
+
+  The raw string from the database setting is passed directly to the HMAC function.
+
+
+10. JWT ALGORITHM — CONFIRM HS256?
+───────────────────────────────────
+  YES — HS256 confirmed. The JWT header is:
+
+    { "alg": "HS256", "typ": "JWT" }
+
+
+11. IS iat ADDED AUTOMATICALLY BY THE JWT LIBRARY? SECONDS OR MILLISECONDS?
+────────────────────────────────────────────────────────────────────────────
+  iat is added MANUALLY (not by a JWT library). The code uses Node.js crypto
+  directly to build the JWT — no JWT library is used.
+
+    const now = Math.floor(Date.now() / 1000);  // SECONDS
+
+  iat is expressed in SECONDS (Unix epoch). exp is set to now + 3600 (1 hour).
+
+
+12. EXACT DECODED JWT PAYLOAD (redacted)
+─────────────────────────────────────────
+  From the createSDKJWT function, a typical drop-off credit payment payload:
+
+    {
+      "id": "DROPOFF-1722XXXXXXXXX",
+      "total": 200,
+      "subtotal": 200,
+      "description": "Drop-off Credit - M Box",
+      "currency": "JMD",
+      "tax": 0,
+      "fees": [],
+      "items": [],
+      "fulfilled": true,
+      "webhookUrl": "https://pickupja.com/api/webhooks/dimepay",
+      "shippingPerson": {
+        "name": "Pickup Customer",
+        "email": "[REDACTED]",
+        "street": "",
+        "city": "Kingston",
+        "countryCode": "JM",
+        "countryName": "Jamaica",
+        "postalCode": "",
+        "stateOrProvinceCode": "",
+        "stateOrProvinceName": "",
+        "phone": "[REDACTED]"
+      },
+      "billingPerson": {
+        "name": "Pickup Customer",
+        "email": "[REDACTED]",
+        "street": "",
+        "city": "Kingston",
+        "countryCode": "JM",
+        "countryName": "Jamaica",
+        "postalCode": "",
+        "stateOrProvinceCode": "",
+        "stateOrProvinceName": "",
+        "phone": "[REDACTED]"
+      },
+      "type": "dropoff_credit",
+      "boxSize": "M",
+      "saveCode": "[REDACTED]",
+      "pickCode": "[REDACTED]",
+      "customerId": "[REDACTED]",
+      "customerPhone": "[REDACTED]",
+      "customerEmail": "[REDACTED]",
+      "originalAmount": 200,
+      "feeAmount": 0,
+      "feePassedToCustomer": false,
+      "tokenize": true,
+      "iat": 1722XXXXXXXXX,
+      "exp": 1722XXXXXXXXX
+    }
+
+
+13. DATA TYPES FOR EVERY JWT FIELD
+───────────────────────────────────
+  Field                  Type
+  ─────────────────────  ──────────────────
+  id                     string
+  total                  number
+  subtotal               number
+  description            string
+  currency               string
+  tax                    number
+  fees                   array (empty)
+  items                  array (empty)
+  fulfilled              boolean
+  webhookUrl             string
+  shippingPerson         object
+  billingPerson          object
+  type                   string (from metadata spread)
+  boxSize                string (from metadata)
+  saveCode               string (from metadata)
+  pickCode               string (from metadata)
+  customerId             string (from metadata)
+  customerPhone          string (from metadata)
+  customerEmail          string or null (from metadata)
+  originalAmount         number (from metadata)
+  feeAmount              number (from metadata)
+  feePassedToCustomer    boolean (from metadata)
+  tokenize               boolean (from metadata, card tokenization only)
+  iat                    number
+  exp                    number
+
+
+14. DOES THE SUCCESSFUL PAYLOAD INCLUDE THESE FIELDS?
+──────────────────────────────────────────────────────
+  Field                      Present?   Notes
+  ─────────────────────────  ─────────  ────────────────────────────────────────
+  webhookUrl                 YES        Passed as string
+  redirectUrl                NO         Not in JWT; used as onSuccess callback
+  checkoutUrl                NO         Not included
+  currency                   YES        "JMD"
+  id                         YES        Order reference string
+  subtotal                   YES        Same as total
+  total                      YES        Amount in JMD dollars
+  email                      NO         Not top-level; inside billingPerson/shippingPerson
+  description                YES
+  tax                        YES        Always 0
+  ipAddress                  NO         Not included
+  fulfilled                  YES        Always true
+  orderComments              NO         Not included
+  discount                   NO         Not included
+  items                      YES        Always empty array []
+  billingPerson              YES
+  shippingPerson             YES
+  referenceTransactionId     NO         Not included
+  taxes                      NO         Not included (only tax: 0)
+  fees                       YES        Always empty array []
+  tokenize                   CONDITIONAL Only in card tokenization requests
+  split                      NO         Not included
+
+
+15. FIELDS OMITTED COMPLETELY VS SENT AS EMPTY/zero/null
+────────────────────────────────────────────────────────
+  OMITTED COMPLETELY (not sent at all):
+    - redirectUrl     (not in JWT; used as SDK callback)
+    - checkoutUrl
+    - ipAddress
+    - orderComments
+    - discount
+    - referenceTransactionId
+    - taxes
+    - split
+
+  SENT AS EMPTY/ZERO VALUES:
+    - tax: 0                          (number zero)
+    - fees: []                        (empty array)
+    - items: []                       (empty array)
+    - shippingPerson.street: ""       (empty string)
+    - shippingPerson.postalCode: ""   (empty string)
+    - shippingPerson.stateOrProvinceCode: ""       (empty string)
+    - shippingPerson.stateOrProvinceName: ""       (empty string)
+    - Same for billingPerson empty fields
+
+
+16. billingPerson AND shippingPerson STRUCTURES (redacted values, preserved keys/types)
+──────────────────────────────────────────────────────────────────────────────────────
+  shippingPerson: {
+    name:                   string,   // "Pickup Customer" (hardcoded)
+    email:                  string,   // Customer email or ""
+    street:                 string,   // "" (always empty)
+    city:                   string,   // "Kingston" (hardcoded)
+    countryCode:            string,   // "JM" (hardcoded)
+    countryName:            string,   // "Jamaica" (hardcoded)
+    postalCode:             string,   // "" (always empty)
+    stateOrProvinceCode:    string,   // "" (always empty)
+    stateOrProvinceName:    string,   // "" (always empty)
+    phone:                  string,   // Customer phone or ""
+  }
+
+  billingPerson: {
+    name:                   string,   // "Pickup Customer" (hardcoded)
+    email:                  string,   // Customer email or ""
+    street:                 string,   // "" (always empty)
+    city:                   string,   // "Kingston" (hardcoded)
+    countryCode:            string,   // "JM" (hardcoded)
+    countryName:            string,   // "Jamaica" (hardcoded)
+    postalCode:             string,   // "" (always empty)
+    stateOrProvinceCode:    string,   // "" (always empty)
+    stateOrProvinceName:    string,   // "" (always empty)
+    phone:                  string,   // Customer phone or ""
+  }
+
+  Both structures are IDENTICAL — same data is copied to both.
+
+
+17. ORDER ID AND ITEM ID FORMAT
+────────────────────────────────
+  Order IDs are NOT UUIDs. They use ordinary reference strings:
+    - Drop-off:          DROPOFF-{timestamp}         (e.g., DROPOFF-1722345678901)
+    - Top-up:            TOPUP-{courierId}-{timestamp}
+    - Storage fee:       {orderNumber}-{timestamp}
+    - Card tokenization: TOKENIZE-{timestamp}
+    - Demo:              DEMO-{timestamp}-{random}
+
+  Items are always an empty array [] — no item IDs are sent.
+
+
+18. DOES EACH ITEM INCLUDE merchant_id, selectedOptions, imageUrl, sku,
+    quantity, price, name, shortDescription?
+──────────────────────────────────────────────────────────────────────────────
+  NO. The items array is always empty ([]). No item details are sent in the JWT
+  payload. The payment description is carried in the description field instead.
+
+
+19. ARE subtotal AND total NUMBERS OR STRINGS? JMD DOLLARS OR CENTS?
+────────────────────────────────────────────────────────────────────
+  Both are NUMBERS (not strings).
+
+  They are in JMD DOLLARS, not cents. The code explicitly converts:
+
+    const amountInDollars = Math.round(paymentData.amount) / 100;
+
+  So if a box costs JMD $200, the amount is sent as 200 (not 20000).
+
+
+20. DOES ITEM PRICE x QUANTITY EQUAL subtotal AND total?
+───────────────────────────────────────────────────────
+  Not applicable. Items array is always empty. subtotal and total are always set
+  to the same value (the amount in JMD dollars). No item-level math is performed.
+
+
+21. IS JMD CONFIRMED AS ENABLED FOR THIS MERCHANT ACCOUNT?
+───────────────────────────────────────────────────────────
+  Cannot confirm from code alone. The code hardcodes currency: 'JMD' in all payment
+  requests. The DimePay dashboard configuration (whether JMD is enabled for this
+  merchant) is not visible from the codebase. However, the fact that the system is
+  in production use with live credentials suggests JMD is enabled.
+
+
+22. WHAT DOES checkoutUrl CONTAIN?
+──────────────────────────────────
+  checkoutUrl is NOT included in the JWT payload. The payment flow uses:
+    - SDK widget URL:     https://pickupja.com/pay/{reference}
+                          (Pickup Jamaica page hosting the DimePay widget)
+    - onSuccess callback: https://pickupja.com/payment/success
+                          or {baseUrl}/kiosk?payment=success
+    - onClose callback:   https://pickupja.com/payment/cancelled
+
+  There is no DimePay-hosted checkout URL. The payment happens entirely within the
+  embedded widget on the Pickup Jamaica page.
+
+
+23. HTTP STATUS FOR SUCCESSFUL ORDER CREATION?
+───────────────────────────────────────────────
+  N/A — The SDK flow does not make an HTTP call to DimePay to "create an order."
+  The JWT is generated server-side and the widget handles the rest. The server-side
+  createSDKPayment() function returns a local result object, not a DimePay API
+  response.
+
+  For the server-to-server chargeCardToken() call, the code checks response.ok
+  which would be a 2xx status, but the specific status code is not logged.
+
+
+24. SUCCESSFUL RESPONSE STRUCTURE (redacted)
+─────────────────────────────────────────────
+  SDK payment flow server response:
+
+    {
+      "success": true,
+      "paymentId": "DROPOFF-1722XXXXXXXXX",
+      "paymentUrl": "https://pickupja.com/pay/DROPOFF-1722XXXXXXXXX",
+      "qrCodeDataUrl": "data:image/png;base64,[REDACTED]",
+      "amount": 200,
+      "originalAmount": 200,
+      "feeAmount": 0,
+      "boxSize": "M",
+      "saveCode": "[REDACTED]",
+      "pickCode": "[REDACTED]",
+      "customerId": "[REDACTED]",
+      "message": "Scan QR to pay JMD $200 for M box drop-off",
+      "isDemoMode": false
+    }
+
+  SDK init config passed to the frontend:
+
+    {
+      "clientId": "ck_[REDACTED]",
+      "data": "[REDACTED JWT]",
+      "test": false,
+      "onSuccess": "https://pickupja.com/payment/success",
+      "onClose": "https://pickupja.com/payment/cancelled"
+    }
+
+
+25. DIMEPAY PACKAGE AND EXACT VERSION
+──────────────────────────────────────
+  @dimepay/web-sdk@1.0.15 — installed as ^1.0.15, resolved to 1.0.15.
+
+  Loaded via CDN in the frontend:
+    https://unpkg.com/@dimepay/web-sdk@1.0.15/dist/dimepay.es.js
+
+
+26. IS @dimepay/web-sdk BEING USED? INITIALIZATION OPTIONS?
+────────────────────────────────────────────────────────────
+  YES — loaded dynamically via CDN (not as a bundled npm import).
+  The initPayment() call configuration:
+
+    initPayment({
+      mountId: "dimepay-widget",
+      total: 200,                          // Amount in JMD dollars
+      currency: "JMD",
+      test: false,                         // false = live mode
+      order_id: "DROPOFF-1722XXXXXXXXX",   // Reference
+      client_id: "ck_[REDACTED]",          // Client ID
+      origin: "https://pickupja.com",      // Window origin
+      data: "[REDACTED JWT]",              // Signed JWT
+      styles: {
+        primaryColor: '#111111',
+        buttonColor: '#FFD439',
+        buttonTextColor: '#111111',
+        backgroundColor: '#FFFFFF',
+        noBorderRadius: false,
+      },
+      onReady:   () => { ... },
+      onSuccess: async (data) => { ... },
+      onFailed:  async (err) => { ... },
+      onError:   (err) => { ... },
+      onCancel:  () => { ... },
+      onLoading: () => { ... },
+    })
+
+
+27. DASHBOARD REQUIREMENTS — DOMAINS, REDIRECT URLS, WEBHOOKS, IPs, ORIGINS
+────────────────────────────────────────────────────────────────────────────
+  Cannot confirm from code. The codebase does not contain DimePay dashboard
+  configuration. Based on the code, the following would need to be configured:
+
+    Webhook URL:      https://pickupja.com/api/webhooks/dimepay
+    Allowed origins:  https://pickupja.com (passed as origin in SDK init)
+    Redirect URLs:    https://pickupja.com/payment/success
+                      https://pickupja.com/payment/cancelled
+    IP whitelist:     Unknown (not referenced in code)
+    Domains:          pickupja.com (also pickuplocker.vercel.app for Vercel)
+
+
+28. IS THE MERCHANT ACCOUNT FULLY APPROVED FOR LIVE PROCESSING?
+───────────────────────────────────────────────────────────────
+  Cannot confirm from code. The presence of live credentials (ck_rdq-r7tqOqdZ-...
+  and sk_zPS5d7zPpXxcT...) and the sandboxMode: false setting strongly suggest
+  the account is approved for live use, but the DimePay dashboard status is not
+  accessible from the codebase.
+
+
+29. ARE CARD PAYMENT METHODS ENABLED IN THE DIMEPAY DASHBOARD?
+───────────────────────────────────────────────────────────────
+  Cannot confirm from code. The code implements card tokenization and card charging,
+  and the chargeCardToken() function makes server-to-server API calls that would
+  only work if card payments are enabled. The presence of SavedPaymentMethod in
+  the database schema and the card token extraction logic in the webhook handler
+  indicate card payments are expected to be enabled.
+
+
+30. ONE SUCCESSFUL TRANSACTION'S DETAILS
+─────────────────────────────────────────
+  Cannot extract from code. The codebase does not contain transaction logs with
+  specific amounts, dates, or provider tokens. The code processes payments in
+  real-time and stores results in the database, but no sample transaction data
+  is available in the source files.
+
+
+31. COMPARISON WITH DIMEPAY'S CURRENT ORDERS API DOCUMENTATION
+───────────────────────────────────────────────────────────────
+  ┌───────────────────┬──────────────────────────────────┬────────────────────────────────┬──────────────────────────────────────────────────┐
+  │ Aspect            │ Working Implementation            │ DimePay Orders API (typical)   │ Difference                                       │
+  ├───────────────────┼──────────────────────────────────┼────────────────────────────────┼──────────────────────────────────────────────────┤
+  │ Flow              │ SDK widget with initPayment()     │ POST /orders → order_url       │ Different flow entirely — SDK widget vs hosted   │
+  │ Authentication    │ JWT signed with Secret Key + CID │ API Access Key in header       │ Different auth — JWT vs API key header           │
+  │ Order creation    │ No server-side order creation     │ POST /orders with JSON body    │ No server call — JWT is self-contained           │
+  │ Amount format     │ JMD dollars (not cents)           │ Varies by API version          │ Potential mismatch — many APIs expect cents      │
+  │ Items             │ Always empty []                   │ Typically requires item objects │ Items omitted                                    │
+  │ Billing/Shipping  │ Hardcoded "Pickup Customer"       │ Real customer data expected    │ Hardcoded — not real customer info               │
+  │ fulfilled         │ Always true                       │ Typically false at creation     │ Premature fulfillment flag                       │
+  │ checkoutUrl       │ Not sent                          │ Expected in response           │ Missing                                          │
+  │ redirectUrl       │ Not in JWT (SDK callback)         │ Sent in order body             │ Different mechanism                              │
+  │ tokenize          │ Sent in metadata spread           │ May be a top-level field       │ Wrong placement — in metadata, not top-level     │
+  │ Metadata          │ Custom fields spread into JWT     │ May not be supported           │ Non-standard — extra fields injected via spread  │
+  │ discount          │ Omitted                           │ Supported field                │ Missing                                          │
+  │ taxes             │ Omitted (only tax: 0)             │ Supported field                │ Missing                                          │
+  │ split             │ Omitted                           │ Supported field                │ Missing                                          │
+  │ Webhook signature │ X-DimePay-Signature HMAC-SHA256   │ Varies                         │ Custom verification                              │
+  │ SDK version       │ @1.0.15                           │ Current may differ             │ May be outdated                                  │
+  └───────────────────┴──────────────────────────────────┴────────────────────────────────┴──────────────────────────────────────────────────┘
+
+
+32. SERVER-SIDE FILES THAT CREATE THE ORDER, SIGN THE JWT, CALL DIMEPAY,
+    PROCESS WEBHOOKS, AND REDIRECT THE CUSTOMER
+──────────────────────────────────────────────────────────────────────────
+  ┌──────────────────────────────┬──────────────────────────────────────────────────────┐
+  │ Function                     │ File                                                 │
+  ├──────────────────────────────┼──────────────────────────────────────────────────────┤
+  │ Create order / JWT           │ /src/lib/dimepay.ts — createSDKJWT()                 │
+  │                              │   Generates JWT with crypto.createHmac('sha256', sk) │
+  │ Create SDK payment           │ /src/lib/dimepay.ts — createSDKPayment()             │
+  │                              │   Builds SDKInitConfig with JWT                      │
+  │ Create drop-off payment      │ /src/app/api/kiosk/payment/route.ts                  │
+  │                              │   createDropoffPayment() — calls createSDKPayment()  │
+  │ Create storage fee payment   │ /src/app/api/payments/create/route.ts                │
+  │                              │   handleStorageFeePayment() — calls createPayment()  │
+  │ Create courier top-up        │ /src/app/api/payments/create/route.ts                │
+  │                              │   handleCourierTopUp() — calls createPayment()       │
+  │ Card tokenization            │ /src/lib/dimepay.ts — tokenizeCard()                 │
+  │                              │   Creates $1 JMD SDK payment with tokenize: true     │
+  │ Card token saving            │ /src/app/api/account/add-card/route.ts               │
+  │                              │   Calls tokenizeCard(), stores session in DB         │
+  │ Charge saved card            │ /src/lib/dimepay.ts — chargeCardToken()              │
+  │                              │   POST /api/v1/charges with Bearer auth              │
+  │ Capture authorization        │ /src/lib/dimepay.ts — captureAuthorization()         │
+  │                              │   POST /api/v1/charges/{id}/capture                  │
+  │ Webhook processing           │ /src/app/api/webhooks/dimepay/route.ts               │
+  │                              │   Verifies X-DimePay-Signature, updates session,     │
+  │                              │   saves card tokens to SavedPaymentMethod            │
+  │ Webhook signature verify     │ /src/lib/dimepay.ts — verifyWebhookSignature()       │
+  │                              │   HMAC-SHA256 comparison                            │
+  │ Customer redirect / pay page │ /src/app/pay/[reference]/page.tsx                    │
+  │                              │   Loads SDK widget, handles onSuccess/onFailed       │
+  │ SDK payment session retr.    │ /src/app/api/payment/sdk/route.ts                    │
+  │                              │   GET — retrieves payment data; POST — updates status│
+  │ DimePay config               │ /src/lib/settings.ts — getDimepayConfig()            │
+  │                              │   Reads credentials from DB with env fallback        │
+  │ DimePay setup                │ /src/app/api/dimepay/setup/route.ts                  │
+  │                              │   POST — saves sandbox/live credentials to DB        │
+  │ DimePay verify               │ /src/app/api/dimepay/verify/route.ts                 │
+  │                              │   GET — tests connectivity and credential format     │
+  │ DimePay URL fix/migration    │ /src/app/api/dimepay/fix-url/route.ts                │
+  │                              │   POST — cleans up old API key format settings       │
+  └──────────────────────────────┴──────────────────────────────────────────────────────┘
+
+
+================================================================================
+  END OF REPORT
+================================================================================
