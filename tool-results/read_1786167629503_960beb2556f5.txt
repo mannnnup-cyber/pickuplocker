@@ -1,0 +1,1943 @@
+     1→     1→package com.pickupjamaica.kiosk;
+     2→     2→
+     3→     3→import android.app.AlertDialog;
+     4→     4→import android.app.ProgressDialog;
+     5→     5→import android.content.Context;
+     6→     6→import android.content.Intent;
+     7→     7→import android.content.SharedPreferences;
+     8→     8→import android.content.pm.PackageInstaller;
+     9→     9→import android.net.ConnectivityManager;
+    10→    10→import android.net.Network;
+    11→    11→import android.net.NetworkCapabilities;
+    12→    12→import android.net.NetworkRequest;
+    13→    13→import android.net.Uri;
+    14→    14→import android.os.Build;
+    15→    15→import android.os.Bundle;
+    16→    16→import android.os.Handler;
+    17→    17→import android.os.Looper;
+    18→    18→import android.provider.Settings;
+    19→    19→import android.text.InputType;
+    20→    20→import android.util.Log;
+    21→    21→import android.view.Gravity;
+    22→    22→import android.view.MotionEvent;
+    23→    23→import android.view.View;
+    24→    24→import android.view.ViewGroup;
+    25→    25→import android.view.WindowManager;
+    26→    26→import android.webkit.ConsoleMessage;
+    27→    27→import android.webkit.WebChromeClient;
+    28→    28→import android.webkit.WebResourceError;
+    29→    29→import android.webkit.WebResourceRequest;
+    30→    30→import android.webkit.WebSettings;
+    31→    31→import android.webkit.WebView;
+    32→    32→import android.webkit.WebViewClient;
+    33→    33→import android.widget.EditText;
+    34→    34→import android.widget.LinearLayout;
+    35→    35→import android.widget.SeekBar;
+    36→    36→import android.widget.TextView;
+    37→    37→import android.widget.Toast;
+    38→    38→
+    39→    39→import androidx.appcompat.app.AppCompatActivity;
+    40→    40→import androidx.core.content.FileProvider;
+    41→    41→
+    42→    42→import java.io.BufferedReader;
+    43→    43→import java.io.File;
+    44→    44→import java.io.FileInputStream;
+    45→    45→import java.io.FileOutputStream;
+    46→    46→import java.io.InputStream;
+    47→    47→import java.io.InputStreamReader;
+    48→    48→import java.net.HttpURLConnection;
+    49→    49→import java.net.URL;
+    50→    50→import java.security.MessageDigest;
+    51→    51→
+    52→    52→import javax.net.ssl.HttpsURLConnection;
+    53→    53→import javax.net.ssl.SSLContext;
+    54→    54→
+    55→    55→/**
+    56→    56→ * Pickup Jamaica Kiosk — Bare WebView Activity v3.3
+    57→    57→ *
+    58→    58→ * Two-tier security: Staff PIN (basic access) vs Admin PIN (full access).
+    59→    59→ * In-app update: checks server for new APK, downloads & installs.
+    60→    60→ * Settings are persisted via SharedPreferences.
+    61→    61→ *
+    62→    62→ * Access Levels:
+    63→    63→ *   Staff PIN → basic menu (WiFi, orientation, brightness, reload, check updates, close)
+    64→    64→ *   Admin PIN → full menu (backend, server URL, change PINs, install updates, clear data + all staff options)
+    65→    65→ *
+    66→    66→ * The PIN dialog shows "Device Code" — no hint about admin access exists in the UI.
+    67→    67→ * Staff never sees admin options. Admin access is invisible.
+    68→    68→ *
+    69→    69→ * Security: 3 wrong PIN attempts = 5 minute lockout.
+    70→    70→ */
+    71→    71→public class MainActivity extends AppCompatActivity {
+    72→    72→
+    73→    73→    private static final String TAG = "PickupKiosk";
+    74→    74→    private static final String APP_VERSION = "3.3";
+    75→    75→    private static final int APP_VERSION_CODE = 7;
+    76→    76→
+    77→    77→    // URLs
+    78→    78→    private static final String DEFAULT_KIOSK_URL = "https://pickuplocker.vercel.app/kiosk-lite";
+    79→    79→    private static final String DEFAULT_BACKEND_URL = "https://pickuplocker.vercel.app/admin";
+    80→    80→    private static final String OFFLINE_URL = "file:///android_asset/offline.html";
+    81→    81→
+    82→    82→    // Reconnect
+    83→    83→    private static final int RECONNECT_DELAY_MS = 5000;
+    84→    84→    private static final int MAX_RECONNECT_ATTEMPTS = 60;
+    85→    85→    private static final int CONNECTIVITY_CHECK_MS = 3000;
+    86→    86→
+    87→    87→    // Secret trigger: tap top-left 5x within 3 seconds
+    88→    88→    private static final int SECRET_TAP_COUNT = 5;
+    89→    89→    private static final int SECRET_TAP_TIMEOUT_MS = 3000;
+    90→    90→    private static final int SECRET_TAP_AREA_DP = 80;
+    91→    91→
+    92→    92→    // PIN lockout
+    93→    93→    private static final int MAX_PIN_ATTEMPTS = 3;
+    94→    94→    private static final long PIN_LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+    95→    95→
+    96→    96→    // WebView health monitoring — detects frozen/white screens at the native level
+    97→    97→    private static final int HEALTH_CHECK_INTERVAL_MS = 60000;   // 1 minute
+    98→    98→    private static final int HEALTH_RELOAD_THRESHOLD = 2;        // After 2 failed checks, force reload (2 min total)
+    99→    99→
+   100→   100→    // In-app update settings
+   101→   101→    private static final String UPDATE_CHECK_URL = "/api/app-version";
+   102→   102→    private static final int UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
+   103→   103→    private static final int UPDATE_CHECK_DELAY_MS = 30000; // 30s after startup
+   104→   104→    private static final String UPDATE_DIR = "Updates";
+   105→   105→    private static final String APK_FILENAME = "pickup-update.apk";
+   106→   106→
+   107→   107→    // SharedPreferences keys
+   108→   108→    private static final String PREFS_NAME = "pickup_kiosk_prefs";
+   109→   109→    private static final String KEY_STAFF_PIN = "staff_pin";
+   110→   110→    private static final String KEY_ADMIN_PIN = "admin_pin";
+   111→   111→    private static final String KEY_ORIENTATION = "orientation";     // portrait / landscape / auto
+   112→   112→    private static final String KEY_SERVER_URL = "server_url";
+   113→   113→    private static final String KEY_BACKEND_URL = "backend_url";
+   114→   114→    private static final String KEY_KEEP_SCREEN_ON = "keep_screen_on";
+   115→   115→    private static final String KEY_PIN_FAILED_ATTEMPTS = "pin_failed_attempts";
+   116→   116→    private static final String KEY_PIN_LOCKOUT_UNTIL = "pin_lockout_until";
+   117→   117→    private static final String KEY_BRIGHTNESS = "brightness";       // 0-255, -1 = system default
+   118→   118→
+   119→   119→    // Update-related keys
+   120→   120→    private static final String KEY_LAST_UPDATE_CHECK = "last_update_check";
+   121→   121→    private static final String KEY_AVAILABLE_VERSION = "available_version";
+   122→   122→    private static final String KEY_AVAILABLE_VERSION_CODE = "available_version_code";
+   123→   123→    private static final String KEY_AVAILABLE_APK_URL = "available_apk_url";
+   124→   124→    private static final String KEY_AVAILABLE_CHECKSUM = "available_checksum";
+   125→   125→    private static final String KEY_AVAILABLE_CHANGELOG = "available_changelog";
+   126→   126→    private static final String KEY_FORCE_UPDATE = "force_update";
+   127→   127→    private static final String KEY_UPDATE_SKIPPED_VERSION = "update_skipped_version";
+   128→   128→
+   129→   129→    // Defaults
+   130→   130→    private static final String DEFAULT_STAFF_PIN = "1111";
+   131→   131→    private static final String DEFAULT_ADMIN_PIN = "1234";
+   132→   132→    private static final String DEFAULT_ORIENTATION = "portrait";
+   133→   133→
+   134→   134→    // State
+   135→   135→    private WebView webView;
+   136→   136→    private Handler mainHandler;
+   137→   137→    private ConnectivityManager.NetworkCallback networkCallback;
+   138→   138→    private boolean isShowingOfflinePage = false;
+   139→   139→    private boolean isViewingBackend = false;
+   140→   140→    private int reconnectAttempts = 0;
+   141→   141→    private boolean isDestroyed = false;
+   142→   142→    private int secretTapCount = 0;
+   143→   143→    private long lastSecretTapTime = 0;
+   144→   144→    private int healthCheckFailCount = 0;
+   145→   145→    private Runnable healthCheckRunnable;
+   146→   146→    private Runnable updateCheckRunnable;
+   147→   147→    private boolean isDownloadingUpdate = false;
+   148→   148→    private String pendingUpdateVersion = null;
+   149→   149→
+   150→   150→    // ============================================
+   151→   151→    // LIFECYCLE
+   152→   152→    // ============================================
+   153→   153→
+   154→   154→    @Override
+   155→   155→    protected void onCreate(Bundle savedInstanceState) {
+   156→   156→        try {
+   157→   157→            super.onCreate(savedInstanceState);
+   158→   158→            mainHandler = new Handler(Looper.getMainLooper());
+   159→   159→
+   160→   160→            // Apply saved orientation before UI appears
+   161→   161→            applySavedOrientation();
+   162→   162→
+   163→   163→            // Keep screen on (24/7 kiosk)
+   164→   164→            if (getPrefs().getBoolean(KEY_KEEP_SCREEN_ON, true)) {
+   165→   165→                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+   166→   166→            }
+   167→   167→
+   168→   168→            // Prevent screenshots / screen recording (payment security)
+   169→   169→            getWindow().setFlags(
+   170→   170→                WindowManager.LayoutParams.FLAG_SECURE,
+   171→   171→                WindowManager.LayoutParams.FLAG_SECURE
+   172→   172→            );
+   173→   173→
+   174→   174→            // Apply saved brightness
+   175→   175→            applySavedBrightness();
+   176→   176→
+   177→   177→            // Enable TLS 1.2 on Android 5.x
+   178→   178→            enableTLS12();
+   179→   179→
+   180→   180→            // Create and configure WebView
+   181→   181→            webView = createWebViewSafely();
+   182→   182→            if (webView == null) {
+   183→   183→                showErrorScreen("Failed to create WebView. The app cannot continue.");
+   184→   184→                return;
+   185→   185→            }
+   186→   186→
+   187→   187→            setContentView(webView);
+   188→   188→            hideSystemUI();
+   189→   189→            configureWebView();
+   190→   190→            registerConnectivityMonitoring();
+   191→   191→            startHealthMonitoring();
+   192→   192→            scheduleUpdateChecks();
+   193→   193→
+   194→   194→            Log.i(TAG, "Kiosk v" + APP_VERSION + " started — loading " + getKioskUrl());
+   195→   195→        } catch (Throwable t) {
+   196→   196→            Log.e(TAG, "FATAL: onCreate — " + t.getClass().getSimpleName() + ": " + t.getMessage(), t);
+   197→   197→            showErrorScreen("App failed to start: " + t.getClass().getSimpleName() + " — " + t.getMessage());
+   198→   198→        }
+   199→   199→    }
+   200→   200→
+   201→   201→    @Override
+   202→   202→    public void onWindowFocusChanged(boolean hasFocus) {
+   203→   203→        super.onWindowFocusChanged(hasFocus);
+   204→   204→        if (hasFocus) hideSystemUI();
+   205→   205→    }
+   206→   206→
+   207→   207→    @Override
+   208→   208→    protected void onResume() {
+   209→   209→        super.onResume();
+   210→   210→        hideSystemUI();
+   211→   211→        if (isShowingOfflinePage) checkAndReload();
+   212→   212→    }
+   213→   213→
+   214→   214→    @Override
+   215→   215→    protected void onDestroy() {
+   216→   216→        isDestroyed = true;
+   217→   217→        super.onDestroy();
+   218→   218→        stopHealthMonitoring();
+   219→   219→        stopUpdateChecks();
+   220→   220→        unregisterConnectivityMonitoring();
+   221→   221→        if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
+   222→   222→        if (webView != null) {
+   223→   223→            try {
+   224→   224→                webView.stopLoading();
+   225→   225→                webView.loadUrl("about:blank");
+   226→   226→                webView.clearCache(true);
+   227→   227→                webView.destroy();
+   228→   228→            } catch (Throwable t) { Log.w(TAG, "Error destroying WebView: " + t.getMessage()); }
+   229→   229→            webView = null;
+   230→   230→        }
+   231→   231→    }
+   232→   232→
+   233→   233→    // ============================================
+   234→   234→    // SHARED PREFERENCES HELPERS
+   235→   235→    // ============================================
+   236→   236→
+   237→   237→    private SharedPreferences getPrefs() {
+   238→   238→        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+   239→   239→    }
+   240→   240→
+   241→   241→    private String getStaffPin() {
+   242→   242→        return getPrefs().getString(KEY_STAFF_PIN, DEFAULT_STAFF_PIN);
+   243→   243→    }
+   244→   244→
+   245→   245→    private String getAdminPin() {
+   246→   246→        return getPrefs().getString(KEY_ADMIN_PIN, DEFAULT_ADMIN_PIN);
+   247→   247→    }
+   248→   248→
+   249→   249→    private String getKioskUrl() {
+   250→   250→        return getPrefs().getString(KEY_SERVER_URL, DEFAULT_KIOSK_URL);
+   251→   251→    }
+   252→   252→
+   253→   253→    private String getBackendUrl() {
+   254→   254→        return getPrefs().getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL);
+   255→   255→    }
+   256→   256→
+   257→   257→    private String getOrientation() {
+   258→   258→        return getPrefs().getString(KEY_ORIENTATION, DEFAULT_ORIENTATION);
+   259→   259→    }
+   260→   260→
+   261→   261→    // ============================================
+   262→   262→    // ORIENTATION
+   263→   263→    // ============================================
+   264→   264→
+   265→   265→    private void applySavedOrientation() {
+   266→   266→        String orient = getOrientation();
+   267→   267→        switch (orient) {
+   268→   268→            case "portrait":
+   269→   269→                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+   270→   270→                break;
+   271→   271→            case "landscape":
+   272→   272→                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+   273→   273→                break;
+   274→   274→            case "auto":
+   275→   275→                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+   276→   276→                break;
+   277→   277→            default:
+   278→   278→                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+   279→   279→                break;
+   280→   280→        }
+   281→   281→    }
+   282→   282→
+   283→   283→    // ============================================
+   284→   284→    // BRIGHTNESS
+   285→   285→    // ============================================
+   286→   286→
+   287→   287→    private void applySavedBrightness() {
+   288→   288→        try {
+   289→   289→            int brightness = getPrefs().getInt(KEY_BRIGHTNESS, -1);
+   290→   290→            if (brightness >= 0) {
+   291→   291→                WindowManager.LayoutParams lp = getWindow().getAttributes();
+   292→   292→                lp.screenBrightness = brightness / 255f;
+   293→   293→                getWindow().setAttributes(lp);
+   294→   294→            }
+   295→   295→        } catch (Throwable t) {
+   296→   296→            Log.w(TAG, "Failed to apply brightness: " + t.getMessage());
+   297→   297→        }
+   298→   298→    }
+   299→   299→
+   300→   300→    // ============================================
+   301→   301→    // ERROR SCREEN
+   302→   302→    // ============================================
+   303→   303→
+   304→   304→    private void showErrorScreen(String message) {
+   305→   305→        try {
+   306→   306→            LinearLayout layout = new LinearLayout(this);
+   307→   307→            layout.setOrientation(LinearLayout.VERTICAL);
+   308→   308→            layout.setPadding(40, 40, 40, 40);
+   309→   309→            layout.setBackgroundColor(0xFF111111);
+   310→   310→            layout.setGravity(Gravity.CENTER);
+   311→   311→
+   312→   312→            TextView title = new TextView(this);
+   313→   313→            title.setText("PICKUP");
+   314→   314→            title.setTextColor(0xFFFFD439);
+   315→   315→            title.setTextSize(36);
+   316→   316→            title.setGravity(Gravity.CENTER);
+   317→   317→
+   318→   318→            TextView errorMsg = new TextView(this);
+   319→   319→            errorMsg.setText(message);
+   320→   320→            errorMsg.setTextColor(0xFF999999);
+   321→   321→            errorMsg.setTextSize(16);
+   322→   322→            errorMsg.setGravity(Gravity.CENTER);
+   323→   323→            errorMsg.setPadding(0, 30, 0, 0);
+   324→   324→
+   325→   325→            layout.addView(title);
+   326→   326→            layout.addView(errorMsg);
+   327→   327→            setContentView(layout);
+   328→   328→        } catch (Throwable t2) {
+   329→   329→            Log.e(TAG, "Even error screen failed: " + t2.getMessage());
+   330→   330→        }
+   331→   331→    }
+   332→   332→
+   333→   333→    // ============================================
+   334→   334→    // TLS 1.2 — Critical for Android 5.1
+   335→   335→    // ============================================
+   336→   336→
+   337→   337→    private void enableTLS12() {
+   338→   338→        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN
+   339→   339→                && Build.VERSION.SDK_INT <= Build.VERSION_CODES.LOLLIPOP_MR1) {
+   340→   340→            try {
+   341→   341→                SSLContext sc = SSLContext.getInstance("TLSv1.2");
+   342→   342→                sc.init(null, null, null);
+   343→   343→                SSLContext.setDefault(sc);
+   344→   344→                Log.i(TAG, "TLS 1.2 enabled for Android 5.x");
+   345→   345→            } catch (Throwable t) {
+   346→   346→                Log.e(TAG, "Failed to enable TLS 1.2: " + t.getMessage());
+   347→   347→            }
+   348→   348→        }
+   349→   349→    }
+   350→   350→
+   351→   351→    // ============================================
+   352→   352→    // IMMERSIVE MODE
+   353→   353→    // ============================================
+   354→   354→
+   355→   355→    private void hideSystemUI() {
+   356→   356→        try {
+   357→   357→            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+   358→   358→                getWindow().setDecorFitsSystemWindows(false);
+   359→   359→                getWindow().getInsetsController().hide(
+   360→   360→                    android.view.WindowInsets.Type.statusBars()
+   361→   361→                    | android.view.WindowInsets.Type.navigationBars()
+   362→   362→                );
+   363→   363→                getWindow().getInsetsController().setSystemBarsBehavior(
+   364→   364→                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+   365→   365→                );
+   366→   366→            } else {
+   367→   367→                View decorView = getWindow().getDecorView();
+   368→   368→                int uiOptions = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+   369→   369→                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+   370→   370→                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+   371→   371→                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+   372→   372→                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+   373→   373→                        | View.SYSTEM_UI_FLAG_FULLSCREEN;
+   374→   374→                decorView.setSystemUiVisibility(uiOptions);
+   375→   375→            }
+   376→   376→        } catch (Throwable t) {
+   377→   377→            Log.w(TAG, "hideSystemUI failed: " + t.getMessage());
+   378→   378→        }
+   379→   379→    }
+   380→   380→
+   381→   381→    // ============================================
+   382→   382→    // WEBVIEW
+   383→   383→    // ============================================
+   384→   384→
+   385→   385→    private WebView createWebViewSafely() {
+   386→   386→        try {
+   387→   387→            WebView wv = new WebView(this);
+   388→   388→            Log.i(TAG, "WebView created successfully");
+   389→   389→            return wv;
+   390→   390→        } catch (Throwable t) {
+   391→   391→            Log.e(TAG, "Failed to create WebView: " + t.getClass().getSimpleName(), t);
+   392→   392→            return null;
+   393→   393→        }
+   394→   394→    }
+   395→   395→
+   396→   396→    private void configureWebView() {
+   397→   397→        if (webView == null) return;
+   398→   398→        try {
+   399→   399→            WebSettings settings = webView.getSettings();
+   400→   400→            settings.setJavaScriptEnabled(true);
+   401→   401→            settings.setDomStorageEnabled(true);
+   402→   402→            settings.setAllowFileAccess(true);
+   403→   403→            settings.setAllowContentAccess(true);
+   404→   404→            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+   405→   405→                settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+   406→   406→            }
+   407→   407→            settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+   408→   408→            settings.setBuiltInZoomControls(false);
+   409→   409→            settings.setDisplayZoomControls(false);
+   410→   410→
+   411→   411→            String userAgent = settings.getUserAgentString();
+   412→   412→            settings.setUserAgentString(userAgent + " PickupKiosk/" + APP_VERSION);
+   413→   413→
+   414→   414→            try {
+   415→   415→                boolean isDebug = false;
+   416→   416→                try { isDebug = BuildConfig.DEBUG; } catch (Throwable ignored) {}
+   417→   417→                WebView.setWebContentsDebuggingEnabled(isDebug);
+   418→   418→            } catch (Throwable t) { Log.w(TAG, "WebView debugging: " + t.getMessage()); }
+   419→   419→
+   420→   420→            webView.setWebViewClient(new KioskWebViewClient());
+   421→   421→            webView.setWebChromeClient(new KioskWebChromeClient());
+   422→   422→            webView.loadUrl(getKioskUrl());
+   423→   423→        } catch (Throwable t) {
+   424→   424→            Log.e(TAG, "WebView config failed: " + t.getMessage(), t);
+   425→   425→            showErrorScreen("WebView configuration failed: " + t.getMessage());
+   426→   426→        }
+   427→   427→    }
+   428→   428→
+   429→   429→    // ============================================
+   430→   430→    // WEBVIEW CLIENT
+   431→   431→    // ============================================
+   432→   432→
+   433→   433→    private class KioskWebViewClient extends WebViewClient {
+   434→   434→        @Override
+   435→   435→        public void onPageFinished(WebView view, String url) {
+   436→   436→            super.onPageFinished(view, url);
+   437→   437→            if (url == null) return;
+   438→   438→            if (OFFLINE_URL.equals(url)) {
+   439→   439→                isShowingOfflinePage = true;
+   440→   440→                Log.w(TAG, "Showing offline page");
+   441→   441→            } else {
+   442→   442→                isShowingOfflinePage = false;
+   443→   443→                reconnectAttempts = 0;
+   444→   444→                healthCheckFailCount = 0; // Reset health on successful page load
+   445→   445→                Log.i(TAG, "Page loaded: " + url);
+   446→   446→            }
+   447→   447→        }
+   448→   448→
+   449→   449→        @Override
+   450→   450→        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+   451→   451→            if (request != null && request.isForMainFrame()) {
+   452→   452→                if (!isShowingOfflinePage) showOfflinePage();
+   453→   453→            }
+   454→   454→        }
+   455→   455→
+   456→   456→        @Override
+   457→   457→        public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+   458→   458→            if (!isShowingOfflinePage) showOfflinePage();
+   459→   459→        }
+   460→   460→
+   461→   461→        @Override
+   462→   462→        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+   463→   463→            if (request == null) return false;
+   464→   464→            String url = request.getUrl().toString();
+   465→   465→            if (url == null) return true;
+   466→   466→            // Allow kiosk domain, backend, assets, and payment API
+   467→   467→            if (url.startsWith("https://pickuplocker.vercel.app") ||
+   468→   468→                url.startsWith("file:///android_asset/") ||
+   469→   469→                url.startsWith("https://api.dimepay.app")) {
+   470→   470→                return false;
+   471→   471→            }
+   472→   472→            Log.w(TAG, "Blocked navigation to: " + url);
+   473→   473→            return true;
+   474→   474→        }
+   475→   475→
+   476→   476→        /**
+   477→   477→         * CRITICAL: Called when the WebView renderer process crashes (OOM kill, etc.)
+   478→   478→         * This is the #1 cause of white screens — Android kills the renderer but
+   479→   479→         * the Activity is still alive. Without this handler, the WebView shows blank.
+   480→   480→         */
+   481→   481→        @Override
+   482→   482→        public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+   483→   483→            Log.e(TAG, "WebView renderer process GONE! Did crash: " + detail.didCrash()
+   484→   484→                + ". Rebuilding WebView immediately.");
+   485→   485→
+   486→   486→            if (isDestroyed) return true;
+   487→   487→
+   488→   488→            // Destroy the old WebView completely
+   489→   489→            if (webView != null) {
+   490→   490→                try {
+   491→   491→                    webView.stopLoading();
+   492→   492→                    webView.loadUrl("about:blank");
+   493→   493→                    webView.clearCache(true);
+   494→   494→                    webView.clearHistory();
+   495→   495→                    ViewGroup parent = (ViewGroup) webView.getParent();
+   496→   496→                    if (parent != null) parent.removeView(webView);
+   497→   497→                    webView.destroy();
+   498→   498→                } catch (Throwable t) {
+   499→   499→                    Log.e(TAG, "Error destroying dead WebView: " + t.getMessage());
+   500→   500→                }
+   501→   501→                webView = null;
+   502→   502→            }
+   503→   503→
+   504→   504→            // Rebuild a fresh WebView
+   505→   505→            mainHandler.post(() -> {
+   506→   506→                if (isDestroyed) return;
+   507→   507→                try {
+   508→   508→                    webView = createWebViewSafely();
+   509→   509→                    if (webView != null) {
+   510→   510→                        setContentView(webView);
+   511→   511→                        hideSystemUI();
+   512→   512→                        configureWebView();
+   513→   513→                        webView.loadUrl(getKioskUrl());
+   514→   514→                        isShowingOfflinePage = false;
+   515→   515→                        reconnectAttempts = 0;
+   516→   516→                        healthCheckFailCount = 0;
+   517→   517→                        Log.i(TAG, "WebView rebuilt after renderer crash — kiosk reloaded");
+   518→   518→                    } else {
+   519→   519→                        showErrorScreen("WebView failed to restart. Please reboot the device.");
+   520→   520→                    }
+   521→   521→                } catch (Throwable t) {
+   522→   522→                    Log.e(TAG, "Failed to rebuild WebView: " + t.getMessage());
+   523→   523→                    showErrorScreen("Critical error. Please reboot the device.");
+   524→   524→                }
+   525→   525→            });
+   526→   526→
+   527→   527→            return true; // We handled it — don't let WebView do its default (which does nothing)
+   528→   528→        }
+   529→   529→    }
+   530→   530→
+   531→   531→    private class KioskWebChromeClient extends WebChromeClient {
+   532→   532→        @Override
+   533→   533→        public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+   534→   534→            if (consoleMessage == null) return true;
+   535→   535→            switch (consoleMessage.messageLevel()) {
+   536→   536→                case ERROR:
+   537→   537→                    Log.e(TAG, "JS: " + consoleMessage.message());
+   538→   538→                    break;
+   539→   539→                case WARNING:
+   540→   540→                    Log.w(TAG, "JS: " + consoleMessage.message());
+   541→   541→                    break;
+   542→   542→                default: break;
+   543→   543→            }
+   544→   544→            return true;
+   545→   545→        }
+   546→   546→    }
+   547→   547→
+   548→   548→    // ============================================
+   549→   549→    // OFFLINE & RECONNECT
+   550→   550→    // ============================================
+   551→   551→
+   552→   552→    private void showOfflinePage() {
+   553→   553→        isShowingOfflinePage = true;
+   554→   554→        if (webView != null && mainHandler != null) {
+   555→   555→            mainHandler.post(() -> {
+   556→   556→                if (webView != null && !isDestroyed) {
+   557→   557→                    try { webView.loadUrl(OFFLINE_URL); } catch (Throwable t) { Log.e(TAG, t.getMessage()); }
+   558→   558→                }
+   559→   559→            });
+   560→   560→        }
+   561→   561→        scheduleReconnect();
+   562→   562→    }
+   563→   563→
+   564→   564→    private void scheduleReconnect() {
+   565→   565→        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return;
+   566→   566→        reconnectAttempts++;
+   567→   567→        if (mainHandler != null) {
+   568→   568→            mainHandler.postDelayed(() -> {
+   569→   569→                if (isShowingOfflinePage && !isDestroyed) checkAndReload();
+   570→   570→            }, RECONNECT_DELAY_MS);
+   571→   571→        }
+   572→   572→    }
+   573→   573→
+   574→   574→    private void checkAndReload() {
+   575→   575→        if (!isNetworkAvailable()) { scheduleReconnect(); return; }
+   576→   576→        if (webView != null && mainHandler != null) {
+   577→   577→            mainHandler.post(() -> {
+   578→   578→                if (webView != null && !isDestroyed) {
+   579→   579→                    try { webView.loadUrl(isViewingBackend ? getBackendUrl() : getKioskUrl()); }
+   580→   580→                    catch (Throwable t) { Log.e(TAG, t.getMessage()); }
+   581→   581→                }
+   582→   582→            });
+   583→   583→        }
+   584→   584→    }
+   585→   585→
+   586→   586→    // ============================================
+   587→   587→    // CONNECTIVITY MONITORING
+   588→   588→    // ============================================
+   589→   589→
+   590→   590→    private void registerConnectivityMonitoring() {
+   591→   591→        try {
+   592→   592→            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   593→   593→            if (cm == null) return;
+   594→   594→            NetworkRequest request = new NetworkRequest.Builder()
+   595→   595→                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+   596→   596→                .build();
+   597→   597→            networkCallback = new ConnectivityManager.NetworkCallback() {
+   598→   598→                @Override
+   599→   599→                public void onAvailable(Network network) {
+   600→   600→                    if (isShowingOfflinePage && mainHandler != null) {
+   601→   601→                        mainHandler.postDelayed(() -> {
+   602→   602→                            if (isShowingOfflinePage && webView != null && !isDestroyed) {
+   603→   603→                                reconnectAttempts = 0;
+   604→   604→                                mainHandler.post(() -> {
+   605→   605→                                    if (webView != null && !isDestroyed)
+   606→   606→                                        try { webView.loadUrl(getKioskUrl()); } catch (Throwable t) {}
+   607→   607→                                });
+   608→   608→                            }
+   609→   609→                        }, CONNECTIVITY_CHECK_MS);
+   610→   610→                    }
+   611→   611→                }
+   612→   612→                @Override
+   613→   613→                public void onLost(Network network) { Log.w(TAG, "Network lost"); }
+   614→   614→                @Override
+   615→   615→                public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+   616→   616→                    if (caps == null) return;
+   617→   617→                    boolean ok = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+   618→   618→                            && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+   619→   619→                    if (ok && isShowingOfflinePage && mainHandler != null) {
+   620→   620→                        mainHandler.postDelayed(() -> {
+   621→   621→                            if (isShowingOfflinePage && webView != null && !isDestroyed) {
+   622→   622→                                reconnectAttempts = 0;
+   623→   623→                                mainHandler.post(() -> {
+   624→   624→                                    if (webView != null && !isDestroyed)
+   625→   625→                                        try { webView.loadUrl(getKioskUrl()); } catch (Throwable t) {}
+   626→   626→                                });
+   627→   627→                            }
+   628→   628→                        }, CONNECTIVITY_CHECK_MS);
+   629→   629→                    }
+   630→   630→                }
+   631→   631→            };
+   632→   632→            cm.registerNetworkCallback(request, networkCallback);
+   633→   633→        } catch (Throwable t) {
+   634→   634→            Log.e(TAG, "Network monitoring failed: " + t.getMessage());
+   635→   635→        }
+   636→   636→    }
+   637→   637→
+   638→   638→    private void unregisterConnectivityMonitoring() {
+   639→   639→        if (networkCallback != null) {
+   640→   640→            try {
+   641→   641→                ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   642→   642→                if (cm != null) cm.unregisterNetworkCallback(networkCallback);
+   643→   643→            } catch (Throwable t) { Log.w(TAG, t.getMessage()); }
+   644→   644→        }
+   645→   645→    }
+   646→   646→
+   647→   647→    private boolean isNetworkAvailable() {
+   648→   648→        try {
+   649→   649→            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   650→   650→            if (cm == null) return false;
+   651→   651→            Network activeNetwork = cm.getActiveNetwork();
+   652→   652→            if (activeNetwork == null) return false;
+   653→   653→            NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
+   654→   654→            return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+   655→   655→        } catch (Throwable t) { return true; }
+   656→   656→    }
+   657→   657→
+   658→   658→    // ============================================
+   659→   659→    // WEBVIEW HEALTH MONITORING — Detect frozen/white screens
+   660→   660→    // ============================================
+   661→   661→
+   662→   662→    /**
+   663→   663→     * Starts periodic health checks on the WebView.
+   664→   664→     * If the WebView appears unresponsive or has blank content for
+   665→   665→     * multiple consecutive checks, force a reload.
+   666→   666→     */
+   667→   667→    private void startHealthMonitoring() {
+   668→   668→        healthCheckRunnable = new Runnable() {
+   669→   669→            @Override
+   670→   670→            public void run() {
+   671→   671→                if (!isDestroyed) {
+   672→   672→                    checkWebViewHealth();
+   673→   673→                    mainHandler.postDelayed(this, HEALTH_CHECK_INTERVAL_MS);
+   674→   674→                }
+   675→   675→            }
+   676→   676→        };
+   677→   677→        mainHandler.postDelayed(healthCheckRunnable, HEALTH_CHECK_INTERVAL_MS);
+   678→   678→        Log.i(TAG, "WebView health monitoring started (interval: " + HEALTH_CHECK_INTERVAL_MS + "ms)");
+   679→   679→    }
+   680→   680→
+   681→   681→    private void stopHealthMonitoring() {
+   682→   682→        if (healthCheckRunnable != null) {
+   683→   683→            mainHandler.removeCallbacks(healthCheckRunnable);
+   684→   684→            healthCheckRunnable = null;
+   685→   685→            Log.i(TAG, "WebView health monitoring stopped");
+   686→   686→        }
+   687→   687→    }
+   688→   688→
+   689→   689→    /**
+   690→   690→     * Check if the WebView is healthy by evaluating its content.
+   691→   691→     * If the page appears blank or frozen for several consecutive checks,
+   692→   692→     * force a reload to recover from white screen issues.
+   693→   693→     */
+   694→   694→    private void checkWebViewHealth() {
+   695→   695→        if (webView == null) {
+   696→   696→            healthCheckFailCount++;
+   697→   697→            Log.w(TAG, "Health check: WebView is null (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+   698→   698→            if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+   699→   699→                Log.w(TAG, "Health check: Too many failures — attempting full recovery");
+   700→   700→                healthCheckFailCount = 0;
+   701→   701→                reloadKiosk();
+   702→   702→            }
+   703→   703→            return;
+   704→   704→        }
+   705→   705→
+   706→   706→        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+   707→   707→            webView.evaluateJavascript("(function(){ try { var c = document.querySelector('.container'); return c ? 'ok' : 'empty'; } catch(e) { return 'error'; } })()", new android.webkit.ValueCallback<String>() {
+   708→   708→                @Override
+   709→   709→                public void onReceiveValue(String value) {
+   710→   710→                    if (value != null && (value.contains("ok") || value.contains("empty"))) {
+   711→   711→                        if (value.contains("empty")) {
+   712→   712→                            healthCheckFailCount++;
+   713→   713→                            Log.w(TAG, "Health check: Page content empty (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+   714→   714→                        } else {
+   715→   715→                            if (healthCheckFailCount > 0) {
+   716→   716→                                Log.i(TAG, "Health check: Page recovered (was " + healthCheckFailCount + " fails)");
+   717→   717→                            }
+   718→   718→                            healthCheckFailCount = 0;
+   719→   719→                        }
+   720→   720→                    } else {
+   721→   721→                        healthCheckFailCount++;
+   722→   722→                        Log.w(TAG, "Health check: No response or unexpected value: " + value + " (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+   723→   723→                    }
+   724→   724→
+   725→   725→                    if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+   726→   726→                        Log.w(TAG, "Health check: Threshold reached — force reloading kiosk");
+   727→   727→                        healthCheckFailCount = 0;
+   728→   728→                        reloadKiosk();
+   729→   729→                    }
+   730→   730→                }
+   731→   731→            });
+   732→   732→        } else {
+   733→   733→            // Pre-KitKat: just check offline status
+   734→   734→            if (isShowingOfflinePage) {
+   735→   735→                healthCheckFailCount++;
+   736→   736→                if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+   737→   737→                    healthCheckFailCount = 0;
+   738→   738→                    reloadKiosk();
+   739→   739→                }
+   740→   740→            } else {
+   741→   741→                healthCheckFailCount = 0;
+   742→   742→            }
+   743→   743→        }
+   744→   744→    }
+   745→   745→
+   746→   746→    // ============================================
+   747→   747→    // BACK BUTTON
+   748→   748→    // ============================================
+   749→   749→
+   750→   750→    @Override
+   751→   751→    public void onBackPressed() {
+   752→   752→        if (webView != null && webView.canGoBack()) {
+   753→   753→            webView.goBack();
+   754→   754→        }
+   755→   755→    }
+   756→   756→
+   757→   757→    // ============================================
+   758→   758→    // SECRET TRIGGER — 5-tap top-left corner
+   759→   759→    // ============================================
+   760→   760→
+   761→   761→    @Override
+   762→   762→    public boolean dispatchTouchEvent(MotionEvent ev) {
+   763→   763→        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+   764→   764→            try {
+   765→   765→                float density = getResources().getDisplayMetrics().density;
+   766→   766→                float hitAreaPx = SECRET_TAP_AREA_DP * density;
+   767→   767→                float x = ev.getRawX();
+   768→   768→                float y = ev.getRawY();
+   769→   769→                if (x < hitAreaPx && y < hitAreaPx) {
+   770→   770→                    long now = System.currentTimeMillis();
+   771→   771→                    if (now - lastSecretTapTime > SECRET_TAP_TIMEOUT_MS) {
+   772→   772→                        secretTapCount = 1;
+   773→   773→                    } else {
+   774→   774→                        secretTapCount++;
+   775→   775→                    }
+   776→   776→                    lastSecretTapTime = now;
+   777→   777→                    if (secretTapCount >= SECRET_TAP_COUNT) {
+   778→   778→                        secretTapCount = 0;
+   779→   779→                        Log.i(TAG, "Secret trigger activated");
+   780→   780→                        showPinDialog();
+   781→   781→                    }
+   782→   782→                }
+   783→   783→            } catch (Throwable t) {
+   784→   784→                Log.w(TAG, "Touch handler error: " + t.getMessage());
+   785→   785→            }
+   786→   786→        }
+   787→   787→        return super.dispatchTouchEvent(ev);
+   788→   788→    }
+   789→   789→
+   790→   790→    // ============================================
+   791→   791→    // TWO-TIER PIN SYSTEM
+   792→   792→    // ============================================
+   793→   793→
+   794→   794→    /**
+   795→   795→     * PIN entry dialog — titled "Device Code" (no hint about admin).
+   796→   796→     * Staff PIN → staff menu. Admin PIN → admin menu.
+   797→   797→     * 3 wrong attempts → 5 minute lockout.
+   798→   798→     */
+   799→   799→    private void showPinDialog() {
+   800→   800→        // Check lockout first
+   801→   801→        long lockoutUntil = getPrefs().getLong(KEY_PIN_LOCKOUT_UNTIL, 0);
+   802→   802→        if (System.currentTimeMillis() < lockoutUntil) {
+   803→   803→            long remainingSec = (lockoutUntil - System.currentTimeMillis()) / 1000;
+   804→   804→            Toast.makeText(this, "Locked. Try again in " + remainingSec + "s", Toast.LENGTH_LONG).show();
+   805→   805→            Log.w(TAG, "PIN entry locked out for " + remainingSec + " more seconds");
+   806→   806→            return;
+   807→   807→        }
+   808→   808→
+   809→   809→        try {
+   810→   810→            EditText pinInput = new EditText(this);
+   811→   811→            pinInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   812→   812→            pinInput.setHint("Enter device code");
+   813→   813→            pinInput.setMaxLines(1);
+   814→   814→
+   815→   815→            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+   816→   816→                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+   817→   817→            lp.setMargins(50, 20, 50, 20);
+   818→   818→            pinInput.setLayoutParams(lp);
+   819→   819→
+   820→   820→            LinearLayout container = new LinearLayout(this);
+   821→   821→            container.setOrientation(LinearLayout.VERTICAL);
+   822→   822→            container.setPadding(40, 20, 40, 20);
+   823→   823→            container.addView(pinInput);
+   824→   824→
+   825→   825→            new AlertDialog.Builder(this)
+   826→   826→                .setTitle("Device Code")
+   827→   827→                .setMessage("Enter code to continue.")
+   828→   828→                .setView(container)
+   829→   829→                .setPositiveButton("Confirm", (dialog, which) -> {
+   830→   830→                    String entered = pinInput.getText().toString().trim();
+   831→   831→                    if (entered.equals(getAdminPin())) {
+   832→   832→                        // Admin access — reset failed attempts
+   833→   833→                        resetPinAttempts();
+   834→   834→                        Log.i(TAG, "Admin access granted");
+   835→   835→                        showAdminMenu();
+   836→   836→                    } else if (entered.equals(getStaffPin())) {
+   837→   837→                        // Staff access — reset failed attempts
+   838→   838→                        resetPinAttempts();
+   839→   839→                        Log.i(TAG, "Staff access granted");
+   840→   840→                        showStaffMenu();
+   841→   841→                    } else {
+   842→   842→                        // Wrong PIN
+   843→   843→                        handleWrongPin();
+   844→   844→                    }
+   845→   845→                })
+   846→   846→                .setNegativeButton("Cancel", null)
+   847→   847→                .setCancelable(true)
+   848→   848→                .show();
+   849→   849→        } catch (Throwable t) {
+   850→   850→            Log.e(TAG, "PIN dialog failed: " + t.getMessage());
+   851→   851→        }
+   852→   852→    }
+   853→   853→
+   854→   854→    private void handleWrongPin() {
+   855→   855→        int attempts = getPrefs().getInt(KEY_PIN_FAILED_ATTEMPTS, 0) + 1;
+   856→   856→        getPrefs().edit().putInt(KEY_PIN_FAILED_ATTEMPTS, attempts).apply();
+   857→   857→        Log.w(TAG, "Wrong PIN attempt " + attempts + "/" + MAX_PIN_ATTEMPTS);
+   858→   858→
+   859→   859→        if (attempts >= MAX_PIN_ATTEMPTS) {
+   860→   860→            // Lock out for 5 minutes
+   861→   861→            long lockoutUntil = System.currentTimeMillis() + PIN_LOCKOUT_DURATION_MS;
+   862→   862→            getPrefs().edit()
+   863→   863→                .putLong(KEY_PIN_LOCKOUT_UNTIL, lockoutUntil)
+   864→   864→                .putInt(KEY_PIN_FAILED_ATTEMPTS, 0)
+   865→   865→                .apply();
+   866→   866→            Toast.makeText(this, "Too many attempts. Locked for 5 minutes.", Toast.LENGTH_LONG).show();
+   867→   867→        } else {
+   868→   868→            int remaining = MAX_PIN_ATTEMPTS - attempts;
+   869→   869→            new AlertDialog.Builder(this)
+   870→   870→                .setTitle("Incorrect Code")
+   871→   871→                .setMessage("The code you entered is incorrect.\n" + remaining + " attempt(s) remaining.")
+   872→   872→                .setPositiveButton("OK", null)
+   873→   873→                .show();
+   874→   874→        }
+   875→   875→    }
+   876→   876→
+   877→   877→    private void resetPinAttempts() {
+   878→   878→        getPrefs().edit()
+   879→   879→            .putInt(KEY_PIN_FAILED_ATTEMPTS, 0)
+   880→   880→            .putLong(KEY_PIN_LOCKOUT_UNTIL, 0)
+   881→   881→            .apply();
+   882→   882→    }
+   883→   883→
+   884→   884→    // ============================================
+   885→   885→    // STAFF MENU — Basic access only
+   886→   886→    // ============================================
+   887→   887→
+   888→   888→    private void showStaffMenu() {
+   889→   889→        try {
+   890→   890→            String[] options = {
+   891→   891→                "WiFi Settings",
+   892→   892→                "Screen Orientation",
+   893→   893→                "Screen Brightness",
+   894→   894→                "Reload Kiosk",
+   895→   895→                "Check for Updates",
+   896→   896→                "Close App"
+   897→   897→            };
+   898→   898→            new AlertDialog.Builder(this)
+   899→   899→                .setTitle("Device Settings")
+   900→   900→                .setItems(options, (dialog, which) -> {
+   901→   901→                    switch (which) {
+   902→   902→                        case 0: openWifiSettings(); break;
+   903→   903→                        case 1: showOrientationDialog(); break;
+   904→   904→                        case 2: showBrightnessDialog(); break;
+   905→   905→                        case 3: reloadKiosk(); break;
+   906→   906→                        case 4: checkForUpdatesNow(); break;
+   907→   907→                        case 5: closeApp(); break;
+   908→   908→                    }
+   909→   909→                })
+   910→   910→                .setNegativeButton("Cancel", null)
+   911→   911→                .setCancelable(true)
+   912→   912→                .show();
+   913→   913→        } catch (Throwable t) {
+   914→   914→            Log.e(TAG, "Staff menu failed: " + t.getMessage());
+   915→   915→        }
+   916→   916→    }
+   917→   917→
+   918→   918→    // ============================================
+   919→   919→    // ADMIN MENU — Full access
+   920→   920→    // ============================================
+   921→   921→
+   922→   922→    private void showAdminMenu() {
+   923→   923→        try {
+   924→   924→            // Build version info label
+   925→   925→            String updateLabel = pendingUpdateVersion != null
+   926→   926→                ? "Install Update (v" + pendingUpdateVersion + ")"
+   927→   927→                : "Check for Updates";
+   928→   928→
+   929→   929→            String[] options = {
+   930→   930→                "Open Backend Panel",
+   931→   931→                "Change Server URL",
+   932→   932→                "Change Device Code (Staff)",
+   933→   933→                "Change Admin Code",
+   934→   934→                updateLabel,
+   935→   935→                "Clear App Data & Cache",
+   936→   936→                "WiFi Settings",
+   937→   937→                "Screen Orientation",
+   938→   938→                "Screen Brightness",
+   939→   939→                "Toggle Screen Always-On",
+   940→   940→                "Reload Kiosk",
+   941→   941→                "Close App"
+   942→   942→            };
+   943→   943→            new AlertDialog.Builder(this)
+   944→   944→                .setTitle("Admin Settings (v" + APP_VERSION + ")")
+   945→   945→                .setItems(options, (dialog, which) -> {
+   946→   946→                    switch (which) {
+   947→   947→                        case 0: openBackendPanel(); break;
+   948→   948→                        case 1: showChangeServerUrlDialog(); break;
+   949→   949→                        case 2: showChangePinDialog("staff"); break;
+   950→   950→                        case 3: showChangePinDialog("admin"); break;
+   951→   951→                        case 4: showUpdateMenu(); break;
+   952→   952→                        case 5: showClearDataConfirmDialog(); break;
+   953→   953→                        case 6: openWifiSettings(); break;
+   954→   954→                        case 7: showOrientationDialog(); break;
+   955→   955→                        case 8: showBrightnessDialog(); break;
+   956→   956→                        case 9: showToggleScreenOnDialog(); break;
+   957→   957→                        case 10: reloadKiosk(); break;
+   958→   958→                        case 11: closeApp(); break;
+   959→   959→                    }
+   960→   960→                })
+   961→   961→                .setNegativeButton("Cancel", null)
+   962→   962→                .setCancelable(true)
+   963→   963→                .show();
+   964→   964→        } catch (Throwable t) {
+   965→   965→            Log.e(TAG, "Admin menu failed: " + t.getMessage());
+   966→   966→        }
+   967→   967→    }
+   968→   968→
+   969→   969→    // ============================================
+   970→   970→    // SETTINGS: ORIENTATION
+   971→   971→    // ============================================
+   972→   972→
+   973→   973→    private void showOrientationDialog() {
+   974→   974→        try {
+   975→   975→            String current = getOrientation();
+   976→   976→            String[] labels = {"Portrait (Vertical)", "Landscape (Horizontal)", "Auto-Rotate"};
+   977→   977→            String[] values = {"portrait", "landscape", "auto"};
+   978→   978→            int selectedIndex = 0;
+   979→   979→            for (int i = 0; i < values.length; i++) {
+   980→   980→                if (values[i].equals(current)) { selectedIndex = i; break; }
+   981→   981→            }
+   982→   982→            new AlertDialog.Builder(this)
+   983→   983→                .setTitle("Screen Orientation")
+   984→   984→                .setSingleChoiceItems(labels, selectedIndex, (dialog, which) -> {
+   985→   985→                    String chosen = values[which];
+   986→   986→                    getPrefs().edit().putString(KEY_ORIENTATION, chosen).apply();
+   987→   987→                    applySavedOrientation();
+   988→   988→                    Toast.makeText(this, "Orientation: " + labels[which], Toast.LENGTH_SHORT).show();
+   989→   989→                    dialog.dismiss();
+   990→   990→                })
+   991→   991→                .setNegativeButton("Cancel", null)
+   992→   992→                .setCancelable(true)
+   993→   993→                .show();
+   994→   994→        } catch (Throwable t) {
+   995→   995→            Log.e(TAG, "Orientation dialog failed: " + t.getMessage());
+   996→   996→        }
+   997→   997→    }
+   998→   998→
+   999→   999→    // ============================================
+  1000→  1000→    // SETTINGS: BRIGHTNESS
+  1001→  1001→    // ============================================
+  1002→  1002→
+  1003→  1003→    private void showBrightnessDialog() {
+  1004→  1004→        try {
+  1005→  1005→            int currentBrightness = getPrefs().getInt(KEY_BRIGHTNESS, -1);
+  1006→  1006→            // If system default, estimate current brightness for the slider
+  1007→  1007→            if (currentBrightness < 0) {
+  1008→  1008→                try {
+  1009→  1009→                    currentBrightness = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
+  1010→  1010→                } catch (Throwable t) {
+  1011→  1011→                    currentBrightness = 128;
+  1012→  1012→                }
+  1013→  1013→            }
+  1014→  1014→
+  1015→  1015→            LinearLayout container = new LinearLayout(this);
+  1016→  1016→            container.setOrientation(LinearLayout.VERTICAL);
+  1017→  1017→            container.setPadding(40, 30, 40, 10);
+  1018→  1018→
+  1019→  1019→            SeekBar seekBar = new SeekBar(this);
+  1020→  1020→            seekBar.setMax(255);
+  1021→  1021→            seekBar.setProgress(currentBrightness);
+  1022→  1022→            seekBar.setPadding(0, 20, 0, 20);
+  1023→  1023→
+  1024→  1024→            TextView label = new TextView(this);
+  1025→  1025→            label.setText("Brightness: " + currentBrightness);
+  1026→  1026→            label.setTextColor(0xFF999999);
+  1027→  1027→            label.setTextSize(14);
+  1028→  1028→            label.setGravity(Gravity.CENTER);
+  1029→  1029→
+  1030→  1030→            seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+  1031→  1031→                @Override
+  1032→  1032→                public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+  1033→  1033→                    label.setText("Brightness: " + progress);
+  1034→  1034→                    if (fromUser) {
+  1035→  1035→                        WindowManager.LayoutParams lp = getWindow().getAttributes();
+  1036→  1036→                        lp.screenBrightness = progress / 255f;
+  1037→  1037→                        getWindow().setAttributes(lp);
+  1038→  1038→                    }
+  1039→  1039→                }
+  1040→  1040→                @Override public void onStartTrackingTouch(SeekBar sb) {}
+  1041→  1041→                @Override public void onStopTrackingTouch(SeekBar sb) {}
+  1042→  1042→            });
+  1043→  1043→
+  1044→  1044→            container.addView(seekBar);
+  1045→  1045→            container.addView(label);
+  1046→  1046→
+  1047→  1047→            new AlertDialog.Builder(this)
+  1048→  1048→                .setTitle("Screen Brightness")
+  1049→  1049→                .setView(container)
+  1050→  1050→                .setPositiveButton("Save", (dialog, which) -> {
+  1051→  1051→                    int val = seekBar.getProgress();
+  1052→  1052→                    getPrefs().edit().putInt(KEY_BRIGHTNESS, val).apply();
+  1053→  1053→                    Toast.makeText(this, "Brightness saved", Toast.LENGTH_SHORT).show();
+  1054→  1054→                })
+  1055→  1055→                .setNeutralButton("System Default", (dialog, which) -> {
+  1056→  1056→                    getPrefs().edit().putInt(KEY_BRIGHTNESS, -1).apply();
+  1057→  1057→                    WindowManager.LayoutParams lp = getWindow().getAttributes();
+  1058→  1058→                    lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+  1059→  1059→                    getWindow().setAttributes(lp);
+  1060→  1060→                    Toast.makeText(this, "Brightness: system default", Toast.LENGTH_SHORT).show();
+  1061→  1061→                })
+  1062→  1062→                .setNegativeButton("Cancel", null)
+  1063→  1063→                .setCancelable(true)
+  1064→  1064→                .show();
+  1065→  1065→        } catch (Throwable t) {
+  1066→  1066→            Log.e(TAG, "Brightness dialog failed: " + t.getMessage());
+  1067→  1067→        }
+  1068→  1068→    }
+  1069→  1069→
+  1070→  1070→    // ============================================
+  1071→  1071→    // SETTINGS: SERVER URL
+  1072→  1072→    // ============================================
+  1073→  1073→
+  1074→  1074→    private void showChangeServerUrlDialog() {
+  1075→  1075→        try {
+  1076→  1076→            EditText input = new EditText(this);
+  1077→  1077→            input.setText(getKioskUrl());
+  1078→  1078→            input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+  1079→  1079→            input.setSingleLine(true);
+  1080→  1080→            input.setPadding(40, 20, 40, 20);
+  1081→  1081→            input.setSelection(input.getText().length());
+  1082→  1082→
+  1083→  1083→            new AlertDialog.Builder(this)
+  1084→  1084→                .setTitle("Server URL")
+  1085→  1085→                .setMessage("Change the kiosk page URL. The app will reload after saving.")
+  1086→  1086→                .setView(input)
+  1087→  1087→                .setPositiveButton("Save & Reload", (dialog, which) -> {
+  1088→  1088→                    String newUrl = input.getText().toString().trim();
+  1089→  1089→                    if (!newUrl.isEmpty() && newUrl.startsWith("http")) {
+  1090→  1090→                        getPrefs().edit().putString(KEY_SERVER_URL, newUrl).apply();
+  1091→  1091→                        isViewingBackend = false;
+  1092→  1092→                        reloadKiosk();
+  1093→  1093→                        Toast.makeText(this, "Server URL updated", Toast.LENGTH_SHORT).show();
+  1094→  1094→                    } else {
+  1095→  1095→                        Toast.makeText(this, "Invalid URL", Toast.LENGTH_SHORT).show();
+  1096→  1096→                    }
+  1097→  1097→                })
+  1098→  1098→                .setNeutralButton("Reset Default", (dialog, which) -> {
+  1099→  1099→                    getPrefs().edit().putString(KEY_SERVER_URL, DEFAULT_KIOSK_URL).apply();
+  1100→  1100→                    isViewingBackend = false;
+  1101→  1101→                    reloadKiosk();
+  1102→  1102→                    Toast.makeText(this, "Server URL reset to default", Toast.LENGTH_SHORT).show();
+  1103→  1103→                })
+  1104→  1104→                .setNegativeButton("Cancel", null)
+  1105→  1105→                .setCancelable(true)
+  1106→  1106→                .show();
+  1107→  1107→        } catch (Throwable t) {
+  1108→  1108→            Log.e(TAG, "Server URL dialog failed: " + t.getMessage());
+  1109→  1109→        }
+  1110→  1110→    }
+  1111→  1111→
+  1112→  1112→    // ============================================
+  1113→  1113→    // SETTINGS: CHANGE PIN
+  1114→  1114→    // ============================================
+  1115→  1115→
+  1116→  1116→    private void showChangePinDialog(String pinType) {
+  1117→  1117→        try {
+  1118→  1118→            String title = pinType.equals("admin") ? "Change Admin Code" : "Change Device Code";
+  1119→  1119→
+  1120→  1120→            EditText currentInput = new EditText(this);
+  1121→  1121→            currentInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+  1122→  1122→            currentInput.setHint("Current code");
+  1123→  1123→            currentInput.setMaxLines(1);
+  1124→  1124→
+  1125→  1125→            EditText newInput = new EditText(this);
+  1126→  1126→            newInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+  1127→  1127→            newInput.setHint("New code (4+ digits)");
+  1128→  1128→            newInput.setMaxLines(1);
+  1129→  1129→
+  1130→  1130→            EditText confirmInput = new EditText(this);
+  1131→  1131→            confirmInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+  1132→  1132→            confirmInput.setHint("Confirm new code");
+  1133→  1133→            confirmInput.setMaxLines(1);
+  1134→  1134→
+  1135→  1135→            LinearLayout container = new LinearLayout(this);
+  1136→  1136→            container.setOrientation(LinearLayout.VERTICAL);
+  1137→  1137→            container.setPadding(40, 20, 40, 20);
+  1138→  1138→            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+  1139→  1139→                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+  1140→  1140→            lp.setMargins(0, 0, 0, 15);
+  1141→  1141→            currentInput.setLayoutParams(lp);
+  1142→  1142→            newInput.setLayoutParams(lp);
+  1143→  1143→            confirmInput.setLayoutParams(lp);
+  1144→  1144→            container.addView(currentInput);
+  1145→  1145→            container.addView(newInput);
+  1146→  1146→            container.addView(confirmInput);
+  1147→  1147→
+  1148→  1148→            new AlertDialog.Builder(this)
+  1149→  1149→                .setTitle(title)
+  1150→  1150→                .setView(container)
+  1151→  1151→                .setPositiveButton("Save", (dialog, which) -> {
+  1152→  1152→                    String current = currentInput.getText().toString().trim();
+  1153→  1153→                    String newPin = newInput.getText().toString().trim();
+  1154→  1154→                    String confirm = confirmInput.getText().toString().trim();
+  1155→  1155→
+  1156→  1156→                    String correctPin = pinType.equals("admin") ? getAdminPin() : getStaffPin();
+  1157→  1157→                    String key = pinType.equals("admin") ? KEY_ADMIN_PIN : KEY_STAFF_PIN;
+  1158→  1158→
+  1159→  1159→                    if (!current.equals(correctPin)) {
+  1160→  1160→                        Toast.makeText(this, "Current code is incorrect", Toast.LENGTH_LONG).show();
+  1161→  1161→                        return;
+  1162→  1162→                    }
+  1163→  1163→                    if (newPin.length() < 4) {
+  1164→  1164→                        Toast.makeText(this, "New code must be at least 4 digits", Toast.LENGTH_LONG).show();
+  1165→  1165→                        return;
+  1166→  1166→                    }
+  1167→  1167→                    if (!newPin.equals(confirm)) {
+  1168→  1168→                        Toast.makeText(this, "New codes do not match", Toast.LENGTH_LONG).show();
+  1169→  1169→                        return;
+  1170→  1170→                    }
+  1171→  1171→                    // Don't allow staff and admin PINs to be the same
+  1172→  1172→                    String otherPin = pinType.equals("admin") ? getStaffPin() : getAdminPin();
+  1173→  1173→                    if (newPin.equals(otherPin)) {
+  1174→  1174→                        Toast.makeText(this, "Cannot use the same code for both levels", Toast.LENGTH_LONG).show();
+  1175→  1175→                        return;
+  1176→  1176→                    }
+  1177→  1177→                    getPrefs().edit().putString(key, newPin).apply();
+  1178→  1178→                    Toast.makeText(this, "Code changed successfully", Toast.LENGTH_SHORT).show();
+  1179→  1179→                    Log.i(TAG, pinType + " PIN changed");
+  1180→  1180→                })
+  1181→  1181→                .setNegativeButton("Cancel", null)
+  1182→  1182→                .setCancelable(true)
+  1183→  1183→                .show();
+  1184→  1184→        } catch (Throwable t) {
+  1185→  1185→            Log.e(TAG, "Change PIN dialog failed: " + t.getMessage());
+  1186→  1186→        }
+  1187→  1187→    }
+  1188→  1188→
+  1189→  1189→    // ============================================
+  1190→  1190→    // SETTINGS: CLEAR DATA
+  1191→  1191→    // ============================================
+  1192→  1192→
+  1193→  1193→    private void showClearDataConfirmDialog() {
+  1194→  1194→        try {
+  1195→  1195→            new AlertDialog.Builder(this)
+  1196→  1196→                .setTitle("Clear App Data")
+  1197→  1197→                .setMessage("This will clear the WebView cache, cookies, and stored data. Settings and PINs will be kept. The kiosk will reload after clearing.")
+  1198→  1198→                .setPositiveButton("Clear & Reload", (dialog, which) -> {
+  1199→  1199→                    try {
+  1200→  1200→                        if (webView != null) {
+  1201→  1201→                            webView.clearCache(true);
+  1202→  1202→                            webView.clearFormData();
+  1203→  1203→                            webView.clearHistory();
+  1204→  1204→                            android.webkit.CookieManager.getInstance().removeAllCookies(null);
+  1205→  1205→                            android.webkit.WebStorage.getInstance().deleteAllData();
+  1206→  1206→                        }
+  1207→  1207→                        Toast.makeText(this, "Data cleared — reloading", Toast.LENGTH_SHORT).show();
+  1208→  1208→                        reloadKiosk();
+  1209→  1209→                    } catch (Throwable t) {
+  1210→  1210→                        Log.e(TAG, "Failed to clear data: " + t.getMessage());
+  1211→  1211→                        Toast.makeText(this, "Error clearing data", Toast.LENGTH_SHORT).show();
+  1212→  1212→                    }
+  1213→  1213→                })
+  1214→  1214→                .setNegativeButton("Cancel", null)
+  1215→  1215→                .setCancelable(true)
+  1216→  1216→                .show();
+  1217→  1217→        } catch (Throwable t) {
+  1218→  1218→            Log.e(TAG, "Clear data dialog failed: " + t.getMessage());
+  1219→  1219→        }
+  1220→  1220→    }
+  1221→  1221→
+  1222→  1222→    // ============================================
+  1223→  1223→    // SETTINGS: TOGGLE SCREEN ALWAYS-ON
+  1224→  1224→    // ============================================
+  1225→  1225→
+  1226→  1226→    private void showToggleScreenOnDialog() {
+  1227→  1227→        try {
+  1228→  1228→            boolean isOn = getPrefs().getBoolean(KEY_KEEP_SCREEN_ON, true);
+  1229→  1229→            String label = isOn
+  1230→  1230→                ? "Screen is currently: ALWAYS ON\n\nDisable to allow screen timeout?"
+  1231→  1231→                : "Screen is currently: AUTO TIMEOUT\n\nEnable always-on for 24/7 kiosk operation?";
+  1232→  1232→
+  1233→  1233→            new AlertDialog.Builder(this)
+  1234→  1234→                .setTitle("Screen Always-On")
+  1235→  1235→                .setMessage(label)
+  1236→  1236→                .setPositiveButton(isOn ? "Disable Always-On" : "Enable Always-On", (dialog, which) -> {
+  1237→  1237→                    boolean newVal = !isOn;
+  1238→  1238→                    getPrefs().edit().putBoolean(KEY_KEEP_SCREEN_ON, newVal).apply();
+  1239→  1239→                    if (newVal) {
+  1240→  1240→                        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+  1241→  1241→                    } else {
+  1242→  1242→                        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+  1243→  1243→                    }
+  1244→  1244→                    Toast.makeText(this, "Screen: " + (newVal ? "Always On" : "Auto Timeout"), Toast.LENGTH_SHORT).show();
+  1245→  1245→                })
+  1246→  1246→                .setNegativeButton("Cancel", null)
+  1247→  1247→                .setCancelable(true)
+  1248→  1248→                .show();
+  1249→  1249→        } catch (Throwable t) {
+  1250→  1250→            Log.e(TAG, "Screen toggle dialog failed: " + t.getMessage());
+  1251→  1251→        }
+  1252→  1252→    }
+  1253→  1253→
+  1254→  1254→    // ============================================
+  1255→  1255→    // IN-APP UPDATE SYSTEM
+  1256→  1256→    // ============================================
+  1257→  1257→
+  1258→  1258→    /**
+  1259→  1259→     * Schedules periodic update checks.
+  1260→  1260→     * First check happens 30s after startup, then every 4 hours.
+  1261→  1261→     */
+  1262→  1262→    private void scheduleUpdateChecks() {
+  1263→  1263→        updateCheckRunnable = new Runnable() {
+  1264→  1264→            @Override
+  1265→  1265→            public void run() {
+  1266→  1266→                if (!isDestroyed) {
+  1267→  1267→                    checkForUpdatesInBackground();
+  1268→  1268→                    mainHandler.postDelayed(this, UPDATE_CHECK_INTERVAL_MS);
+  1269→  1269→                }
+  1270→  1270→            }
+  1271→  1271→        };
+  1272→  1272→        // Delay first check — don't slow down startup
+  1273→  1273→        mainHandler.postDelayed(updateCheckRunnable, UPDATE_CHECK_DELAY_MS);
+  1274→  1274→        Log.i(TAG, "Update checks scheduled (first in " + UPDATE_CHECK_DELAY_MS + "ms, then every " + UPDATE_CHECK_INTERVAL_MS + "ms)");
+  1275→  1275→    }
+  1276→  1276→
+  1277→  1277→    private void stopUpdateChecks() {
+  1278→  1278→        if (updateCheckRunnable != null) {
+  1279→  1279→            mainHandler.removeCallbacks(updateCheckRunnable);
+  1280→  1280→            updateCheckRunnable = null;
+  1281→  1281→            Log.i(TAG, "Update checks stopped");
+  1282→  1282→        }
+  1283→  1283→    }
+  1284→  1284→
+  1285→  1285→    /**
+  1286→  1286→     * Checks for updates in the background (no UI).
+  1287→  1287→     * If an update is found and forceUpdate is true, shows a blocking dialog.
+  1288→  1288→     * Otherwise, stores the info for the admin to install later.
+  1289→  1289→     */
+  1290→  1290→    private void checkForUpdatesInBackground() {
+  1291→  1291→        new Thread(() -> {
+  1292→  1292→            try {
+  1293→  1293→                String baseUrl = getKioskUrl();
+  1294→  1294→                // Extract origin from kiosk URL
+  1295→  1295→                String origin = baseUrl;
+  1296→  1296→                if (baseUrl.contains("//")) {
+  1297→  1297→                    int pathStart = baseUrl.indexOf("//", baseUrl.indexOf("//") + 1);
+  1298→  1298→                    if (pathStart > 0) {
+  1299→  1299→                        // Find the first / after the host
+  1300→  1300→                        int slashIndex = baseUrl.indexOf("/", baseUrl.indexOf("//") + 2);
+  1301→  1301→                        if (slashIndex > 0) {
+  1302→  1302→                            origin = baseUrl.substring(0, slashIndex);
+  1303→  1303→                        } else {
+  1304→  1304→                            origin = baseUrl;
+  1305→  1305→                        }
+  1306→  1306→                    }
+  1307→  1307→                }
+  1308→  1308→                String checkUrl = origin + UPDATE_CHECK_URL;
+  1309→  1309→                Log.i(TAG, "Checking for updates: " + checkUrl);
+  1310→  1310→
+  1311→  1311→                URL url = new URL(checkUrl);
+  1312→  1312→                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+  1313→  1313→                conn.setConnectTimeout(15000);
+  1314→  1314→                conn.setReadTimeout(15000);
+  1315→  1315→                conn.setRequestMethod("GET");
+  1316→  1316→                conn.setRequestProperty("User-Agent", "PickupKiosk/" + APP_VERSION);
+  1317→  1317→
+  1318→  1318→                int responseCode = conn.getResponseCode();
+  1319→  1319→                if (responseCode != 200) {
+  1320→  1320→                    Log.w(TAG, "Update check failed: HTTP " + responseCode);
+  1321→  1321→                    return;
+  1322→  1322→                }
+  1323→  1323→
+  1324→  1324→                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+  1325→  1325→                StringBuilder response = new StringBuilder();
+  1326→  1326→                String line;
+  1327→  1327→                while ((line = reader.readLine()) != null) {
+  1328→  1328→                    response.append(line);
+  1329→  1329→                }
+  1330→  1330→                reader.close();
+  1331→  1331→
+  1332→  1332→                String jsonResponse = response.toString();
+  1333→  1333→                Log.i(TAG, "Update check response: " + jsonResponse);
+  1334→  1334→
+  1335→  1335→                // Parse JSON manually (no Gson/Jackson in bare build)
+  1336→  1336→                String serverVersion = extractJsonString(jsonResponse, "version");
+  1337→  1337→                int serverVersionCode = extractJsonInt(jsonResponse, "versionCode");
+  1338→  1338→                String apkUrl = extractJsonString(jsonResponse, "apkUrl");
+  1339→  1339→                String checksum = extractJsonString(jsonResponse, "checksum");
+  1340→  1340→                String changelog = extractJsonString(jsonResponse, "changelog");
+  1341→  1341→                boolean forceUpdate = extractJsonBoolean(jsonResponse, "forceUpdate");
+  1342→  1342→
+  1343→  1343→                if (serverVersion == null || serverVersion.isEmpty()) {
+  1344→  1344→                    Log.w(TAG, "Update check: no version info in response");
+  1345→  1345→                    return;
+  1346→  1346→                }
+  1347→  1347→
+  1348→  1348→                // Store update info
+  1349→  1349→                getPrefs().edit()
+  1350→  1350→                    .putString(KEY_AVAILABLE_VERSION, serverVersion)
+  1351→  1351→                    .putInt(KEY_AVAILABLE_VERSION_CODE, serverVersionCode)
+  1352→  1352→                    .putString(KEY_AVAILABLE_APK_URL, apkUrl)
+  1353→  1353→                    .putString(KEY_AVAILABLE_CHECKSUM, checksum)
+  1354→  1354→                    .putString(KEY_AVAILABLE_CHANGELOG, changelog)
+  1355→  1355→                    .putBoolean(KEY_FORCE_UPDATE, forceUpdate)
+  1356→  1356→                    .putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis())
+  1357→  1357→                    .apply();
+  1358→  1358→
+  1359→  1359→                // Compare versions
+  1360→  1360→                if (serverVersionCode > APP_VERSION_CODE) {
+  1361→  1361→                    pendingUpdateVersion = serverVersion;
+  1362→  1362→                    Log.i(TAG, "Update available: v" + serverVersion + " (code " + serverVersionCode + "), force=" + forceUpdate);
+  1363→  1363→
+  1364→  1364→                    // If force update, show blocking dialog on main thread
+  1365→  1365→                    if (forceUpdate && mainHandler != null) {
+  1366→  1366→                        mainHandler.post(() -> {
+  1367→  1367→                            if (!isDestroyed) showForceUpdateDialog(serverVersion, changelog);
+  1368→  1368→                        });
+  1369→  1369→                    }
+  1370→  1370→                } else {
+  1371→  1371→                    pendingUpdateVersion = null;
+  1372→  1372→                    Log.i(TAG, "App is up to date (v" + APP_VERSION + ")");
+  1373→  1373→                }
+  1374→  1374→
+  1375→  1375→            } catch (Throwable t) {
+  1376→  1376→                Log.e(TAG, "Update check error: " + t.getMessage());
+  1377→  1377→            }
+  1378→  1378→        }).start();
+  1379→  1379→    }
+  1380→  1380→
+  1381→  1381→    /**
+  1382→  1382→     * Manual update check — triggered from menu. Shows result to user.
+  1383→  1383→     */
+  1384→  1384→    private void checkForUpdatesNow() {
+  1385→  1385→        if (isDownloadingUpdate) {
+  1386→  1386→            Toast.makeText(this, "Update is already downloading...", Toast.LENGTH_SHORT).show();
+  1387→  1387→            return;
+  1388→  1388→        }
+  1389→  1389→
+  1390→  1390→        Toast.makeText(this, "Checking for updates...", Toast.LENGTH_SHORT).show();
+  1391→  1391→
+  1392→  1392→        new Thread(() -> {
+  1393→  1393→            try {
+  1394→  1394→                String baseUrl = getKioskUrl();
+  1395→  1395→                String origin = baseUrl;
+  1396→  1396→                if (baseUrl.contains("//")) {
+  1397→  1397→                    int slashIndex = baseUrl.indexOf("/", baseUrl.indexOf("//") + 2);
+  1398→  1398→                    if (slashIndex > 0) {
+  1399→  1399→                        origin = baseUrl.substring(0, slashIndex);
+  1400→  1400→                    }
+  1401→  1401→                }
+  1402→  1402→                String checkUrl = origin + UPDATE_CHECK_URL;
+  1403→  1403→
+  1404→  1404→                URL url = new URL(checkUrl);
+  1405→  1405→                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+  1406→  1406→                conn.setConnectTimeout(15000);
+  1407→  1407→                conn.setReadTimeout(15000);
+  1408→  1408→                conn.setRequestMethod("GET");
+  1409→  1409→                conn.setRequestProperty("User-Agent", "PickupKiosk/" + APP_VERSION);
+  1410→  1410→
+  1411→  1411→                int responseCode = conn.getResponseCode();
+  1412→  1412→                if (responseCode != 200) {
+  1413→  1413→                    mainHandler.post(() ->
+  1414→  1414→                        Toast.makeText(this, "Update check failed (HTTP " + responseCode + ")", Toast.LENGTH_LONG).show()
+  1415→  1415→                    );
+  1416→  1416→                    return;
+  1417→  1417→                }
+  1418→  1418→
+  1419→  1419→                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+  1420→  1420→                StringBuilder response = new StringBuilder();
+  1421→  1421→                String line;
+  1422→  1422→                while ((line = reader.readLine()) != null) {
+  1423→  1423→                    response.append(line);
+  1424→  1424→                }
+  1425→  1425→                reader.close();
+  1426→  1426→
+  1427→  1427→                String jsonResponse = response.toString();
+  1428→  1428→
+  1429→  1429→                String serverVersion = extractJsonString(jsonResponse, "version");
+  1430→  1430→                int serverVersionCode = extractJsonInt(jsonResponse, "versionCode");
+  1431→  1431→                String apkUrl = extractJsonString(jsonResponse, "apkUrl");
+  1432→  1432→                String checksum = extractJsonString(jsonResponse, "checksum");
+  1433→  1433→                String changelog = extractJsonString(jsonResponse, "changelog");
+  1434→  1434→                boolean forceUpdate = extractJsonBoolean(jsonResponse, "forceUpdate");
+  1435→  1435→
+  1436→  1436→                // Store update info
+  1437→  1437→                getPrefs().edit()
+  1438→  1438→                    .putString(KEY_AVAILABLE_VERSION, serverVersion)
+  1439→  1439→                    .putInt(KEY_AVAILABLE_VERSION_CODE, serverVersionCode)
+  1440→  1440→                    .putString(KEY_AVAILABLE_APK_URL, apkUrl)
+  1441→  1441→                    .putString(KEY_AVAILABLE_CHECKSUM, checksum)
+  1442→  1442→                    .putString(KEY_AVAILABLE_CHANGELOG, changelog)
+  1443→  1443→                    .putBoolean(KEY_FORCE_UPDATE, forceUpdate)
+  1444→  1444→                    .putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis())
+  1445→  1445→                    .apply();
+  1446→  1446→
+  1447→  1447→                if (serverVersionCode > APP_VERSION_CODE) {
+  1448→  1448→                    pendingUpdateVersion = serverVersion;
+  1449→  1449→                    mainHandler.post(() -> {
+  1450→  1450→                        if (!isDestroyed) {
+  1451→  1451→                            showUpdateAvailableDialog(serverVersion, changelog, apkUrl);
+  1452→  1452→                        }
+  1453→  1453→                    });
+  1454→  1454→                } else {
+  1455→  1455→                    pendingUpdateVersion = null;
+  1456→  1456→                    mainHandler.post(() ->
+  1457→  1457→                        Toast.makeText(this, "App is up to date (v" + APP_VERSION + ")", Toast.LENGTH_LONG).show()
+  1458→  1458→                    );
+  1459→  1459→                }
+  1460→  1460→
+  1461→  1461→            } catch (Throwable t) {
+  1462→  1462→                mainHandler.post(() ->
+  1463→  1463→                    Toast.makeText(this, "Update check failed: " + t.getMessage(), Toast.LENGTH_LONG).show()
+  1464→  1464→                );
+  1465→  1465→                Log.e(TAG, "Manual update check error: " + t.getMessage());
+  1466→  1466→            }
+  1467→  1467→        }).start();
+  1468→  1468→    }
+  1469→  1469→
+  1470→  1470→    /**
+  1471→  1471→     * Shows the update sub-menu with details and actions.
+  1472→  1472→     */
+  1473→  1473→    private void showUpdateMenu() {
+  1474→  1474→        try {
+  1475→  1475→            String availableVersion = getPrefs().getString(KEY_AVAILABLE_VERSION, "");
+  1476→  1476→            String changelog = getPrefs().getString(KEY_AVAILABLE_CHANGELOG, "");
+  1477→  1477→            long lastCheck = getPrefs().getLong(KEY_LAST_UPDATE_CHECK, 0);
+  1478→  1478→
+  1479→  1479→            String lastCheckStr = lastCheck > 0
+  1480→  1480→                ? new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date(lastCheck))
+  1481→  1481→                : "Never";
+  1482→  1482→
+  1483→  1483→            if (availableVersion != null && !availableVersion.isEmpty() && pendingUpdateVersion != null) {
+  1484→  1484→                // Update available — show details
+  1485→  1485→                String message = "Current version: v" + APP_VERSION + "\n"
+  1486→  1486→                    + "Available: v" + availableVersion + "\n"
+  1487→  1487→                    + "Last checked: " + lastCheckStr + "\n\n"
+  1488→  1488→                    + (changelog != null && !changelog.isEmpty() ? "What's new:\n" + changelog : "");
+  1489→  1489→
+  1490→  1490→                new AlertDialog.Builder(this)
+  1491→  1491→                    .setTitle("Update Available")
+  1492→  1492→                    .setMessage(message)
+  1493→  1493→                    .setPositiveButton("Download & Install", (dialog, which) -> {
+  1494→  1494→                        downloadAndInstallUpdate();
+  1495→  1495→                    })
+  1496→  1496→                    .setNeutralButton("Check Again", (dialog, which) -> {
+  1497→  1497→                        checkForUpdatesNow();
+  1498→  1498→                    })
+  1499→  1499→                    .setNegativeButton("Later", null)
+  1500→  1500→                    .setCancelable(true)
+  1501→  1501→                    .show();
+  1502→  1502→            } else {
+  1503→  1503→                // No update available
+  1504→  1504→                String message = "Current version: v" + APP_VERSION + "\n"
+  1505→  1505→                    + "Last checked: " + lastCheckStr;
+  1506→  1506→
+  1507→  1507→                new AlertDialog.Builder(this)
+  1508→  1508→                    .setTitle("App Updates")
+  1509→  1509→                    .setMessage(message)
+  1510→  1510→                    .setPositiveButton("Check Now", (dialog, which) -> {
+  1511→  1511→                        checkForUpdatesNow();
+  1512→  1512→                    })
+  1513→  1513→                    .setNegativeButton("Close", null)
+  1514→  1514→                    .setCancelable(true)
+  1515→  1515→                    .show();
+  1516→  1516→            }
+  1517→  1517→        } catch (Throwable t) {
+  1518→  1518→            Log.e(TAG, "Update menu failed: " + t.getMessage());
+  1519→  1519→        }
+  1520→  1520→    }
+  1521→  1521→
+  1522→  1522→    /**
+  1523→  1523→     * Shows a non-dismissable dialog when forceUpdate is true.
+  1524→  1524→     */
+  1525→  1525→    private void showForceUpdateDialog(String version, String changelog) {
+  1526→  1526→        try {
+  1527→  1527→            String message = "A critical update (v" + version + ") is available.\n\n"
+  1528→  1528→                + (changelog != null && !changelog.isEmpty() ? changelog + "\n\n" : "")
+  1529→  1529→                + "The app must be updated to continue.";
+  1530→  1530→
+  1531→  1531→            new AlertDialog.Builder(this)
+  1532→  1532→                .setTitle("Critical Update Required")
+  1533→  1533→                .setMessage(message)
+  1534→  1534→                .setCancelable(false)
+  1535→  1535→                .setPositiveButton("Update Now", (dialog, which) -> {
+  1536→  1536→                    downloadAndInstallUpdate();
+  1537→  1537→                })
+  1538→  1538→                .show();
+  1539→  1539→        } catch (Throwable t) {
+  1540→  1540→            Log.e(TAG, "Force update dialog failed: " + t.getMessage());
+  1541→  1541→        }
+  1542→  1542→    }
+  1543→  1543→
+  1544→  1544→    /**
+  1545→  1545→     * Shows a dismissable dialog when an optional update is available.
+  1546→  1546→     */
+  1547→  1547→    private void showUpdateAvailableDialog(String version, String changelog, String apkUrl) {
+  1548→  1548→        try {
+  1549→  1549→            String message = "A new version (v" + version + ") is available.\n\n"
+  1550→  1550→                + (changelog != null && !changelog.isEmpty() ? "What's new:\n" + changelog : "");
+  1551→  1551→
+  1552→  1552→            new AlertDialog.Builder(this)
+  1553→  1553→                .setTitle("Update Available")
+  1554→  1554→                .setMessage(message)
+  1555→  1555→                .setPositiveButton("Download & Install", (dialog, which) -> {
+  1556→  1556→                    downloadAndInstallUpdate();
+  1557→  1557→                })
+  1558→  1558→                .setNeutralButton("Skip This Version", (dialog, which) -> {
+  1559→  1559→                    getPrefs().edit().putString(KEY_UPDATE_SKIPPED_VERSION, version).apply();
+  1560→  1560→                    Toast.makeText(this, "v" + version + " skipped. Admin can still install from menu.", Toast.LENGTH_LONG).show();
+  1561→  1561→                })
+  1562→  1562→                .setNegativeButton("Later", null)
+  1563→  1563→                .setCancelable(true)
+  1564→  1564→                .show();
+  1565→  1565→        } catch (Throwable t) {
+  1566→  1566→            Log.e(TAG, "Update available dialog failed: " + t.getMessage());
+  1567→  1567→        }
+  1568→  1568→    }
+  1569→  1569→
+  1570→  1570→    /**
+  1571→  1571→     * Downloads the APK update and triggers installation.
+  1572→  1572→     * Shows a progress dialog during download.
+  1573→  1573→     */
+  1574→  1574→    private void downloadAndInstallUpdate() {
+  1575→  1575→        if (isDownloadingUpdate) {
+  1576→  1576→            Toast.makeText(this, "Update is already downloading...", Toast.LENGTH_SHORT).show();
+  1577→  1577→            return;
+  1578→  1578→        }
+  1579→  1579→
+  1580→  1580→        String apkUrl = getPrefs().getString(KEY_AVAILABLE_APK_URL, "");
+  1581→  1581→        if (apkUrl == null || apkUrl.isEmpty()) {
+  1582→  1582→            // Construct download URL from server
+  1583→  1583→            String baseUrl = getKioskUrl();
+  1584→  1584→            String origin = baseUrl;
+  1585→  1585→            if (baseUrl.contains("//")) {
+  1586→  1586→                int slashIndex = baseUrl.indexOf("/", baseUrl.indexOf("//") + 2);
+  1587→  1587→                if (slashIndex > 0) {
+  1588→  1588→                    origin = baseUrl.substring(0, slashIndex);
+  1589→  1589→                }
+  1590→  1590→            }
+  1591→  1591→            apkUrl = origin + "/api/app-version/download";
+  1592→  1592→        }
+  1593→  1593→
+  1594→  1594→        final String downloadUrl = apkUrl;
+  1595→  1595→        isDownloadingUpdate = true;
+  1596→  1596→
+  1597→  1597→        ProgressDialog progressDialog = new ProgressDialog(this);
+  1598→  1598→        progressDialog.setTitle("Downloading Update");
+  1599→  1599→        progressDialog.setMessage("Preparing download...");
+  1600→  1600→        progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+  1601→  1601→        progressDialog.setMax(100);
+  1602→  1602→        progressDialog.setProgress(0);
+  1603→  1603→        progressDialog.setCancelable(false);
+  1604→  1604→        progressDialog.show();
+  1605→  1605→
+  1606→  1606→        new Thread(() -> {
+  1607→  1607→            try {
+  1608→  1608→                // Create update directory
+  1609→  1609→                File updateDir = new File(getExternalFilesDir(null), UPDATE_DIR);
+  1610→  1610→                if (!updateDir.exists()) {
+  1611→  1611→                    updateDir.mkdirs();
+  1612→  1612→                }
+  1613→  1613→                File apkFile = new File(updateDir, APK_FILENAME);
+  1614→  1614→
+  1615→  1615→                // Delete any previous download
+  1616→  1616→                if (apkFile.exists()) {
+  1617→  1617→                    apkFile.delete();
+  1618→  1618→                }
+  1619→  1619→
+  1620→  1620→                Log.i(TAG, "Downloading update from: " + downloadUrl);
+  1621→  1621→
+  1622→  1622→                URL url = new URL(downloadUrl);
+  1623→  1623→                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+  1624→  1624→                conn.setConnectTimeout(30000);
+  1625→  1625→                conn.setReadTimeout(120000); // 2 min read timeout for large APK
+  1626→  1626→                conn.setRequestMethod("GET");
+  1627→  1627→                conn.setRequestProperty("User-Agent", "PickupKiosk/" + APP_VERSION);
+  1628→  1628→
+  1629→  1629→                int responseCode = conn.getResponseCode();
+  1630→  1630→                if (responseCode != 200) {
+  1631→  1631→                    mainHandler.post(() -> {
+  1632→  1632→                        progressDialog.dismiss();
+  1633→  1633→                        isDownloadingUpdate = false;
+  1634→  1634→                        Toast.makeText(this, "Download failed (HTTP " + responseCode + ")", Toast.LENGTH_LONG).show();
+  1635→  1635→                    });
+  1636→  1636→                    return;
+  1637→  1637→                }
+  1638→  1638→
+  1639→  1639→                int contentLength = conn.getContentLength();
+  1640→  1640→                InputStream input = conn.getInputStream();
+  1641→  1641→                FileOutputStream output = new FileOutputStream(apkFile);
+  1642→  1642→
+  1643→  1643→                byte[] buffer = new byte[8192];
+  1644→  1644→                long totalRead = 0;
+  1645→  1645→                int bytesRead;
+  1646→  1646→
+  1647→  1647→                while ((bytesRead = input.read(buffer)) != -1) {
+  1648→  1648→                    output.write(buffer, 0, bytesRead);
+  1649→  1649→                    totalRead += bytesRead;
+  1650→  1650→
+  1651→  1651→                    if (contentLength > 0) {
+  1652→  1652→                        int progress = (int) ((totalRead * 100) / contentLength);
+  1653→  1653→                        final int p = progress;
+  1654→  1654→                        final long mb = totalRead / (1024 * 1024);
+  1655→  1655→                        mainHandler.post(() -> {
+  1656→  1656→                            if (!isDestroyed) {
+  1657→  1657→                                progressDialog.setProgress(p);
+  1658→  1658→                                progressDialog.setMessage("Downloaded: " + mb + " MB");
+  1659→  1659→                            }
+  1660→  1660→                        });
+  1661→  1661→                    }
+  1662→  1662→                }
+  1663→  1663→
+  1664→  1664→                output.flush();
+  1665→  1665→                output.close();
+  1666→  1666→                input.close();
+  1667→  1667→
+  1668→  1668→                // Verify checksum if available
+  1669→  1669→                String expectedChecksum = getPrefs().getString(KEY_AVAILABLE_CHECKSUM, "");
+  1670→  1670→                if (expectedChecksum != null && !expectedChecksum.isEmpty() && expectedChecksum.startsWith("sha256:")) {
+  1671→  1671→                    String expectedHash = expectedChecksum.substring(7);
+  1672→  1672→                    String actualHash = computeSHA256(apkFile);
+  1673→  1673→                    if (!expectedHash.equalsIgnoreCase(actualHash)) {
+  1674→  1674→                        Log.e(TAG, "Checksum mismatch! Expected: " + expectedHash + " Got: " + actualHash);
+  1675→  1675→                        apkFile.delete();
+  1676→  1676→                        mainHandler.post(() -> {
+  1677→  1677→                            progressDialog.dismiss();
+  1678→  1678→                            isDownloadingUpdate = false;
+  1679→  1679→                            new AlertDialog.Builder(this)
+  1680→  1680→                                .setTitle("Update Failed")
+  1681→  1681→                                .setMessage("Downloaded file is corrupted (checksum mismatch). Please try again.")
+  1682→  1682→                                .setPositiveButton("OK", null)
+  1683→  1683→                                .show();
+  1684→  1684→                        });
+  1685→  1685→                        return;
+  1686→  1686→                    }
+  1687→  1687→                    Log.i(TAG, "Checksum verified OK");
+  1688→  1688→                }
+  1689→  1689→
+  1690→  1690→                // Download complete — install
+  1691→  1691→                mainHandler.post(() -> {
+  1692→  1692→                    if (isDestroyed) return;
+  1693→  1693→                    progressDialog.dismiss();
+  1694→  1694→                    isDownloadingUpdate = false;
+  1695→  1695→                    installApk(apkFile);
+  1696→  1696→                });
+  1697→  1697→
+  1698→  1698→            } catch (Throwable t) {
+  1699→  1699→                Log.e(TAG, "Download failed: " + t.getMessage(), t);
+  1700→  1700→                mainHandler.post(() -> {
+  1701→  1701→                    if (!isDestroyed) {
+  1702→  1702→                        progressDialog.dismiss();
+  1703→  1703→                        isDownloadingUpdate = false;
+  1704→  1704→                        new AlertDialog.Builder(this)
+  1705→  1705→                            .setTitle("Download Failed")
+  1706→  1706→                            .setMessage("Could not download update: " + t.getMessage())
+  1707→  1707→                            .setPositiveButton("OK", null)
+  1708→  1708→                            .show();
+  1709→  1709→                    }
+  1710→  1710→                });
+  1711→  1711→            }
+  1712→  1712→        }).start();
+  1713→  1713→    }
+  1714→  1714→
+  1715→  1715→    /**
+  1716→  1716→     * Installs the downloaded APK file.
+  1717→  1717→     * On Android 7+, uses FileProvider for the content URI.
+  1718→  1718→     * On Android 5-6, uses a file:// URI directly.
+  1719→  1719→     */
+  1720→  1720→    private void installApk(File apkFile) {
+  1721→  1721→        try {
+  1722→  1722→            if (!apkFile.exists()) {
+  1723→  1723→                Toast.makeText(this, "APK file not found", Toast.LENGTH_LONG).show();
+  1724→  1724→                return;
+  1725→  1725→            }
+  1726→  1726→
+  1727→  1727→            Log.i(TAG, "Installing APK: " + apkFile.getAbsolutePath() + " (" + apkFile.length() + " bytes)");
+  1728→  1728→
+  1729→  1729→            Intent installIntent;
+  1730→  1730→
+  1731→  1731→            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+  1732→  1732→                // Android 7+: Must use FileProvider
+  1733→  1733→                Uri apkUri = FileProvider.getUriForFile(
+  1734→  1734→                    this,
+  1735→  1735→                    "com.pickupjamaica.kiosk.fileprovider",
+  1736→  1736→                    apkFile
+  1737→  1737→                );
+  1738→  1738→                installIntent = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+  1739→  1739→                installIntent.setData(apkUri);
+  1740→  1740→                installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+  1741→  1741→            } else {
+  1742→  1742→                // Android 5-6: Can use file:// URI
+  1743→  1743→                installIntent = new Intent(Intent.ACTION_VIEW);
+  1744→  1744→                installIntent.setDataAndType(
+  1745→  1745→                    Uri.fromFile(apkFile),
+  1746→  1746→                    "application/vnd.android.package-archive"
+  1747→  1747→                );
+  1748→  1748→            }
+  1749→  1749→
+  1750→  1750→            installIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+  1751→  1751→
+  1752→  1752→            // Check if we can install packages (Android 8+ requires permission)
+  1753→  1753→            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+  1754→  1754→                if (!getPackageManager().canRequestPackageInstalls()) {
+  1755→  1755→                    // Need to prompt user to enable install permission
+  1756→  1756→                    new AlertDialog.Builder(this)
+  1757→  1757→                        .setTitle("Install Permission Required")
+  1758→  1758→                        .setMessage("To install updates, this app needs permission to install unknown apps.\n\nPlease enable it in Settings and then try again.")
+  1759→  1759→                        .setPositiveButton("Open Settings", (dialog, which) -> {
+  1760→  1760→                            Intent settingsIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+  1761→  1761→                            settingsIntent.setData(Uri.parse("package:com.pickupjamaica.kiosk"));
+  1762→  1762→                            settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+  1763→  1763→                            startActivity(settingsIntent);
+  1764→  1764→                        })
+  1765→  1765→                        .setNegativeButton("Cancel", null)
+  1766→  1766→                        .show();
+  1767→  1767→                    return;
+  1768→  1768→                }
+  1769→  1769→            }
+  1770→  1770→
+  1771→  1771→            startActivity(installIntent);
+  1772→  1772→
+  1773→  1773→        } catch (Throwable t) {
+  1774→  1774→            Log.e(TAG, "Install failed: " + t.getMessage(), t);
+  1775→  1775→            Toast.makeText(this, "Install failed: " + t.getMessage(), Toast.LENGTH_LONG).show();
+  1776→  1776→        }
+  1777→  1777→    }
+  1778→  1778→
+  1779→  1779→    /**
+  1780→  1780→     * Computes SHA-256 hash of a file.
+  1781→  1781→     */
+  1782→  1782→    private String computeSHA256(File file) throws Exception {
+  1783→  1783→        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+  1784→  1784→        FileInputStream fis = new FileInputStream(file);
+  1785→  1785→        byte[] buffer = new byte[8192];
+  1786→  1786→        int bytesRead;
+  1787→  1787→        while ((bytesRead = fis.read(buffer)) != -1) {
+  1788→  1788→            digest.update(buffer, 0, bytesRead);
+  1789→  1789→        }
+  1790→  1790→        fis.close();
+  1791→  1791→
+  1792→  1792→        byte[] hash = digest.digest();
+  1793→  1793→        StringBuilder hexString = new StringBuilder();
+  1794→  1794→        for (byte b : hash) {
+  1795→  1795→            String hex = Integer.toHexString(0xff & b);
+  1796→  1796→            if (hex.length() == 1) hexString.append('0');
+  1797→  1797→            hexString.append(hex);
+  1798→  1798→        }
+  1799→  1799→        return hexString.toString();
+  1800→  1800→    }
+  1801→  1801→
+  1802→  1802→    /**
+  1803→  1803→     * Simple JSON string extractor (no external JSON library).
+  1804→  1804→     * Handles: "key": "value"
+  1805→  1805→     */
+  1806→  1806→    private String extractJsonString(String json, String key) {
+  1807→  1807→        try {
+  1808→  1808→            String searchKey = "\"" + key + "\"";
+  1809→  1809→            int keyIndex = json.indexOf(searchKey);
+  1810→  1810→            if (keyIndex < 0) return "";
+  1811→  1811→
+  1812→  1812→            // Find the colon after the key
+  1813→  1813→            int colonIndex = json.indexOf(":", keyIndex + searchKey.length());
+  1814→  1814→            if (colonIndex < 0) return "";
+  1815→  1815→
+  1816→  1816→            // Find the opening quote of the value
+  1817→  1817→            int openQuote = json.indexOf("\"", colonIndex + 1);
+  1818→  1818→            if (openQuote < 0) return "";
+  1819→  1819→
+  1820→  1820→            // Find the closing quote
+  1821→  1821→            int closeQuote = json.indexOf("\"", openQuote + 1);
+  1822→  1822→            if (closeQuote < 0) return "";
+  1823→  1823→
+  1824→  1824→            return json.substring(openQuote + 1, closeQuote);
+  1825→  1825→        } catch (Throwable t) {
+  1826→  1826→            return "";
+  1827→  1827→        }
+  1828→  1828→    }
+  1829→  1829→
+  1830→  1830→    /**
+  1831→  1831→     * Simple JSON integer extractor.
+  1832→  1832→     */
+  1833→  1833→    private int extractJsonInt(String json, String key) {
+  1834→  1834→        try {
+  1835→  1835→            String searchKey = "\"" + key + "\"";
+  1836→  1836→            int keyIndex = json.indexOf(searchKey);
+  1837→  1837→            if (keyIndex < 0) return 0;
+  1838→  1838→
+  1839→  1839→            int colonIndex = json.indexOf(":", keyIndex + searchKey.length());
+  1840→  1840→            if (colonIndex < 0) return 0;
+  1841→  1841→
+  1842→  1842→            // Skip whitespace
+  1843→  1843→            int start = colonIndex + 1;
+  1844→  1844→            while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+  1845→  1845→
+  1846→  1846→            // Find end of number
+  1847→  1847→            int end = start;
+  1848→  1848→            while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) end++;
+  1849→  1849→
+  1850→  1850→            if (start >= end) return 0;
+  1851→  1851→            return Integer.parseInt(json.substring(start, end));
+  1852→  1852→        } catch (Throwable t) {
+  1853→  1853→            return 0;
+  1854→  1854→        }
+  1855→  1855→    }
+  1856→  1856→
+  1857→  1857→    /**
+  1858→  1858→     * Simple JSON boolean extractor.
+  1859→  1859→     */
+  1860→  1860→    private boolean extractJsonBoolean(String json, String key) {
+  1861→  1861→        try {
+  1862→  1862→            String searchKey = "\"" + key + "\"";
+  1863→  1863→            int keyIndex = json.indexOf(searchKey);
+  1864→  1864→            if (keyIndex < 0) return false;
+  1865→  1865→
+  1866→  1866→            int colonIndex = json.indexOf(":", keyIndex + searchKey.length());
+  1867→  1867→            if (colonIndex < 0) return false;
+  1868→  1868→
+  1869→  1869→            // Check if "true" appears before the next comma or closing brace
+  1870→  1870→            int start = colonIndex + 1;
+  1871→  1871→            while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+  1872→  1872→
+  1873→  1873→            return json.substring(start, Math.min(start + 4, json.length())).equals("true");
+  1874→  1874→        } catch (Throwable t) {
+  1875→  1875→            return false;
+  1876→  1876→        }
+  1877→  1877→    }
+  1878→  1878→
+  1879→  1879→    // ============================================
+  1880→  1880→    // ACTIONS: BACKEND PANEL
+  1881→  1881→    // ============================================
+  1882→  1882→
+  1883→  1883→    private void openBackendPanel() {
+  1884→  1884→        try {
+  1885→  1885→            isViewingBackend = true;
+  1886→  1886→            String url = getBackendUrl();
+  1887→  1887→            if (webView != null) {
+  1888→  1888→                webView.loadUrl(url);
+  1889→  1889→                Log.i(TAG, "Loading backend panel: " + url);
+  1890→  1890→            }
+  1891→  1891→            Toast.makeText(this, "Backend Panel loaded\nUse 5-tap + code to return", Toast.LENGTH_LONG).show();
+  1892→  1892→        } catch (Throwable t) {
+  1893→  1893→            Log.e(TAG, "Failed to open backend: " + t.getMessage());
+  1894→  1894→        }
+  1895→  1895→    }
+  1896→  1896→
+  1897→  1897→    // ============================================
+  1898→  1898→    // ACTIONS: WIFI SETTINGS
+  1899→  1899→    // ============================================
+  1900→  1900→
+  1901→  1901→    private void openWifiSettings() {
+  1902→  1902→        try {
+  1903→  1903→            Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
+  1904→  1904→            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+  1905→  1905→            startActivity(intent);
+  1906→  1906→        } catch (Throwable t) {
+  1907→  1907→            // Fallback to general settings
+  1908→  1908→            try {
+  1909→  1909→                Intent intent = new Intent(Settings.ACTION_SETTINGS);
+  1910→  1910→                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+  1911→  1911→                startActivity(intent);
+  1912→  1912→            } catch (Throwable t2) {
+  1913→  1913→                Log.e(TAG, "Failed to open any settings: " + t2.getMessage());
+  1914→  1914→            }
+  1915→  1915→        }
+  1916→  1916→    }
+  1917→  1917→
+  1918→  1918→    // ============================================
+  1919→  1919→    // ACTIONS: RELOAD & CLOSE
+  1920→  1920→    // ============================================
+  1921→  1921→
+  1922→  1922→    private void reloadKiosk() {
+  1923→  1923→        isShowingOfflinePage = false;
+  1924→  1924→        isViewingBackend = false;
+  1925→  1925→        reconnectAttempts = 0;
+  1926→  1926→        if (webView != null) {
+  1927→  1927→            try {
+  1928→  1928→                webView.clearCache(true);
+  1929→  1929→                webView.loadUrl(getKioskUrl());
+  1930→  1930→            } catch (Throwable t) {
+  1931→  1931→                Log.e(TAG, "Failed to reload: " + t.getMessage());
+  1932→  1932→            }
+  1933→  1933→        }
+  1934→  1934→    }
+  1935→  1935→
+  1936→  1936→    private void closeApp() {
+  1937→  1937→        unregisterConnectivityMonitoring();
+  1938→  1938→        if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
+  1939→  1939→        finishAffinity();
+  1940→  1940→        System.exit(0);
+  1941→  1941→    }
+  1942→  1942→}
+  1943→  1943→
