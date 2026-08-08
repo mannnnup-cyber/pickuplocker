@@ -1,4 +1,7 @@
-package com.pickupjamaica.kiosk;
+#!/usr/bin/env python3
+"""Generate the v3.4 MainActivity.java with all white-screen recovery fixes."""
+
+content = r'''package com.pickupjamaica.kiosk;
 
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
@@ -169,7 +172,6 @@ public class MainActivity extends AppCompatActivity {
     private int healthCheckFailCount = 0;
     private boolean healthCheckInProgress = false;    // Prevents overlapping health checks
     private int healthCheckId = 0;                     // Monotonic ID for each health check
-    private Runnable healthCheckTimeoutRunnable;       // Timeout runnable for current health check
     private Runnable healthCheckRunnable;
     private Runnable updateCheckRunnable;
     private boolean isDownloadingUpdate = false;
@@ -796,11 +798,8 @@ public class MainActivity extends AppCompatActivity {
             webView.evaluateJavascript("(function(){ try { var c = document.querySelector('.container'); return c ? 'ok' : 'empty'; } catch(e) { return 'error'; } })()", new android.webkit.ValueCallback<String>() {
                 @Override
                 public void onReceiveValue(String value) {
-                    // Cancel the timeout since we got a response
-                    if (healthCheckTimeoutRunnable != null) {
-                        mainHandler.removeCallbacks(healthCheckTimeoutRunnable);
-                        healthCheckTimeoutRunnable = null;
-                    }
+                    // Remove the timeout since we got a response
+                    mainHandler.removeCallbacksAndMessages("health_timeout_" + checkId);
 
                     healthCheckInProgress = false;
 
@@ -832,11 +831,9 @@ public class MainActivity extends AppCompatActivity {
 
             // NATIVE TIMEOUT: If the callback doesn't fire within 10 seconds,
             // count it as a failed check. This is the critical fix for frozen renderers.
-            // We store the timeout Runnable so we can cancel it if the callback arrives.
-            healthCheckTimeoutRunnable = () -> {
+            mainHandler.postDelayed(() -> {
                 if (healthCheckInProgress) {
                     healthCheckInProgress = false;
-                    healthCheckTimeoutRunnable = null;
                     healthCheckFailCount++;
                     Log.w(TAG, "Health check #" + checkId + ": TIMED OUT after " + HEALTH_CHECK_TIMEOUT_MS + "ms -- renderer likely frozen (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
                     diagLog("HEALTH_TIMEOUT", "checkId=" + checkId + ", timeout=" + HEALTH_CHECK_TIMEOUT_MS + "ms, failCount=" + healthCheckFailCount);
@@ -847,8 +844,7 @@ public class MainActivity extends AppCompatActivity {
                         rebuildWebView("health_timeout_" + checkId);
                     }
                 }
-            };
-            mainHandler.postDelayed(healthCheckTimeoutRunnable, HEALTH_CHECK_TIMEOUT_MS);
+            }, HEALTH_CHECK_TIMEOUT_MS);
 
         } else {
             // Pre-KitKat: just check offline status (no evaluateJavascript available)
@@ -2156,8 +2152,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private long getStartTime() {
-        // ProcessHandle is API 33+; not available on our API 22 target.
-        // Use pageLoadStartTime as a proxy for app start time.
+        // Use process start time (available since API 24, fall back to pageLoadStartTime)
+        if (Build.VERSION.SDK_INT >= 24) {
+            try {
+                return java.lang.ProcessHandle.current().info().startInstant()
+                    .toEpochMilli();
+            } catch (Throwable t) {}
+        }
+        // Fallback: use lastPageFinishTime or pageLoadStartTime
         return pageLoadStartTime > 0 ? pageLoadStartTime : System.currentTimeMillis();
     }
 
@@ -2413,3 +2415,12 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 }
+'''
+
+# Write the file
+output_path = "/home/z/my-project/bare-android/app/src/main/java/com/pickupjamaica/kiosk/MainActivity.java"
+with open(output_path, 'w') as f:
+    f.write(content)
+
+print(f"Wrote {len(content)} bytes to {output_path}")
+print("v3.4 MainActivity.java generated successfully")
