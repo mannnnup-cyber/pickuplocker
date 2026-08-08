@@ -1,0 +1,784 @@
+     1→package com.pickupjamaica.kiosk;
+     2→
+     3→import android.app.AlertDialog;
+     4→import android.content.Context;
+     5→import android.content.Intent;
+     6→import android.net.ConnectivityManager;
+     7→import android.net.Network;
+     8→import android.net.NetworkCapabilities;
+     9→import android.net.NetworkRequest;
+    10→import android.os.Build;
+    11→import android.os.Bundle;
+    12→import android.os.Handler;
+    13→import android.os.Looper;
+    14→import android.provider.Settings;
+    15→import android.text.InputType;
+    16→import android.util.Log;
+    17→import android.view.Gravity;
+    18→import android.view.MotionEvent;
+    19→import android.view.View;
+    20→import android.view.WindowManager;
+    21→import android.webkit.ConsoleMessage;
+    22→import android.webkit.WebChromeClient;
+    23→import android.webkit.WebResourceError;
+    24→import android.webkit.WebResourceRequest;
+    25→import android.webkit.WebSettings;
+    26→import android.webkit.WebView;
+    27→import android.webkit.WebViewClient;
+    28→import android.widget.EditText;
+    29→import android.widget.FrameLayout;
+    30→import android.widget.LinearLayout;
+    31→
+    32→import com.getcapacitor.BridgeActivity;
+    33→
+    34→/**
+    35→ * Kiosk MainActivity — Full-screen WebView wrapper for Pickup Jamaica locker system.
+    36→ *
+    37→ * Critical features:
+    38→ * - Immersive sticky mode (Android 5+ legacy + Android 11+ WindowInsetsController)
+    39→ * - Network error handling with branded offline page
+    40→ * - Auto-reload when connectivity is restored
+    41→ * - Screen always on (WAKE_LOCK) for 24/7 kiosk operation
+    42→ * - Screenshot prevention (FLAG_SECURE) for payment security
+    43→ * - Landscape orientation lock (set in manifest)
+    44→ * - WebView debugging disabled in release builds
+    45→ * - Auto-restart on boot (via BootReceiver)
+    46→ */
+    47→public class MainActivity extends BridgeActivity {
+    48→
+    49→    private static final String TAG = "PickupKiosk";
+    50→    private static final String KIOSK_URL = "https://pickuplocker.vercel.app/kiosk-lite";
+    51→    private static final String OFFLINE_URL = "file:///android_asset/offline.html";
+    52→    private static final int RECONNECT_DELAY_MS = 5000;     // 5 seconds
+    53→    private static final int MAX_RECONNECT_ATTEMPTS = 60;    // 5 minutes total
+    54→    private static final int CONNECTIVITY_CHECK_MS = 3000;   // 3 seconds after network callback
+    55→
+    56→    private WebView webView;
+    57→    private Handler mainHandler = new Handler(Looper.getMainLooper());
+    58→    private ConnectivityManager.NetworkCallback networkCallback;
+    59→    private boolean isShowingOfflinePage = false;
+    60→    private int reconnectAttempts = 0;
+    61→
+    62→    // WebView health monitoring — detects frozen/white screens at the native level
+    63→    private static final int HEALTH_CHECK_INTERVAL_MS = 60000;   // 1 minute
+    64→    private static final int HEALTH_RELOAD_THRESHOLD = 2;        // After 2 failed checks, force reload (2 min total)
+    65→    private int healthCheckFailCount = 0;
+    66→    private Runnable healthCheckRunnable;
+    67→
+    68→    // Secret exit mechanism: tap top-left corner 5 times within 3 seconds
+    69→    private static final int SECRET_TAP_COUNT = 5;
+    70→    private static final int SECRET_TAP_TIMEOUT_MS = 3000;  // 3 seconds
+    71→    private static final int SECRET_TAP_AREA_DP = 80;       // 80dp x 80dp hit area
+    72→    private int secretTapCount = 0;
+    73→    private long lastSecretTapTime = 0;
+    74→
+    75→    // Admin PIN for kiosk exit (change this to your desired PIN)
+    76→    // In production, this should be fetched from server or stored encrypted
+    77→    private static final String ADMIN_EXIT_PIN = "1234";
+    78→
+    79→
+    80→    @Override
+    81→    protected void onCreate(Bundle savedInstanceState) {
+    82→        super.onCreate(savedInstanceState);
+    83→
+    84→        // Keep screen on for kiosk mode (24/7 operation)
+    85→        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    86→
+    87→        // Prevent screenshots and screen recording (payment security)
+    88→        getWindow().setFlags(
+    89→            WindowManager.LayoutParams.FLAG_SECURE,
+    90→            WindowManager.LayoutParams.FLAG_SECURE
+    91→        );
+    92→
+    93→        // Fullscreen — hide status bar and navigation bar
+    94→        hideSystemUI();
+    95→
+    96→        // Configure WebView
+    97→        configureWebView();
+    98→
+    99→        // Register network connectivity monitoring
+   100→        registerConnectivityMonitoring();
+   101→
+   102→        // Start WebView health monitoring
+   103→        startHealthMonitoring();
+   104→    }
+   105→
+   106→    @Override
+   107→    public void onWindowFocusChanged(boolean hasFocus) {
+   108→        super.onWindowFocusChanged(hasFocus);
+   109→        if (hasFocus) {
+   110→            hideSystemUI();
+   111→        }
+   112→    }
+   113→
+   114→    @Override
+   115→    protected void onResume() {
+   116→        super.onResume();
+   117→        // Re-apply immersive mode when returning to the activity
+   118→        hideSystemUI();
+   119→
+   120→        // If we were showing the offline page, check if network is back
+   121→        if (isShowingOfflinePage) {
+   122→            checkAndReload();
+   123→        }
+   124→    }
+   125→
+   126→    @Override
+   127→    protected void onDestroy() {
+   128→        super.onDestroy();
+   129→        // Clean up network callback
+   130→        unregisterConnectivityMonitoring();
+   131→        // Stop health monitoring
+   132→        stopHealthMonitoring();
+   133→        // Remove any pending reconnect runnables
+   134→        mainHandler.removeCallbacksAndMessages(null);
+   135→    }
+   136→
+   137→    // ============================================
+   138→    // IMMERSIVE MODE — Works on Android 5.0 through 15+
+   139→    // ============================================
+   140→
+   141→    private void hideSystemUI() {
+   142→        // Modern API (Android 11 / API 30+)
+   143→        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+   144→            getWindow().setDecorFitsSystemWindows(false);
+   145→
+   146→            getWindow().getInsetsController().hide(
+   147→                android.view.WindowInsets.Type.statusBars()
+   148→                | android.view.WindowInsets.Type.navigationBars()
+   149→            );
+   150→
+   151→            // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE replaces the deprecated
+   152→            // SYSTEM_UI_FLAG_IMMERSIVE_STICKY. Bars appear briefly on swipe
+   153→            // then auto-hide after a few seconds — perfect for kiosk.
+   154→            getWindow().getInsetsController().setSystemBarsBehavior(
+   155→                android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+   156→            );
+   157→        } else {
+   158→            // Legacy API (Android 5.0 – 10)
+   159→            View decorView = getWindow().getDecorView();
+   160→            int uiOptions = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+   161→                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+   162→                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+   163→                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+   164→                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+   165→                    | View.SYSTEM_UI_FLAG_FULLSCREEN;
+   166→            decorView.setSystemUiVisibility(uiOptions);
+   167→        }
+   168→    }
+   169→
+   170→    // ============================================
+   171→    // WEBVIEW CONFIGURATION
+   172→    // ============================================
+   173→
+   174→    private void configureWebView() {
+   175→        webView = getBridge().getWebView();
+   176→        if (webView == null) {
+   177→            Log.e(TAG, "Capacitor WebView is null — cannot configure");
+   178→            return;
+   179→        }
+   180→
+   181→        WebSettings settings = webView.getSettings();
+   182→
+   183→        // Core settings
+   184→        settings.setJavaScriptEnabled(true);
+   185→        settings.setDomStorageEnabled(true);
+   186→        settings.setAllowFileAccess(true);          // For offline.html
+   187→        settings.setAllowContentAccess(true);
+   188→
+   189→        // Mixed content (HTTP from HTTPS page)
+   190→        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+   191→            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+   192→        }
+   193→
+   194→        // Cache: network first, cache as fallback
+   195→        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+   196→
+   197→        // Zoom: disabled for kiosk
+   198→        settings.setBuiltInZoomControls(false);
+   199→        settings.setDisplayZoomControls(false);
+   200→
+   201→        // Disable WebView debugging in release builds
+   202→        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+   203→            // Only enable debugging for debuggable (non-release) builds
+   204→            if (BuildConfig.DEBUG) {
+   205→                WebView.setWebContentsDebuggingEnabled(true);
+   206→            }
+   207→            // Release builds default to false, but be explicit
+   208→        }
+   209→
+   210→        // Custom WebViewClient for error handling and navigation control
+   211→        webView.setWebViewClient(new KioskWebViewClient());
+   212→
+   213→        // Custom WebChromeClient for console logging
+   214→        webView.setWebChromeClient(new KioskWebChromeClient());
+   215→    }
+   216→
+   217→    // ============================================
+   218→    // WEBVIEW CLIENT — Error Handling & Navigation
+   219→    // ============================================
+   220→
+   221→    private class KioskWebViewClient extends WebViewClient {
+   222→
+   223→        @Override
+   224→        public void onPageFinished(WebView view, String url) {
+   225→            super.onPageFinished(view, url);
+   226→
+   227→            if (OFFLINE_URL.equals(url)) {
+   228→                isShowingOfflinePage = true;
+   229→                Log.w(TAG, "Showing offline page — server unreachable");
+   230→            } else {
+   231→                isShowingOfflinePage = false;
+   232→                reconnectAttempts = 0;
+   233→                healthCheckFailCount = 0; // Reset health on successful page load
+   234→                Log.i(TAG, "Page loaded successfully: " + url);
+   235→            }
+   236→        }
+   237→
+   238→        @Override
+   239→        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+   240→            // Only handle main frame errors (not subresources like images/CSS)
+   241→            if (request.isForMainFrame()) {
+   242→                Log.e(TAG, "Main frame error: " + error.getDescription()
+   243→                    + " (code: " + error.getErrorCode() + ")");
+   244→
+   245→                // Don't show offline page if we're already on it
+   246→                if (!isShowingOfflinePage) {
+   247→                    showOfflinePage();
+   248→                }
+   249→            }
+   250→        }
+   251→
+   252→        // Legacy callback for older Android versions
+   253→        @Override
+   254→        public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+   255→            Log.e(TAG, "Legacy WebView error: " + description + " (code: " + errorCode + ")");
+   256→            if (!isShowingOfflinePage) {
+   257→                showOfflinePage();
+   258→            }
+   259→        }
+   260→
+   261→        @Override
+   262→        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+   263→            String url = request.getUrl().toString();
+   264→
+   265→            // Allow navigation only to our domain and file:// assets
+   266→            if (url.startsWith("https://pickuplocker.vercel.app") ||
+   267→                url.startsWith("file:///android_asset/") ||
+   268→                url.startsWith("https://api.dimepay.app")) {
+   269→                return false; // Let WebView handle it
+   270→            }
+   271→
+   272→            // Block all other navigation (security: prevent phishing redirects)
+   273→            Log.w(TAG, "Blocked navigation to: " + url);
+   274→            return true;
+   275→        }
+   276→
+   277→        /**
+   278→         * CRITICAL: Called when the WebView renderer process crashes (OOM kill, etc.)
+   279→         * This is the #1 cause of white screens — Android kills the renderer but
+   280→         * the Activity is still alive. Without this handler, the WebView shows blank.
+   281→         */
+   282→        @Override
+   283→        public boolean onRenderProcessGone(WebView view, int detail) {
+   284→            Log.e(TAG, "WebView renderer process GONE! Detail: " + detail
+   285→                + " (0=crash, 1=OOM killed). Rebuilding WebView immediately.");
+   286→
+   287→            if (webView != null) {
+   288→                try {
+   289→                    webView.stopLoading();
+   290→                    webView.loadUrl("about:blank");
+   291→                    webView.clearCache(true);
+   292→                    webView.clearHistory();
+   293→                    android.view.ViewGroup parent = (android.view.ViewGroup) webView.getParent();
+   294→                    if (parent != null) parent.removeView(webView);
+   295→                    webView.destroy();
+   296→                } catch (Throwable t) {
+   297→                    Log.e(TAG, "Error destroying dead WebView: " + t.getMessage());
+   298→                }
+   299→                webView = null;
+   300→            }
+   301→
+   302→            // Rebuild a fresh WebView after a short delay
+   303→            mainHandler.postDelayed(() -> {
+   304→                try {
+   305→                    // Re-initialize the Capacitor bridge with a new WebView
+   306→                    recreate(); // Restart the entire activity — simplest and most reliable
+   307→                } catch (Throwable t) {
+   308→                    Log.e(TAG, "Failed to restart activity: " + t.getMessage());
+   309→                    System.exit(0); // Last resort: kill the process, BootReceiver will restart it
+   310→                }
+   311→            }, 1000);
+   312→
+   313→            return true; // We handled it
+   314→        }
+   315→    }
+   316→
+   317→    // ============================================
+   318→    // WEB CHROME CLIENT — Console Logging
+   319→    // ============================================
+   320→
+   321→    private class KioskWebChromeClient extends WebChromeClient {
+   322→        @Override
+   323→        public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+   324→            // Only log errors and warnings to logcat (skip info/debug to reduce noise)
+   325→            switch (consoleMessage.messageLevel()) {
+   326→                case ERROR:
+   327→                    Log.e(TAG, "JS: " + consoleMessage.message()
+   328→                        + " (" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + ")");
+   329→                    break;
+   330→                case WARNING:
+   331→                    Log.w(TAG, "JS: " + consoleMessage.message()
+   332→                        + " (" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + ")");
+   333→                    break;
+   334→                default:
+   335→                    break; // Skip DEBUG, LOG, TIP to reduce logcat noise
+   336→            }
+   337→            return true;
+   338→        }
+   339→    }
+   340→
+   341→    // ============================================
+   342→    // OFFLINE PAGE — Branded Error Screen
+   343→    // ============================================
+   344→
+   345→    private void showOfflinePage() {
+   346→        isShowingOfflinePage = true;
+   347→
+   348→        if (webView != null) {
+   349→            mainHandler.post(() -> {
+   350→                webView.loadUrl(OFFLINE_URL);
+   351→                Log.i(TAG, "Loaded offline page — will retry connection");
+   352→            });
+   353→        }
+   354→
+   355→        // Schedule the first reconnect attempt
+   356→        scheduleReconnect();
+   357→    }
+   358→
+   359→    // ============================================
+   360→    // RECONNECT LOGIC
+   361→    // ============================================
+   362→
+   363→    private void scheduleReconnect() {
+   364→        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+   365→            Log.e(TAG, "Max reconnect attempts reached — giving up until network callback fires");
+   366→            return;
+   367→        }
+   368→
+   369→        reconnectAttempts++;
+   370→        Log.i(TAG, "Reconnect attempt " + reconnectAttempts + "/" + MAX_RECONNECT_ATTEMPTS);
+   371→
+   372→        mainHandler.postDelayed(() -> {
+   373→            if (isShowingOfflinePage) {
+   374→                checkAndReload();
+   375→            }
+   376→        }, RECONNECT_DELAY_MS);
+   377→    }
+   378→
+   379→    private void checkAndReload() {
+   380→        if (!isNetworkAvailable()) {
+   381→            Log.w(TAG, "Still offline — scheduling another reconnect");
+   382→            scheduleReconnect();
+   383→            return;
+   384→        }
+   385→
+   386→        // Network is available — try to reload the kiosk page
+   387→        Log.i(TAG, "Network detected — attempting to reload kiosk page");
+   388→        if (webView != null) {
+   389→            mainHandler.post(() -> {
+   390→                webView.loadUrl(KIOSK_URL);
+   391→            });
+   392→        }
+   393→    }
+   394→
+   395→    // ============================================
+   396→    // CONNECTIVITY MONITORING — Auto-Reload on Reconnect
+   397→    // ============================================
+   398→
+   399→    private void registerConnectivityMonitoring() {
+   400→        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   401→        if (cm == null) {
+   402→            Log.e(TAG, "ConnectivityManager not available");
+   403→            return;
+   404→        }
+   405→
+   406→        // Use NetworkCallback API (available since Android 5.0 / API 21)
+   407→        NetworkRequest request = new NetworkRequest.Builder()
+   408→            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+   409→            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+   410→            .build();
+   411→
+   412→        networkCallback = new ConnectivityManager.NetworkCallback() {
+   413→            @Override
+   414→            public void onAvailable(Network network) {
+   415→                Log.i(TAG, "Network became available: " + network);
+   416→
+   417→                // If we're on the offline page, wait a moment for the
+   418→                // network to stabilize, then reload the kiosk page
+   419→                if (isShowingOfflinePage) {
+   420→                    mainHandler.postDelayed(() -> {
+   421→                        if (isShowingOfflinePage) {
+   422→                            Log.i(TAG, "Network restored while on offline page — reloading kiosk");
+   423→                            reconnectAttempts = 0; // Reset counter
+   424→                            if (webView != null) {
+   425→                                mainHandler.post(() -> webView.loadUrl(KIOSK_URL));
+   426→                            }
+   427→                        }
+   428→                    }, CONNECTIVITY_CHECK_MS);
+   429→                }
+   430→            }
+   431→
+   432→            @Override
+   433→            public void onLost(Network network) {
+   434→                Log.w(TAG, "Network lost: " + network);
+   435→                // We don't immediately show the offline page here because
+   436→                // the WebView might still have a cached version working.
+   437→                // The WebViewClient.onReceivedError will handle it if the
+   438→                // page actually fails to load.
+   439→            }
+   440→
+   441→            @Override
+   442→            public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+   443→                boolean hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+   444→                    && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+   445→
+   446→                if (hasInternet && isShowingOfflinePage) {
+   447→                    Log.i(TAG, "Validated internet available — reloading kiosk");
+   448→                    mainHandler.postDelayed(() -> {
+   449→                        if (isShowingOfflinePage && webView != null) {
+   450→                            reconnectAttempts = 0;
+   451→                            mainHandler.post(() -> webView.loadUrl(KIOSK_URL));
+   452→                        }
+   453→                    }, CONNECTIVITY_CHECK_MS);
+   454→                }
+   455→            }
+   456→        };
+   457→
+   458→        try {
+   459→            cm.registerNetworkCallback(request, networkCallback);
+   460→            Log.i(TAG, "Network connectivity monitoring registered");
+   461→        } catch (SecurityException e) {
+   462→            // Missing ACCESS_NETWORK_STATE permission — fall back gracefully
+   463→            Log.e(TAG, "Cannot register network callback (missing permission?): " + e.getMessage());
+   464→        }
+   465→    }
+   466→
+   467→    private void unregisterConnectivityMonitoring() {
+   468→        if (networkCallback != null) {
+   469→            try {
+   470→                ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   471→                if (cm != null) {
+   472→                    cm.unregisterNetworkCallback(networkCallback);
+   473→                    Log.i(TAG, "Network connectivity monitoring unregistered");
+   474→                }
+   475→            } catch (Exception e) {
+   476→                Log.w(TAG, "Error unregistering network callback: " + e.getMessage());
+   477→            }
+   478→        }
+   479→    }
+   480→
+   481→    // ============================================
+   482→    // NETWORK CHECK — Simple connectivity test
+   483→    // ============================================
+   484→
+   485→    private boolean isNetworkAvailable() {
+   486→        try {
+   487→            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+   488→            if (cm == null) return false;
+   489→
+   490→            Network activeNetwork = cm.getActiveNetwork();
+   491→            if (activeNetwork == null) return false;
+   492→
+   493→            NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
+   494→            return caps != null
+   495→                && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+   496→        } catch (SecurityException e) {
+   497→            // If we can't check, assume we have network (optimistic)
+   498→            return true;
+   499→        }
+   500→    }
+   501→
+   502→    // ============================================
+   503→    // WEBVIEW HEALTH MONITORING — Detect frozen/white screens
+   504→    // ============================================
+   505→
+   506→    /**
+   507→     * Starts periodic health checks on the WebView.
+   508→     * If the WebView appears unresponsive or has blank content for
+   509→     * multiple consecutive checks, force a reload.
+   510→     */
+   511→    private void startHealthMonitoring() {
+   512→        healthCheckRunnable = new Runnable() {
+   513→            @Override
+   514→            public void run() {
+   515→                checkWebViewHealth();
+   516→                // Schedule next check
+   517→                mainHandler.postDelayed(this, HEALTH_CHECK_INTERVAL_MS);
+   518→            }
+   519→        };
+   520→        // First check after 2 minutes
+   521→        mainHandler.postDelayed(healthCheckRunnable, HEALTH_CHECK_INTERVAL_MS);
+   522→        Log.i(TAG, "WebView health monitoring started (interval: " + HEALTH_CHECK_INTERVAL_MS + "ms)");
+   523→    }
+   524→
+   525→    private void stopHealthMonitoring() {
+   526→        if (healthCheckRunnable != null) {
+   527→            mainHandler.removeCallbacks(healthCheckRunnable);
+   528→            healthCheckRunnable = null;
+   529→            Log.i(TAG, "WebView health monitoring stopped");
+   530→        }
+   531→    }
+   532→
+   533→    /**
+   534→     * Check if the WebView is healthy by evaluating its content.
+   535→     * If the page appears blank or frozen for several consecutive checks,
+   536→     * force a reload to recover.
+   537→     */
+   538→    private void checkWebViewHealth() {
+   539→        if (webView == null) {
+   540→            healthCheckFailCount++;
+   541→            Log.w(TAG, "Health check: WebView is null (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+   542→            if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+   543→                Log.w(TAG, "Health check: Too many failures — attempting full recovery");
+   544→                healthCheckFailCount = 0;
+   545→                reloadKiosk();
+   546→            }
+   547→            return;
+   548→        }
+   549→
+   550→        // Use evaluateJavascript to check if the WebView's page has content
+   551→        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+   552→            webView.evaluateJavascript("(function(){ try { var c = document.querySelector('.container'); return c ? 'ok' : 'empty'; } catch(e) { return 'error'; } })()", new android.webkit.ValueCallback<String>() {
+   553→                @Override
+   554→                public void onReceiveValue(String value) {
+   555→                    if (value != null && (value.contains("ok") || value.contains("empty"))) {
+   556→                        if (value.contains("empty")) {
+   557→                            healthCheckFailCount++;
+   558→                            Log.w(TAG, "Health check: Page content empty (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+   559→                        } else {
+   560→                            // Page is healthy
+   561→                            if (healthCheckFailCount > 0) {
+   562→                                Log.i(TAG, "Health check: Page recovered (was " + healthCheckFailCount + " fails)");
+   563→                            }
+   564→                            healthCheckFailCount = 0;
+   565→                        }
+   566→                    } else {
+   567→                        healthCheckFailCount++;
+   568→                        Log.w(TAG, "Health check: No response or unexpected value: " + value + " (fail " + healthCheckFailCount + "/" + HEALTH_RELOAD_THRESHOLD + ")");
+   569→                    }
+   570→
+   571→                    if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+   572→                        Log.w(TAG, "Health check: Threshold reached — force reloading kiosk");
+   573→                        healthCheckFailCount = 0;
+   574→                        reloadKiosk();
+   575→                    }
+   576→                }
+   577→            });
+   578→        } else {
+   579→            // Pre-KitKat: just check if we're showing offline page
+   580→            if (isShowingOfflinePage) {
+   581→                healthCheckFailCount++;
+   582→                if (healthCheckFailCount >= HEALTH_RELOAD_THRESHOLD) {
+   583→                    healthCheckFailCount = 0;
+   584→                    reloadKiosk();
+   585→                }
+   586→            } else {
+   587→                healthCheckFailCount = 0;
+   588→            }
+   589→        }
+   590→    }
+   591→
+   592→    // ============================================
+   593→    // BACK BUTTON — Prevent exiting kiosk
+   594→    // ============================================
+   595→
+   596→    @Override
+   597→    public void onBackPressed() {
+   598→        // In kiosk mode, never let the user navigate away.
+   599→        // If the WebView can go back, do that; otherwise do nothing.
+   600→        if (webView != null && webView.canGoBack()) {
+   601→            webView.goBack();
+   602→        }
+   603→        // Do NOT call super — prevent exit
+   604→    }
+   605→
+   606→    // ============================================
+   607→    // SECRET EXIT — Tap top-left corner 5 times
+   608→    //
+   609→    // How it works:
+   610→    //   1. Tap the top-left corner of the screen 5 times within 3 seconds
+   611→    //   2. An admin PIN dialog appears
+   612→    //   3. Enter the correct PIN (default: 1234) to access options:
+   613→    //      - Close App (fully exits the kiosk)
+   614→    //      - Android Settings (opens system settings)
+   615→    //      - Reload (force-refreshes the WebView)
+   616→    //      - Cancel (returns to kiosk)
+   617→    //
+   618→    //   The tap zone is the top-left 80dp x 80dp area — invisible
+   619→    //   to regular users but easy for an admin to find.
+   620→    // ============================================
+   621→
+   622→    @Override
+   623→    public boolean dispatchTouchEvent(MotionEvent ev) {
+   624→        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+   625→            // Convert DP to pixels for the hit area
+   626→            float density = getResources().getDisplayMetrics().density;
+   627→            float hitAreaPx = SECRET_TAP_AREA_DP * density;
+   628→
+   629→            float x = ev.getRawX();
+   630→            float y = ev.getRawY();
+   631→
+   632→            // Check if the tap is in the top-left corner
+   633→            if (x < hitAreaPx && y < hitAreaPx) {
+   634→                long now = System.currentTimeMillis();
+   635→
+   636→                // Reset counter if too much time has passed since last tap
+   637→                if (now - lastSecretTapTime > SECRET_TAP_TIMEOUT_MS) {
+   638→                    secretTapCount = 1;
+   639→                } else {
+   640→                    secretTapCount++;
+   641→                }
+   642→                lastSecretTapTime = now;
+   643→
+   644→                Log.d(TAG, "Secret tap: " + secretTapCount + "/" + SECRET_TAP_COUNT);
+   645→
+   646→                if (secretTapCount >= SECRET_TAP_COUNT) {
+   647→                    secretTapCount = 0;
+   648→                    Log.i(TAG, "Secret exit triggered — showing admin dialog");
+   649→                    showAdminDialog();
+   650→                }
+   651→
+   652→                // Don't consume the touch — let the WebView handle it normally
+   653→                // This keeps the secret gesture invisible to regular users
+   654→            }
+   655→        }
+   656→        return super.dispatchTouchEvent(ev);
+   657→    }
+   658→
+   659→    /**
+   660→     * Show the admin PIN dialog after the secret tap gesture is triggered.
+   661→     * On correct PIN, shows options to close app, open settings, or reload.
+   662→     */
+   663→    private void showAdminDialog() {
+   664→        // First, ask for the admin PIN
+   665→        EditText pinInput = new EditText(this);
+   666→        pinInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+   667→        pinInput.setHint("Enter admin PIN");
+   668→        pinInput.setMaxLines(1);
+   669→
+   670→        // Style the input field
+   671→        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+   672→            LinearLayout.LayoutParams.MATCH_PARENT,
+   673→            LinearLayout.LayoutParams.WRAP_CONTENT
+   674→        );
+   675→        lp.setMargins(50, 20, 50, 20);
+   676→        pinInput.setLayoutParams(lp);
+   677→
+   678→        LinearLayout container = new LinearLayout(this);
+   679→        container.setOrientation(LinearLayout.VERTICAL);
+   680→        container.setPadding(40, 20, 40, 20);
+   681→        container.addView(pinInput);
+   682→
+   683→        new AlertDialog.Builder(this)
+   684→            .setTitle("Admin Access")
+   685→            .setMessage("Enter the admin PIN to continue.")
+   686→            .setView(container)
+   687→            .setPositiveButton("Confirm", (dialog, which) -> {
+   688→                String enteredPin = pinInput.getText().toString().trim();
+   689→                if (enteredPin.equals(ADMIN_EXIT_PIN)) {
+   690→                    showAdminOptionsDialog();
+   691→                } else {
+   692→                    Log.w(TAG, "Incorrect admin PIN entered");
+   693→                    new AlertDialog.Builder(this)
+   694→                        .setTitle("Incorrect PIN")
+   695→                        .setMessage("The PIN you entered is incorrect.")
+   696→                        .setPositiveButton("OK", null)
+   697→                        .show();
+   698→                }
+   699→            })
+   700→            .setNegativeButton("Cancel", null)
+   701→            .setCancelable(true)
+   702→            .show();
+   703→    }
+   704→
+   705→    /**
+   706→     * Show the admin options dialog after PIN is verified.
+   707→     * Options: Close App, Android Settings, Reload, Cancel
+   708→     */
+   709→    private void showAdminOptionsDialog() {
+   710→        Log.i(TAG, "Admin access granted — showing options");
+   711→
+   712→        String[] options = {"Close App", "Android Settings", "Reload Kiosk"};
+   713→
+   714→        new AlertDialog.Builder(this)
+   715→            .setTitle("Admin Options")
+   716→            .setItems(options, (dialog, which) -> {
+   717→                switch (which) {
+   718→                    case 0: // Close App
+   719→                        Log.i(TAG, "Admin chose to close the app");
+   720→                        closeApp();
+   721→                        break;
+   722→                    case 1: // Android Settings
+   723→                        Log.i(TAG, "Admin chose to open Android Settings");
+   724→                        openAndroidSettings();
+   725→                        break;
+   726→                    case 2: // Reload Kiosk
+   727→                        Log.i(TAG, "Admin chose to reload the kiosk");
+   728→                        reloadKiosk();
+   729→                        break;
+   730→                }
+   731→            })
+   732→            .setNegativeButton("Cancel", null)
+   733→            .setCancelable(true)
+   734→            .show();
+   735→    }
+   736→
+   737→    /**
+   738→     * Close the kiosk app completely.
+   739→     */
+   740→    private void closeApp() {
+   741→        // Clean up resources
+   742→        unregisterConnectivityMonitoring();
+   743→        mainHandler.removeCallbacksAndMessages(null);
+   744→
+   745→        // Finish the activity
+   746→        finishAffinity(); // Close all activities in the task
+   747→        System.exit(0);   // Ensure the process is killed
+   748→    }
+   749→
+   750→    /**
+   751→     * Open Android system Settings app.
+   752→     */
+   753→    private void openAndroidSettings() {
+   754→        try {
+   755→            Intent intent = new Intent(Settings.ACTION_SETTINGS);
+   756→            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+   757→            startActivity(intent);
+   758→        } catch (Exception e) {
+   759→            Log.e(TAG, "Failed to open Android Settings: " + e.getMessage());
+   760→            // Fallback: try the generic settings intent
+   761→            try {
+   762→                Intent intent = new Intent(Intent.ACTION_MAIN);
+   763→                intent.setClassName("com.android.settings", "com.android.settings.Settings");
+   764→                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+   765→                startActivity(intent);
+   766→            } catch (Exception e2) {
+   767→                Log.e(TAG, "Fallback settings intent also failed: " + e2.getMessage());
+   768→            }
+   769→        }
+   770→    }
+   771→
+   772→    /**
+   773→     * Force-reload the kiosk WebView.
+   774→     */
+   775→    private void reloadKiosk() {
+   776→        isShowingOfflinePage = false;
+   777→        reconnectAttempts = 0;
+   778→        if (webView != null) {
+   779→            webView.clearCache(true);
+   780→            webView.loadUrl(KIOSK_URL);
+   781→        }
+   782→    }
+   783→}
+   784→
