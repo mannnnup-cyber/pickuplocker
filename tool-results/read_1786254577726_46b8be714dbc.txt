@@ -1,0 +1,1057 @@
+     1→// Bestwond Locker API Integration
+     2→// Documentation: https://bestwond.apifox.cn/
+     3→// Access password: VdR72BxK
+     4→
+     5→import crypto from 'crypto';
+     6→
+     7→// Timeout for all Bestwond API calls — prevents server hangs when their API is slow/down
+     8→const BESTWOND_TIMEOUT_MS = 15000;
+     9→
+    10→// Fetch with timeout for Bestwond API calls
+    11→async function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
+    12→  const controller = new AbortController();
+    13→  const timeoutId = setTimeout(() => controller.abort(), BESTWOND_TIMEOUT_MS);
+    14→  try {
+    15→    const response = await fetch(url, { ...options, signal: controller.signal });
+    16→    return response;
+    17→  } finally {
+    18→    clearTimeout(timeoutId);
+    19→  }
+    20→}
+    21→
+    22→// Credentials for API calls
+    23→export interface BestwondCredentials {
+    24→  appId: string;
+    25→  appSecret: string;
+    26→  baseUrl?: string;
+    27→}
+    28→
+    29→interface BestwondConfig {
+    30→  appId: string;
+    31→  appSecret: string;
+    32→  deviceId: string;
+    33→  baseUrl: string;
+    34→}
+    35→
+    36→// Generate Unix timestamp in seconds (as required by Bestwond API)
+    37→export function getTimestamp(): number {
+    38→  return Math.floor(Date.now() / 1000);
+    39→}
+    40→
+    41→// Generate SHA512 signature for Bestwond API
+    42→// Signature = SHA512(sorted_url_encoded_params + app_secret)
+    43→export async function generateSignature(params: Record<string, string | number>, appSecret: string): Promise<string> {
+    44→  // Sort parameters alphabetically by key
+    45→  const sortedKeys = Object.keys(params).sort();
+    46→  
+    47→  // Build URL-encoded string
+    48→  const encodedParams = sortedKeys
+    49→    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
+    50→    .join('&');
+    51→  
+    52→  // Append app secret
+    53→  const stringToSign = `${encodedParams}${appSecret}`;
+    54→  
+    55→  // SHA512 hash
+    56→  const encoder = new TextEncoder();
+    57→  const dataBuffer = encoder.encode(stringToSign);
+    58→  const hashBuffer = await crypto.subtle.digest('SHA-512', dataBuffer);
+    59→  const hashArray = Array.from(new Uint8Array(hashBuffer));
+    60→  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    61→}
+    62→
+    63→// Get configuration from environment (sync version for backward compatibility)
+    64→export function getConfig(): BestwondConfig {
+    65→  return {
+    66→    appId: process.env.BESTWOND_APP_ID || '',
+    67→    appSecret: process.env.BESTWOND_APP_SECRET || '',
+    68→    deviceId: process.env.BESTWOND_DEVICE_ID || '',
+    69→    baseUrl: process.env.BESTWOND_BASE_URL || 'https://api.bestwond.com',
+    70→  };
+    71→}
+    72→
+    73→// Get configuration from database with env fallback (async version)
+    74→export async function getConfigAsync(): Promise<BestwondConfig> {
+    75→  try {
+    76→    const { getSetting } = await import('./settings');
+    77→    const [appId, appSecret, deviceId, baseUrl] = await Promise.all([
+    78→      getSetting('bestwond_appId', 'BESTWOND_APP_ID'),
+    79→      getSetting('bestwond_appSecret', 'BESTWOND_APP_SECRET'),
+    80→      getSetting('bestwond_deviceId', 'BESTWOND_DEVICE_ID'),
+    81→      getSetting('bestwond_baseUrl', 'BESTWOND_BASE_URL'),
+    82→    ]);
+    83→    
+    84→    return {
+    85→      appId,
+    86→      appSecret,
+    87→      deviceId,
+    88→      baseUrl: baseUrl || 'https://api.bestwond.com',
+    89→    };
+    90→  } catch (error) {
+    91→    console.error('Failed to load config from database, using env:', error);
+    92→    return getConfig();
+    93→  }
+    94→}
+    95→
+    96→// Get credentials for a specific device (with fallback to global settings)
+    97→export async function getCredentialsForDevice(deviceId: string): Promise<BestwondCredentials> {
+    98→  try {
+    99→    const { db } = await import('./db');
+   100→    
+   101→    // Get device-specific credentials
+   102→    const device = await db.device.findUnique({
+   103→      where: { id: deviceId },
+   104→      select: { bestwondAppId: true, bestwondAppSecret: true }
+   105→    });
+   106→    
+   107→    // If device has its own credentials, use them
+   108→    if (device?.bestwondAppId && device?.bestwondAppSecret) {
+   109→      return {
+   110→        appId: device.bestwondAppId,
+   111→        appSecret: device.bestwondAppSecret,
+   112→        baseUrl: 'https://api.bestwond.com',
+   113→      };
+   114→    }
+   115→    
+   116→    // Fallback to global settings
+   117→    const globalConfig = await getConfigAsync();
+   118→    return {
+   119→      appId: globalConfig.appId,
+   120→      appSecret: globalConfig.appSecret,
+   121→      baseUrl: globalConfig.baseUrl,
+   122→    };
+   123→  } catch (error) {
+   124→    console.error('Failed to get device credentials:', error);
+   125→    // Fallback to global settings
+   126→    const globalConfig = await getConfigAsync();
+   127→    return {
+   128→      appId: globalConfig.appId,
+   129→      appSecret: globalConfig.appSecret,
+   130→      baseUrl: globalConfig.baseUrl,
+   131→    };
+   132→  }
+   133→}
+   134→
+   135→// Verify webhook signature from Bestwond
+   136→export function verifyWebhookSignature(payload: string, signature: string): boolean {
+   137→  const config = getConfig();
+   138→  
+   139→  if (!config.appSecret) {
+   140→    console.error('Bestwond app secret not configured - webhook verification failed');
+   141→    return false; // Reject unsigned webhooks in production
+   142→  }
+   143→  
+   144→  // Bestwond signs webhooks with SHA512(payload + appSecret)
+   145→  const expectedSignature = crypto
+   146→    .createHmac('sha512', config.appSecret)
+   147→    .update(payload)
+   148→    .digest('hex');
+   149→  
+   150→  return signature === expectedSignature;
+   151→}
+   152→
+   153→// API Response types
+   154→interface BestwondResponse<T = unknown> {
+   155→  code: number;
+   156→  msg?: string;
+   157→  data?: T;
+   158→}
+   159→
+   160→interface DeviceStatus {
+   161→  device_number: string;
+   162→  status: 'on' | 'off';  // Bestwond returns "on" or "off", not boolean
+   163→  online?: boolean;  // Some APIs might still use this
+   164→  box_count?: number;
+   165→  available_box_count?: number;
+   166→}
+   167→
+   168→interface BoxInfo {
+   169→  box_name: string;  // e.g., "01", "02"
+   170→  box_status: number;
+   171→  enable_status: number;
+   172→  order_no: string | null;  // null = available, has value = occupied
+   173→  box_size: string;  // S, M, L, XL
+   174→  lock_address: string;
+   175→}
+   176→
+   177→// ============================================
+   178→// NEW: Functions that accept credentials as parameter
+   179→// ============================================
+   180→
+   181→// Open a specific box on a device (with explicit credentials)
+   182→export async function openBoxWithCredentials(
+   183→  deviceNumber: string, 
+   184→  boxNo: number, 
+   185→  credentials: BestwondCredentials
+   186→): Promise<BestwondResponse> {
+   187→  if (!credentials.appId || !credentials.appSecret) {
+   188→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   189→  }
+   190→  
+   191→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   192→  
+   193→  // Default lock_address format: "01" + box number in lowercase HEX (2 chars)
+   194→  // Based on Bestwond API docs: box 1 → "0101", box 10 → "010a", box 12 → "010c"
+   195→  const boxHex = boxNo.toString(16).toLowerCase().padStart(2, '0');
+   196→  const defaultLockAddress = `01${boxHex}`; // e.g., "0101", "010a", "010c"
+   197→  
+   198→  // First, try to get box list to find the correct lock_address
+   199→  console.log('=== OPEN BOX DEBUG ===');
+   200→  console.log('Device Number:', deviceNumber);
+   201→  console.log('Box Number:', boxNo);
+   202→  console.log('Default lock_address (HEX format):', defaultLockAddress);
+   203→  
+   204→  const boxListResult = await getBoxListWithCredentials(deviceNumber, credentials);
+   205→  console.log('Box List Result:', JSON.stringify(boxListResult, null, 2));
+   206→  
+   207→  let lockAddress = defaultLockAddress; // use correct HEX format as default
+   208→  
+   209→  if (boxListResult.code === 0 && boxListResult.data) {
+   210→    const boxes = boxListResult.data as Array<{ 
+   211→      box_name: string; 
+   212→      lock_address?: string;
+   213→    }>;
+   214→    console.log('Total boxes found:', boxes.length);
+   215→    console.log('Looking for box:', boxNo);
+   216→    
+   217→    const box = boxes.find(b => parseInt(b.box_name, 10) === boxNo);
+   218→    if (box && box.lock_address) {
+   219→      lockAddress = box.lock_address;
+   220→      console.log(`Found lock_address "${lockAddress}" for box ${boxNo} from box list`);
+   221→    } else {
+   222→      console.log(`Box ${boxNo} not found in box list, using HEX format: ${lockAddress}`);
+   223→    }
+   224→  } else {
+   225→    console.log('Could not fetch box list, using default lock_address:', lockAddress, 'Error:', boxListResult.msg);
+   226→  }
+   227→  
+   228→  const params: Record<string, string | number> = {
+   229→    app_id: credentials.appId,
+   230→    timestamps: getTimestamp(),
+   231→    device_number: deviceNumber,
+   232→    lock_address: lockAddress,
+   233→    use_type: 'S', // S = Single open
+   234→  };
+   235→  
+   236→  console.log('Request params:', { 
+   237→    ...params, 
+   238→    app_id: credentials.appId.substring(0, 8) + '...' 
+   239→  });
+   240→  
+   241→  const signature = await generateSignature(params, credentials.appSecret);
+   242→  console.log('Signature:', signature.substring(0, 20) + '...');
+   243→  console.log('=== END OPEN BOX DEBUG ===');
+   244→  
+   245→  try {
+   246→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/open/box/?sign=${signature}`, {
+   247→      method: 'POST',
+   248→      headers: { 
+   249→        'Content-Type': 'application/json',
+   250→        'User-Agent': 'PickupLocker/1.0',
+   251→        'Accept': 'application/json',
+   252→      },
+   253→      body: JSON.stringify(params),
+   254→    });
+   255→    
+   256→    const data = await response.json();
+   257→    console.log('Open box API response:', data);
+   258→    return data as BestwondResponse;
+   259→  } catch (error) {
+   260→    console.error('Bestwond openBox error:', error);
+   261→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to open box' };
+   262→  }
+   263→}
+   264→
+   265→// Get door status (open/closed) for a specific box
+   266→export async function getDoorStatusWithCredentials(
+   267→  deviceNumber: string,
+   268→  lockAddress: string,
+   269→  credentials: BestwondCredentials
+   270→): Promise<BestwondResponse<{ status: string; door_open?: boolean }>> {
+   271→  if (!credentials.appId || !credentials.appSecret) {
+   272→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   273→  }
+   274→  
+   275→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   276→  
+   277→  const params: Record<string, string | number> = {
+   278→    app_id: credentials.appId,
+   279→    timestamps: getTimestamp(),
+   280→    device_number: deviceNumber,
+   281→    lock_address: lockAddress,
+   282→  };
+   283→  
+   284→  console.log('=== DOOR STATUS CHECK ===');
+   285→  console.log('Device:', deviceNumber, 'Lock Address:', lockAddress);
+   286→  
+   287→  const signature = await generateSignature(params, credentials.appSecret);
+   288→  
+   289→  try {
+   290→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/box/status/?sign=${signature}`, {
+   291→      method: 'POST',
+   292→      headers: { 
+   293→        'Content-Type': 'application/json',
+   294→        'User-Agent': 'PickupLocker/1.0',
+   295→        'Accept': 'application/json',
+   296→      },
+   297→      body: JSON.stringify(params),
+   298→    });
+   299→    
+   300→    const data = await response.json();
+   301→    console.log('Door status API response:', data);
+   302→    console.log('=== END DOOR STATUS CHECK ===');
+   303→    return data as BestwondResponse<{ status: string; door_open?: boolean }>;
+   304→  } catch (error) {
+   305→    console.error('Bestwond getDoorStatus error:', error);
+   306→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get door status' };
+   307→  }
+   308→}
+   309→
+   310→// Open box and verify door actually opened
+   311→export async function openBoxAndVerify(
+   312→  deviceNumber: string,
+   313→  boxNo: number,
+   314→  credentials: BestwondCredentials,
+   315→  maxRetries: number = 3
+   316→): Promise<{ success: boolean; message: string; doorStatus?: string; apiResponse?: BestwondResponse }> {
+   317→  // First, check if device is online
+   318→  const statusResult = await getDeviceStatusWithCredentials(deviceNumber, credentials);
+   319→  if (statusResult.code !== 0) {
+   320→    return { 
+   321→      success: false, 
+   322→      message: `Cannot reach device. API error: ${statusResult.msg || 'Unknown error'}` 
+   323→    };
+   324→  }
+   325→  
+   326→  const deviceData = statusResult.data;
+   327→  const isOnline = deviceData?.status === 'on' || deviceData?.online === true;
+   328→  
+   329→  if (!isOnline) {
+   330→    return { 
+   331→      success: false, 
+   332→      message: `Device ${deviceNumber} is OFFLINE. Please check power and network connection.` 
+   333→    };
+   334→  }
+   335→  
+   336→  // Get the lock_address for this box
+   337→  const boxListResult = await getBoxListWithCredentials(deviceNumber, credentials);
+   338→  let lockAddress = `01${boxNo.toString(16).toLowerCase().padStart(2, '0')}`; // HEX format
+   339→  
+   340→  if (boxListResult.code === 0 && boxListResult.data) {
+   341→    const box = boxListResult.data.find(b => parseInt(b.box_name, 10) === boxNo);
+   342→    if (box?.lock_address) {
+   343→      lockAddress = box.lock_address;
+   344→    }
+   345→  }
+   346→  
+   347→  // Try to open the box
+   348→  let lastError: string | undefined;
+   349→  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+   350→    console.log(`Open box attempt ${attempt}/${maxRetries}`);
+   351→    
+   352→    const openResult = await openBoxWithCredentials(deviceNumber, boxNo, credentials);
+   353→    
+   354→    // Check both API response code AND device status
+   355→    const resultData = openResult.data as { status?: string; msg?: string } | undefined;
+   356→    const deviceStatus = resultData?.status;
+   357→    const deviceMsg = resultData?.msg;
+   358→    
+   359→    if (openResult.code === 0 && deviceStatus === 'success') {
+   360→      // API and device both say success - wait and check door
+   361→      await new Promise(resolve => setTimeout(resolve, 1500));
+   362→      
+   363→      const doorStatus = await getDoorStatusWithCredentials(deviceNumber, lockAddress, credentials);
+   364→      
+   365→      return {
+   366→        success: true,
+   367→        message: `Box #${boxNo} opened successfully.`,
+   368→        doorStatus: doorStatus.data?.status,
+   369→        apiResponse: openResult
+   370→      };
+   371→    }
+   372→    
+   373→    // Check for specific device errors
+   374→    if (deviceStatus === 'fail') {
+   375→      // Device rejected the command - no point retrying
+   376→      if (deviceMsg?.includes('uqkey') || deviceMsg?.includes('key')) {
+   377→        return {
+   378→          success: false,
+   379→          message: `❌ DEVICE NOT LINKED: This device is not registered to your app account. Contact Bestwond support to link device ${deviceNumber} to app ${credentials.appId}. Error: ${deviceMsg}`,
+   380→          apiResponse: openResult
+   381→        };
+   382→      }
+   383→      
+   384→      if (deviceMsg?.includes('offline') || deviceMsg?.includes('not online')) {
+   385→        return {
+   386→          success: false,
+   387→          message: `❌ DEVICE OFFLINE: Device ${deviceNumber} is not connected. Check power and network.`,
+   388→          apiResponse: openResult
+   389→        };
+   390→      }
+   391→      
+   392→      // Other device error
+   393→      lastError = deviceMsg || 'Device rejected command';
+   394→    } else {
+   395→      lastError = openResult.msg || `Error code: ${openResult.code}`;
+   396→    }
+   397→    
+   398→    console.log(`Attempt ${attempt} failed:`, lastError);
+   399→    
+   400→    // Wait before retry
+   401→    if (attempt < maxRetries) {
+   402→      await new Promise(resolve => setTimeout(resolve, 1000));
+   403→    }
+   404→  }
+   405→  
+   406→  return {
+   407→    success: false,
+   408→    message: `Failed to open box after ${maxRetries} attempts. Last error: ${lastError}`
+   409→  };
+   410→}
+   411→
+   412→// Get device online status (with explicit credentials)
+   413→export async function getDeviceStatusWithCredentials(
+   414→  deviceNumber: string, 
+   415→  credentials: BestwondCredentials
+   416→): Promise<BestwondResponse<DeviceStatus>> {
+   417→  if (!credentials.appId || !credentials.appSecret) {
+   418→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   419→  }
+   420→  
+   421→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   422→  
+   423→  const params: Record<string, string | number> = {
+   424→    app_id: credentials.appId,
+   425→    timestamps: getTimestamp(),
+   426→    device_number: deviceNumber,
+   427→  };
+   428→  
+   429→  const signature = await generateSignature(params, credentials.appSecret);
+   430→  
+   431→  try {
+   432→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/line/status/?sign=${signature}`, {
+   433→      method: 'POST',
+   434→      headers: { 
+   435→        'Content-Type': 'application/json',
+   436→        'User-Agent': 'PickupLocker/1.0',
+   437→        'Accept': 'application/json',
+   438→      },
+   439→      body: JSON.stringify(params),
+   440→    });
+   441→    
+   442→    const data = await response.json();
+   443→    return data as BestwondResponse<DeviceStatus>;
+   444→  } catch (error) {
+   445→    console.error('Bestwond getDeviceStatus error:', error);
+   446→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get device status' };
+   447→  }
+   448→}
+   449→
+   450→// Get list of boxes for a device (with explicit credentials)
+   451→export async function getBoxListWithCredentials(
+   452→  deviceNumber: string, 
+   453→  credentials: BestwondCredentials
+   454→): Promise<BestwondResponse<BoxInfo[]>> {
+   455→  if (!credentials.appId || !credentials.appSecret) {
+   456→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   457→  }
+   458→  
+   459→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   460→  
+   461→  const params: Record<string, string | number> = {
+   462→    app_id: credentials.appId,
+   463→    timestamps: getTimestamp(),
+   464→    device_number: deviceNumber,
+   465→  };
+   466→  
+   467→  const signature = await generateSignature(params, credentials.appSecret);
+   468→  
+   469→  try {
+   470→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/box/list/?sign=${signature}`, {
+   471→      method: 'POST',
+   472→      headers: { 
+   473→        'Content-Type': 'application/json',
+   474→        'User-Agent': 'PickupLocker/1.0',
+   475→        'Accept': 'application/json',
+   476→      },
+   477→      body: JSON.stringify(params),
+   478→    });
+   479→    
+   480→    const data = await response.json();
+   481→    return data as BestwondResponse<BoxInfo[]>;
+   482→  } catch (error) {
+   483→    console.error('Bestwond getBoxList error:', error);
+   484→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get box list' };
+   485→  }
+   486→}
+   487→
+   488→// Get list of all devices (with explicit credentials)
+   489→export async function getDeviceListWithCredentials(
+   490→  credentials: BestwondCredentials
+   491→): Promise<BestwondResponse> {
+   492→  if (!credentials.appId || !credentials.appSecret) {
+   493→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   494→  }
+   495→  
+   496→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   497→  
+   498→  const params: Record<string, string | number> = {
+   499→    app_id: credentials.appId,
+   500→    timestamps: getTimestamp(),
+   501→  };
+   502→  
+   503→  const signature = await generateSignature(params, credentials.appSecret);
+   504→  
+   505→  try {
+   506→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/list/?sign=${signature}`, {
+   507→      method: 'POST',
+   508→      headers: { 
+   509→        'Content-Type': 'application/json',
+   510→        'User-Agent': 'PickupLocker/1.0',
+   511→        'Accept': 'application/json',
+   512→      },
+   513→      body: JSON.stringify(params),
+   514→    });
+   515→    
+   516→    const data = await response.json();
+   517→    return data as BestwondResponse;
+   518→  } catch (error) {
+   519→    console.error('Bestwond getDeviceList error:', error);
+   520→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get device list' };
+   521→  }
+   522→}
+   523→
+   524→// Get box log with explicit credentials
+   525→export async function getBoxLogWithCredentials(
+   526→  deviceNumber: string,
+   527→  credentials: BestwondCredentials,
+   528→  options?: { boxNo?: number; pageNum?: number; pageSize?: number }
+   529→): Promise<BestwondResponse> {
+   530→  if (!credentials.appId || !credentials.appSecret) {
+   531→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   532→  }
+   533→  
+   534→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   535→  
+   536→  const params: Record<string, string | number> = {
+   537→    app_id: credentials.appId,
+   538→    timestamps: getTimestamp(),
+   539→    device_number: deviceNumber,
+   540→    page_num: options?.pageNum || 1,
+   541→    page_size: options?.pageSize || 20,
+   542→  };
+   543→  
+   544→  if (options?.boxNo) {
+   545→    params.box_name = String(options.boxNo).padStart(2, '0');
+   546→  }
+   547→  
+   548→  const signature = await generateSignature(params, credentials.appSecret);
+   549→  
+   550→  console.log('=== BOX LOG DEBUG ===');
+   551→  console.log('Device:', deviceNumber);
+   552→  console.log('Box:', options?.boxNo || 'all');
+   553→  
+   554→  try {
+   555→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/box/log/?sign=${signature}`, {
+   556→      method: 'POST',
+   557→      headers: { 
+   558→        'Content-Type': 'application/json',
+   559→        'User-Agent': 'PickupLocker/1.0',
+   560→        'Accept': 'application/json',
+   561→      },
+   562→      body: JSON.stringify(params),
+   563→    });
+   564→    
+   565→    const data = await response.json();
+   566→    console.log('Box log response:', JSON.stringify(data, null, 2));
+   567→    console.log('=== END BOX LOG DEBUG ===');
+   568→    return data as BestwondResponse;
+   569→  } catch (error) {
+   570→    console.error('Bestwond getBoxLog error:', error);
+   571→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get box log' };
+   572→  }
+   573→}
+   574→
+   575→// Comprehensive debug function for troubleshooting
+   576→export async function debugDeviceAndBox(
+   577→  deviceNumber: string,
+   578→  boxNo: number,
+   579→  credentials: BestwondCredentials
+   580→): Promise<{
+   581→  deviceStatus: BestwondResponse;
+   582→  boxList: BestwondResponse;
+   583→  deviceList: BestwondResponse;
+   584→  boxLog: BestwondResponse;
+   585→  openResult: BestwondResponse;
+   586→  doorStatus: BestwondResponse;
+   587→}> {
+   588→  console.log('====== COMPREHENSIVE DEBUG ======');
+   589→  console.log('Device:', deviceNumber, 'Box:', boxNo);
+   590→  console.log('Credentials:', credentials.appId?.substring(0, 10) + '...');
+   591→  
+   592→  // Run all checks in parallel where possible
+   593→  const [deviceStatus, boxList, deviceList] = await Promise.all([
+   594→    getDeviceStatusWithCredentials(deviceNumber, credentials),
+   595→    getBoxListWithCredentials(deviceNumber, credentials),
+   596→    getDeviceListWithCredentials(credentials),
+   597→  ]);
+   598→  
+   599→  // Get box log
+   600→  const boxLog = await getBoxLogWithCredentials(deviceNumber, credentials, { boxNo, pageSize: 5 });
+   601→  
+   602→  // Try to open the box
+   603→  const openResult = await openBoxWithCredentials(deviceNumber, boxNo, credentials);
+   604→  
+   605→  // Wait a moment then check door status
+   606→  await new Promise(resolve => setTimeout(resolve, 2000));
+   607→  
+   608→  // Get lock address from box list
+   609→  let lockAddress = `01${boxNo.toString(16).toLowerCase().padStart(2, '0')}`;
+   610→  if (boxList.code === 0 && boxList.data) {
+   611→    const box = (boxList.data as BoxInfo[]).find(b => parseInt(b.box_name, 10) === boxNo);
+   612→    if (box?.lock_address) {
+   613→      lockAddress = box.lock_address;
+   614→    }
+   615→  }
+   616→  
+   617→  const doorStatus = await getDoorStatusWithCredentials(deviceNumber, lockAddress, credentials);
+   618→  
+   619→  // Get updated box log after open attempt
+   620→  const updatedBoxLog = await getBoxLogWithCredentials(deviceNumber, credentials, { boxNo, pageSize: 5 });
+   621→  
+   622→  console.log('====== END DEBUG ======');
+   623→  
+   624→  return {
+   625→    deviceStatus,
+   626→    boxList,
+   627→    deviceList,
+   628→    boxLog: updatedBoxLog,
+   629→    openResult,
+   630→    doorStatus,
+   631→  };
+   632→}
+   633→
+   634→// ============================================
+   635→// LEGACY: Functions that use global settings (for backward compatibility)
+   636→// ============================================
+   637→
+   638→// Open a specific box on a device
+   639→export async function openBox(deviceNumber: string, boxNo: number): Promise<BestwondResponse> {
+   640→  const config = await getConfigAsync();
+   641→  return openBoxWithCredentials(deviceNumber, boxNo, config);
+   642→}
+   643→
+   644→// Get device online status
+   645→export async function getDeviceStatus(deviceNumber: string): Promise<BestwondResponse<DeviceStatus>> {
+   646→  const config = await getConfigAsync();
+   647→  return getDeviceStatusWithCredentials(deviceNumber, config);
+   648→}
+   649→
+   650→// Get list of boxes for a device
+   651→export async function getBoxList(deviceNumber: string): Promise<BestwondResponse<BoxInfo[]>> {
+   652→  const config = await getConfigAsync();
+   653→  return getBoxListWithCredentials(deviceNumber, config);
+   654→}
+   655→
+   656→// Get list of all devices
+   657→export async function getDeviceList(): Promise<BestwondResponse> {
+   658→  const config = await getConfigAsync();
+   659→  return getDeviceListWithCredentials(config);
+   660→}
+   661→
+   662→// Get box usage log
+   663→export async function getBoxLog(deviceNumber: string, options?: { boxNo?: number; startTime?: string; endTime?: string }): Promise<BestwondResponse> {
+   664→  const config = await getConfigAsync();
+   665→  
+   666→  if (!config.appId || !config.appSecret) {
+   667→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   668→  }
+   669→  
+   670→  const params: Record<string, string | number> = {
+   671→    app_id: config.appId,
+   672→    timestamps: getTimestamp(),
+   673→    device_number: deviceNumber,
+   674→  };
+   675→  
+   676→  if (options?.boxNo) params.box_no = options.boxNo;
+   677→  if (options?.startTime) params.start_time = options.startTime;
+   678→  if (options?.endTime) params.end_time = options.endTime;
+   679→  
+   680→  const signature = await generateSignature(params, config.appSecret);
+   681→  
+   682→  try {
+   683→    const response = await fetchWithTimeout(`${config.baseUrl}/api/iot/device/box/log/?sign=${signature}`, {
+   684→      method: 'POST',
+   685→      headers: { 
+   686→        'Content-Type': 'application/json',
+   687→        'User-Agent': 'PickupLocker/1.0',
+   688→        'Accept': 'application/json',
+   689→      },
+   690→      body: JSON.stringify(params),
+   691→    });
+   692→    
+   693→    const data = await response.json();
+   694→    return data as BestwondResponse;
+   695→  } catch (error) {
+   696→    console.error('Bestwond getBoxLog error:', error);
+   697→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get box log' };
+   698→  }
+   699→}
+   700→
+   701→// ============================================
+   702→// EXPRESS STORAGE AND RETRIEVAL API
+   703→// ============================================
+   704→
+   705→export interface ExpressOrderResult {
+   706→  id?: number;
+   707→  device_number: string;
+   708→  order_no: string;
+   709→  box_name?: string;
+   710→  box_size: string;
+   711→  save_code: string;      // 6-digit code for courier to store
+   712→  pick_code: string;      // 6-digit code for recipient to pick up
+   713→  status: string;
+   714→  msg?: string;
+   715→  save_time?: string;
+   716→  pick_time?: string;
+   717→}
+   718→
+   719→export interface WebhookSettings {
+   720→  save_notify_url?: string;
+   721→  take_notify_url?: string;
+   722→}
+   723→
+   724→// Set webhook URLs for save/take notifications
+   725→export async function setWebhookWithCredentials(
+   726→  webhookSettings: WebhookSettings,
+   727→  credentials: BestwondCredentials
+   728→): Promise<BestwondResponse> {
+   729→  if (!credentials.appId || !credentials.appSecret) {
+   730→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   731→  }
+   732→  
+   733→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   734→  
+   735→  const params: Record<string, string | number> = {
+   736→    app_id: credentials.appId,
+   737→    timestamps: getTimestamp(),
+   738→  };
+   739→  
+   740→  if (webhookSettings.save_notify_url) {
+   741→    params.save_notify_url = webhookSettings.save_notify_url;
+   742→  }
+   743→  if (webhookSettings.take_notify_url) {
+   744→    params.take_notify_url = webhookSettings.take_notify_url;
+   745→  }
+   746→  
+   747→  const signature = await generateSignature(params, credentials.appSecret);
+   748→  
+   749→  console.log('=== SET WEBHOOK ===');
+   750→  console.log('Save URL:', webhookSettings.save_notify_url);
+   751→  console.log('Take URL:', webhookSettings.take_notify_url);
+   752→  
+   753→  try {
+   754→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/set/app/webhook/?sign=${signature}`, {
+   755→      method: 'POST',
+   756→      headers: { 
+   757→        'Content-Type': 'application/json',
+   758→        'User-Agent': 'PickupLocker/1.0',
+   759→        'Accept': 'application/json',
+   760→      },
+   761→      body: JSON.stringify(params),
+   762→    });
+   763→    
+   764→    const data = await response.json();
+   765→    console.log('Set webhook response:', data);
+   766→    console.log('=== END SET WEBHOOK ===');
+   767→    return data as BestwondResponse;
+   768→  } catch (error) {
+   769→    console.error('Bestwond setWebhook error:', error);
+   770→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to set webhook' };
+   771→  }
+   772→}
+   773→
+   774→// Create an order for storage (courier will use save_code to store)
+   775→export async function setSaveOrderWithCredentials(
+   776→  deviceNumber: string,
+   777→  orderNo: string,
+   778→  boxSize: 'S' | 'M' | 'L' | 'XL',
+   779→  credentials: BestwondCredentials
+   780→): Promise<BestwondResponse<ExpressOrderResult>> {
+   781→  if (!credentials.appId || !credentials.appSecret) {
+   782→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   783→  }
+   784→  
+   785→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   786→  
+   787→  const params: Record<string, string | number> = {
+   788→    app_id: credentials.appId,
+   789→    timestamps: getTimestamp(),
+   790→    device_number: deviceNumber,
+   791→    order_no: orderNo,
+   792→    box_size: boxSize,
+   793→  };
+   794→  
+   795→  const signature = await generateSignature(params, credentials.appSecret);
+   796→  
+   797→  console.log('=== SET SAVE ORDER ===');
+   798→  console.log('Device:', deviceNumber, 'Order:', orderNo, 'Size:', boxSize);
+   799→  
+   800→  try {
+   801→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/set/save/order/?sign=${signature}`, {
+   802→      method: 'POST',
+   803→      headers: { 
+   804→        'Content-Type': 'application/json',
+   805→        'User-Agent': 'PickupLocker/1.0',
+   806→        'Accept': 'application/json',
+   807→      },
+   808→      body: JSON.stringify(params),
+   809→    });
+   810→    
+   811→    const data = await response.json();
+   812→    console.log('Set save order response:', JSON.stringify(data, null, 2));
+   813→    console.log('=== END SET SAVE ORDER ===');
+   814→    return data as BestwondResponse<ExpressOrderResult>;
+   815→  } catch (error) {
+   816→    console.error('Bestwond setSaveOrder error:', error);
+   817→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to set save order' };
+   818→  }
+   819→}
+   820→
+   821→// Express storage or retrieval - open box using action code
+   822→// action_type: "save" = courier storing, "take" = recipient picking up
+   823→// action_code: save_code or pick_code from setSaveOrder
+   824→export async function expressSaveOrTakeWithCredentials(
+   825→  deviceNumber: string,
+   826→  boxSize: 'S' | 'M' | 'L' | 'XL',
+   827→  actionCode: string,
+   828→  actionType: 'save' | 'take',
+   829→  credentials: BestwondCredentials
+   830→): Promise<BestwondResponse<ExpressOrderResult>> {
+   831→  if (!credentials.appId || !credentials.appSecret) {
+   832→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   833→  }
+   834→  
+   835→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   836→  
+   837→  const params: Record<string, string | number> = {
+   838→    app_id: credentials.appId,
+   839→    timestamps: getTimestamp(),
+   840→    device_number: deviceNumber,
+   841→    box_size: boxSize,
+   842→    action_code: actionCode,
+   843→    action_type: actionType,
+   844→  };
+   845→  
+   846→  const signature = await generateSignature(params, credentials.appSecret);
+   847→  
+   848→  console.log('=== EXPRESS SAVE/TAKE ===');
+   849→  console.log('Device:', deviceNumber);
+   850→  console.log('Action:', actionType);
+   851→  console.log('Code:', actionCode);
+   852→  console.log('Box Size:', boxSize);
+   853→  
+   854→  try {
+   855→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/order/save/or/take/?sign=${signature}`, {
+   856→      method: 'POST',
+   857→      headers: { 
+   858→        'Content-Type': 'application/json',
+   859→        'User-Agent': 'PickupLocker/1.0',
+   860→        'Accept': 'application/json',
+   861→      },
+   862→      body: JSON.stringify(params),
+   863→    });
+   864→    
+   865→    const data = await response.json();
+   866→    console.log('Express save/take response:', JSON.stringify(data, null, 2));
+   867→    console.log('=== END EXPRESS SAVE/TAKE ===');
+   868→    return data as BestwondResponse<ExpressOrderResult>;
+   869→  } catch (error) {
+   870→    console.error('Bestwond expressSaveOrTake error:', error);
+   871→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to save/take' };
+   872→  }
+   873→}
+   874→
+   875→// Get device box doors that can be stored (available boxes by size)
+   876→export async function getStorableBoxDoorsWithCredentials(
+   877→  deviceNumber: string,
+   878→  boxSize: 'S' | 'M' | 'L' | 'XL',
+   879→  credentials: BestwondCredentials
+   880→): Promise<BestwondResponse> {
+   881→  if (!credentials.appId || !credentials.appSecret) {
+   882→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   883→  }
+   884→  
+   885→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   886→  
+   887→  const params: Record<string, string | number> = {
+   888→    app_id: credentials.appId,
+   889→    timestamps: getTimestamp(),
+   890→    device_number: deviceNumber,
+   891→    box_size: boxSize,
+   892→  };
+   893→  
+   894→  const signature = await generateSignature(params, credentials.appSecret);
+   895→  
+   896→  try {
+   897→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/device/box/doors/?sign=${signature}`, {
+   898→      method: 'POST',
+   899→      headers: { 
+   900→        'Content-Type': 'application/json',
+   901→        'User-Agent': 'PickupLocker/1.0',
+   902→        'Accept': 'application/json',
+   903→      },
+   904→      body: JSON.stringify(params),
+   905→    });
+   906→    
+   907→    const data = await response.json();
+   908→    return data as BestwondResponse;
+   909→  } catch (error) {
+   910→    console.error('Bestwond getStorableBoxDoors error:', error);
+   911→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get storable boxes' };
+   912→  }
+   913→}
+   914→
+   915→// Get device box used info (boxes currently in use)
+   916→export async function getBoxUsedInfoWithCredentials(
+   917→  deviceNumber: string,
+   918→  credentials: BestwondCredentials
+   919→): Promise<BestwondResponse> {
+   920→  if (!credentials.appId || !credentials.appSecret) {
+   921→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   922→  }
+   923→  
+   924→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   925→  
+   926→  const params: Record<string, string | number> = {
+   927→    app_id: credentials.appId,
+   928→    timestamps: getTimestamp(),
+   929→    device_number: deviceNumber,
+   930→  };
+   931→  
+   932→  const signature = await generateSignature(params, credentials.appSecret);
+   933→  
+   934→  try {
+   935→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/device/box/used/info/?sign=${signature}`, {
+   936→      method: 'POST',
+   937→      headers: { 
+   938→        'Content-Type': 'application/json',
+   939→        'User-Agent': 'PickupLocker/1.0',
+   940→        'Accept': 'application/json',
+   941→      },
+   942→      body: JSON.stringify(params),
+   943→    });
+   944→    
+   945→    const data = await response.json();
+   946→    return data as BestwondResponse;
+   947→  } catch (error) {
+   948→    console.error('Bestwond getBoxUsedInfo error:', error);
+   949→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get box used info' };
+   950→  }
+   951→}
+   952→
+   953→// Get device box save order info
+   954→export async function getBoxSaveOrderInfoWithCredentials(
+   955→  deviceNumber: string,
+   956→  orderNo: string,
+   957→  credentials: BestwondCredentials
+   958→): Promise<BestwondResponse<ExpressOrderResult>> {
+   959→  if (!credentials.appId || !credentials.appSecret) {
+   960→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+   961→  }
+   962→  
+   963→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+   964→  
+   965→  const params: Record<string, string | number> = {
+   966→    app_id: credentials.appId,
+   967→    timestamps: getTimestamp(),
+   968→    device_number: deviceNumber,
+   969→    order_no: orderNo,
+   970→  };
+   971→  
+   972→  const signature = await generateSignature(params, credentials.appSecret);
+   973→  
+   974→  try {
+   975→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/get/order/info/?sign=${signature}`, {
+   976→      method: 'POST',
+   977→      headers: { 
+   978→        'Content-Type': 'application/json',
+   979→        'User-Agent': 'PickupLocker/1.0',
+   980→        'Accept': 'application/json',
+   981→      },
+   982→      body: JSON.stringify(params),
+   983→    });
+   984→    
+   985→    const data = await response.json();
+   986→    return data as BestwondResponse<ExpressOrderResult>;
+   987→  } catch (error) {
+   988→    console.error('Bestwond getBoxSaveOrderInfo error:', error);
+   989→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to get order info' };
+   990→  }
+   991→}
+   992→
+   993→// Delete order by order number
+   994→export async function deleteOrderByOrderNoWithCredentials(
+   995→  deviceNumber: string,
+   996→  orderNo: string,
+   997→  credentials: BestwondCredentials
+   998→): Promise<BestwondResponse> {
+   999→  if (!credentials.appId || !credentials.appSecret) {
+  1000→    return { code: 401, msg: 'Bestwond API credentials not configured' };
+  1001→  }
+  1002→  
+  1003→  const baseUrl = credentials.baseUrl || 'https://api.bestwond.com';
+  1004→  
+  1005→  const params: Record<string, string | number> = {
+  1006→    app_id: credentials.appId,
+  1007→    timestamps: getTimestamp(),
+  1008→    device_number: deviceNumber,
+  1009→    order_no: orderNo,
+  1010→  };
+  1011→  
+  1012→  const signature = await generateSignature(params, credentials.appSecret);
+  1013→  
+  1014→  try {
+  1015→    const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/delete/order/no/?sign=${signature}`, {
+  1016→      method: 'POST',
+  1017→      headers: { 
+  1018→        'Content-Type': 'application/json',
+  1019→        'User-Agent': 'PickupLocker/1.0',
+  1020→        'Accept': 'application/json',
+  1021→      },
+  1022→      body: JSON.stringify(params),
+  1023→    });
+  1024→    
+  1025→    const data = await response.json();
+  1026→    return data as BestwondResponse;
+  1027→  } catch (error) {
+  1028→    console.error('Bestwond deleteOrder error:', error);
+  1029→    return { code: 500, msg: error instanceof Error ? error.message : 'Failed to delete order' };
+  1030→  }
+  1031→}
+  1032→
+  1033→// Legacy wrappers for backward compatibility
+  1034→export async function setWebhook(webhookSettings: WebhookSettings): Promise<BestwondResponse> {
+  1035→  const config = await getConfigAsync();
+  1036→  return setWebhookWithCredentials(webhookSettings, config);
+  1037→}
+  1038→
+  1039→export async function setSaveOrder(
+  1040→  deviceNumber: string,
+  1041→  orderNo: string,
+  1042→  boxSize: 'S' | 'M' | 'L' | 'XL'
+  1043→): Promise<BestwondResponse<ExpressOrderResult>> {
+  1044→  const config = await getConfigAsync();
+  1045→  return setSaveOrderWithCredentials(deviceNumber, orderNo, boxSize, config);
+  1046→}
+  1047→
+  1048→export async function expressSaveOrTake(
+  1049→  deviceNumber: string,
+  1050→  boxSize: 'S' | 'M' | 'L' | 'XL',
+  1051→  actionCode: string,
+  1052→  actionType: 'save' | 'take'
+  1053→): Promise<BestwondResponse<ExpressOrderResult>> {
+  1054→  const config = await getConfigAsync();
+  1055→  return expressSaveOrTakeWithCredentials(deviceNumber, boxSize, actionCode, actionType, config);
+  1056→}
+  1057→

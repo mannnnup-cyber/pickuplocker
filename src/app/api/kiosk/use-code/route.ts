@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getStorageCalculation } from '@/lib/storage';
-import { expressSaveOrTakeWithCredentials, openBoxWithCredentials, getConfigAsync, getCredentialsForDevice, type BestwondCredentials } from '@/lib/bestwond';
+import { executeDoorOperation, updateBusinessStateForDropoff, updateBusinessStateForPickup, getCustomerMessage, type DoorOperationResult } from '@/lib/door-operation';
 import { sendPickupNotification, sendPickupConfirmation } from '@/lib/textbee';
+import { logDoorOperation } from '@/lib/bestwond-safe';
 
-// POST /api/kiosk/use-code - Use a save_code or pick_code
+/**
+ * POST /api/kiosk/use-code - Use a save_code or pick_code
+ *
+ * CRITICAL SAFETY RULES:
+ * 1. Business state (order/box/payment) is ONLY updated after confirmed door opening
+ * 2. If door opening fails, NO state changes are made
+ * 3. Customer gets accurate messages about what happened
+ * 4. Operations are idempotent (duplicate-safe)
+ */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -42,15 +51,19 @@ export async function POST(request: NextRequest) {
     }, { status: 400 });
 
   } catch (error) {
-    console.error('Use code error:', error);
+    console.error('Use code error:', error instanceof Error ? error.message : 'Unknown error');
     return NextResponse.json({
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to process code',
+      error: 'An error occurred processing your code. Please try again.',
     }, { status: 500 });
   }
 }
 
-// Handle save_code for drop-off
+/**
+ * Handle save_code for drop-off
+ *
+ * SAFETY: Only marks order STORED and box OCCUPIED after confirmed door opening.
+ */
 async function handleSaveCode(saveCode: string, recipientPhone?: string) {
   // Find express order by save_code
   const expressOrder = await db.expressOrder.findFirst({
@@ -90,111 +103,173 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
     }, { status: 404 });
   }
 
-  // Get Bestwond credentials
-  const credentials = await getCredentialsForDevice(device.id);
-  
-  // Open the box via Bestwond Express API
-  let boxOpened = false;
-  let boxName = expressOrder.boxName;
-
-  try {
-    const result = await expressSaveOrTakeWithCredentials(
-      expressOrder.deviceId,
-      expressOrder.boxSize as 'S' | 'M' | 'L' | 'XL',
-      saveCode,
-      'save',
-      credentials
-    );
-
-    if (result.code === 0 && result.data) {
-      boxOpened = true;
-      boxName = result.data.box_name || boxName;
-    }
-  } catch (bestwondError) {
-    console.error('Bestwond express save error:', bestwondError);
-    // Try direct box open as fallback
-    try {
-      const boxNumber = parseInt(boxName || '1');
-      const openResult = await openBoxWithCredentials(device.deviceId, boxNumber, credentials);
-      boxOpened = openResult.code === 0;
-    } catch (openError) {
-      console.error('Direct box open error:', openError);
-    }
-  }
-
-  // Update express order
-  await db.expressOrder.update({
-    where: { id: expressOrder.id },
-    data: {
-      status: 'STORED',
-      saveTime: new Date(),
-      customerPhone: cleanPhone,
-    },
-  });
-
-  // Find and update main order
+  // Find the main order and box
   const order = await db.order.findFirst({
     where: { orderNumber: expressOrder.orderNo },
   });
 
-  if (order) {
-    // Update order status
-    await db.order.update({
-      where: { id: order.id },
-      data: {
-        status: 'STORED',
-        dropOffAt: new Date(),
-        customerPhone: cleanPhone,
-        storageStartAt: new Date(),
-      },
-    });
+  const boxNumber = parseInt(expressOrder.boxName || '1', 10);
 
-    // Mark box as occupied
-    if (order.boxId) {
-      await db.box.update({
-        where: { id: order.boxId },
-        data: { status: 'OCCUPIED', lastUsedAt: new Date() },
+  // Execute door operation through the centralized service
+  const doorResult = await executeDoorOperation({
+    orderId: order?.id || expressOrder.id,
+    orderNo: expressOrder.orderNo,
+    deviceId: device.id,
+    deviceNumber: device.deviceId,
+    boxId: order?.boxId,
+    boxNumber,
+    boxSize: expressOrder.boxSize as 'S' | 'M' | 'L' | 'XL',
+    action: 'dropoff',
+    actionCode: saveCode,
+    idempotencyKey: `dropoff:${expressOrder.id}:${saveCode}`,
+    useExpressApi: true,
+  });
+
+  // ============================================
+  // CRITICAL: Only update business state if door opened
+  // ============================================
+
+  if (doorResult.success && doorResult.confirmed) {
+    // Door confirmed open — safe to update business state
+    try {
+      await updateBusinessStateForDropoff({
+        expressOrderId: expressOrder.id,
+        orderId: order?.id,
+        boxId: order?.boxId,
+        deviceId: order?.deviceId,
+        customerPhone: cleanPhone,
+        boxName: expressOrder.boxName || String(boxNumber).padStart(2, '0'),
+        saveCode,
+        pickCode: expressOrder.pickCode,
+        deviceLocation: device.location || undefined,
+        customerName: expressOrder.customerName || undefined,
+      });
+
+      // Send pickup notification SMS (non-critical)
+      try {
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + 3);
+        await sendPickupNotification(
+          cleanPhone,
+          expressOrder.customerName || 'Customer',
+          expressOrder.pickCode,
+          device.location || 'Pickup Locker',
+          expiryDate.toLocaleDateString()
+        );
+      } catch (smsError) {
+        console.error('Failed to send pickup SMS:', smsError instanceof Error ? smsError.message : 'Unknown');
+      }
+
+      // Create activity log (non-critical, privacy-safe)
+      if (order) {
+        try {
+          await db.activity.create({
+            data: {
+              userId: order.customerId,
+              action: 'KIOSK_DROP_OFF',
+              description: `Package stored. Box: ${expressOrder.boxName}, Order: ${expressOrder.orderNo}`,
+              orderId: order.id,
+            },
+          });
+        } catch (logError) {
+          console.error('Failed to create activity log:', logError instanceof Error ? logError.message : 'Unknown');
+        }
+      }
+
+      logDoorOperation({
+        operationId: doorResult.operationId,
+        action: 'dropoff',
+        orderId: order?.id,
+        deviceId: device.id,
+        boxId: order?.boxId,
+        boxNumber,
+        result: 'success',
+        durationMs: doorResult.durationMs,
+        apiCalls: doorResult.apiCalls,
+        businessStateUpdated: true,
+        message: 'Door confirmed open, business state updated',
+      });
+
+    } catch (stateError) {
+      // Business state update failed AFTER physical door opened!
+      // This is a critical condition — the door IS open but our records don't reflect it.
+      console.error('[CRITICAL] Business state update failed after door opened:', stateError);
+      logDoorOperation({
+        operationId: doorResult.operationId,
+        action: 'dropoff',
+        orderId: order?.id,
+        deviceId: device.id,
+        result: 'success',
+        message: 'Door opened but business state update FAILED — needs manual reconciliation',
+        durationMs: doorResult.durationMs,
+        apiCalls: doorResult.apiCalls,
+        businessStateUpdated: false,
+      });
+
+      // Still tell the customer the door is open
+      return NextResponse.json({
+        success: true,
+        orderNo: expressOrder.orderNo,
+        boxName: expressOrder.boxName,
+        boxOpened: true,
+        pickCode: expressOrder.pickCode,
+        message: 'Locker opened! Please place your package inside and close the door.',
+        _warning: 'Business state update pending — staff should verify records',
       });
     }
 
-    // Send pickup notification SMS
-    try {
-      const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + 3); // 3 days free storage
-
-      await sendPickupNotification(
-        cleanPhone,
-        expressOrder.customerName || 'Customer',
-        expressOrder.pickCode,
-        device.location || 'Pickup Locker',
-        expiryDate.toLocaleDateString()
-      );
-    } catch (smsError) {
-      console.error('Failed to send pickup SMS:', smsError);
-    }
-
-    // Create activity log
-    await db.activity.create({
-      data: {
-        userId: order.customerId,
-        action: 'KIOSK_DROP_OFF',
-        description: `Package stored via kiosk. Box: ${boxName}, Code: ${saveCode}`,
-        orderId: order.id,
-      },
+    return NextResponse.json({
+      success: true,
+      orderNo: expressOrder.orderNo,
+      boxName: expressOrder.boxName,
+      boxOpened: true,
+      pickCode: expressOrder.pickCode,
+      message: 'Locker opened! Please place your package inside and close the door.',
     });
   }
 
-  return NextResponse.json({
-    success: true,
-    orderNo: expressOrder.orderNo,
-    boxName,
-    boxOpened,
-    pickCode: expressOrder.pickCode,
-    message: 'Locker opened! Please place your package inside and close the door.',
+  // ============================================
+  // Door did NOT open confirmed — NO business state changes
+  // ============================================
+
+  const customerMsg = getCustomerMessage(doorResult, 'dropoff');
+
+  logDoorOperation({
+    operationId: doorResult.operationId,
+    action: 'dropoff',
+    orderId: order?.id,
+    deviceId: device.id,
+    boxId: order?.boxId,
+    boxNumber,
+    result: doorResult.success ? 'unknown' : 'failure',
+    errorType: doorResult.errorType,
+    durationMs: doorResult.durationMs,
+    apiCalls: doorResult.apiCalls,
+    businessStateUpdated: false,
+    message: `Door not confirmed. No business state changes made. ${doorResult.message}`,
   });
+
+  return NextResponse.json({
+    success: false,
+    boxOpened: false,
+    error: customerMsg.message,
+    retryable: doorResult.retryable,
+    showRetry: customerMsg.showRetry,
+    showStaffAssist: customerMsg.showStaffAssist,
+    operationRef: doorResult.operationId,
+    // Include box info so customer can retry
+    orderNo: expressOrder.orderNo,
+    boxName: expressOrder.boxName,
+    pickCode: expressOrder.pickCode,
+  }, { status: doorResult.retryable ? 503 : 400 });
 }
 
-// Handle pick_code for pickup
+/**
+ * Handle pick_code for pickup
+ *
+ * SAFETY: Only marks order PICKED_UP, box AVAILABLE, and records payment
+ * after confirmed door opening.
+ */
 async function handlePickCode(pickCode: string, paymentMethod?: string) {
   // Find express order by pick_code
   const expressOrder = await db.expressOrder.findFirst({
@@ -226,6 +301,7 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
   let deviceId = expressOrder?.deviceId || order?.device?.deviceId || '';
   let boxName = expressOrder?.boxName || (order?.boxNumber?.toString().padStart(2, '0')) || '01';
   let boxSize = expressOrder?.boxSize || order?.packageSize || 'M';
+  const boxNumber = parseInt(boxName, 10);
 
   // Get device
   const device = await db.device.findFirst({
@@ -251,12 +327,10 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
   if (order?.manuallyPaidAt && order?.manualPaymentGraceUntil) {
     const now = new Date();
     const graceDeadline = new Date(order.manualPaymentGraceUntil);
-    
+
     if (now <= graceDeadline) {
-      // Within grace period - no additional fee needed
       feeOwed = 0;
     } else {
-      // Grace period expired - calculate NEW fees since manual payment
       graceExpired = true;
       const newFeeCalc = getStorageCalculation(new Date(order.manuallyPaidAt));
       feeOwed = newFeeCalc.storageFee;
@@ -273,119 +347,161 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
       storageFee: feeOwed,
       storageDays: storageCalc.totalDays,
       graceExpired,
-      message: graceExpired 
+      message: graceExpired
         ? `Grace period expired. Additional storage fee of JMD $${feeOwed} is required`
         : `Storage fee of JMD $${feeOwed} is required`,
     });
   }
 
-  // Get Bestwond credentials
-  const credentials = await getCredentialsForDevice(device.id);
+  // ============================================
+  // Execute door operation BEFORE any business state changes
+  // ============================================
 
-  // Open the box via Bestwond Express API
-  let boxOpened = false;
+  const doorResult = await executeDoorOperation({
+    orderId: order?.id || expressOrder?.id || 'unknown',
+    orderNo: expressOrder?.orderNo || order?.orderNumber || 'unknown',
+    deviceId: device.id,
+    deviceNumber: device.deviceId,
+    boxId: order?.boxId,
+    boxNumber,
+    boxSize: boxSize as 'S' | 'M' | 'L' | 'XL',
+    action: 'pickup',
+    actionCode: pickCode,
+    idempotencyKey: `pickup:${order?.id || expressOrder?.id}:${pickCode}`,
+    useExpressApi: true,
+  });
 
-  try {
-    const result = await expressSaveOrTakeWithCredentials(
-      device.deviceId,
-      boxSize as 'S' | 'M' | 'L' | 'XL',
-      pickCode,
-      'take',
-      credentials
-    );
+  // ============================================
+  // CRITICAL: Only update business state if door opened
+  // ============================================
 
-    if (result.code === 0) {
-      boxOpened = true;
-    }
-  } catch (bestwondError) {
-    console.error('Bestwond express take error:', bestwondError);
-    // Try direct box open as fallback
+  if (doorResult.success && doorResult.confirmed) {
+    // Door confirmed open — safe to update business state
     try {
-      const boxNumber = parseInt(boxName);
-      const openResult = await openBoxWithCredentials(device.deviceId, boxNumber, credentials);
-      boxOpened = openResult.code === 0;
-    } catch (openError) {
-      console.error('Direct box open error:', openError);
-    }
-  }
-
-  // Record payment if applicable
-  if (feeOwed > 0 && paymentMethod && order) {
-    await db.payment.create({
-      data: {
-        orderId: order.id,
-        userId: order.customerId,
-        amount: feeOwed,
-        method: paymentMethod as 'CASH' | 'CARD' | 'ONLINE',
-        status: 'COMPLETED',
-        paidAt: new Date(),
-      },
-    });
-  }
-
-  // Update express order
-  if (expressOrder) {
-    await db.expressOrder.update({
-      where: { id: expressOrder.id },
-      data: {
-        status: 'PICKED_UP',
-        pickTime: new Date(),
-      },
-    });
-  }
-
-  // Update main order
-  if (order) {
-    await db.order.update({
-      where: { id: order.id },
-      data: {
-        status: 'PICKED_UP',
-        pickUpAt: new Date(),
+      await updateBusinessStateForPickup({
+        expressOrderId: expressOrder?.id,
+        orderId: order?.id,
+        boxId: order?.boxId,
+        deviceId: order?.deviceId,
         storageDays: storageCalc.totalDays,
-        storageFee: feeOwed > 0 ? feeOwed : storageFee,
-      },
-    });
+        storageFee,
+        feeOwed,
+        paymentMethod,
+        customerPhone: order?.customerPhone,
+        customerName: order?.customerName,
+        boxName,
+      });
 
-    // Mark box as available
-    if (order.boxId) {
-      await db.box.update({
-        where: { id: order.boxId },
-        data: { status: 'AVAILABLE' },
+      // Send confirmation SMS (non-critical)
+      if (order?.customerPhone && order?.customerName) {
+        try {
+          await sendPickupConfirmation(order.customerPhone, order.customerName);
+        } catch (smsError) {
+          console.error('Failed to send pickup confirmation SMS:', smsError instanceof Error ? smsError.message : 'Unknown');
+        }
+      }
+
+      // Create activity log (non-critical, privacy-safe)
+      if (order) {
+        try {
+          await db.activity.create({
+            data: {
+              userId: order.customerId,
+              action: 'KIOSK_PICKUP',
+              description: `Package picked up. Box: ${boxName}, Days: ${storageCalc.totalDays}, Fee: JMD $${feeOwed > 0 ? feeOwed : storageFee}`,
+              orderId: order.id,
+            },
+          });
+        } catch (logError) {
+          console.error('Failed to create activity log:', logError instanceof Error ? logError.message : 'Unknown');
+        }
+      }
+
+      logDoorOperation({
+        operationId: doorResult.operationId,
+        action: 'pickup',
+        orderId: order?.id,
+        deviceId: device.id,
+        boxId: order?.boxId,
+        boxNumber,
+        result: 'success',
+        durationMs: doorResult.durationMs,
+        apiCalls: doorResult.apiCalls,
+        businessStateUpdated: true,
+        message: 'Door confirmed open, business state updated',
+      });
+
+    } catch (stateError) {
+      // Business state update failed AFTER physical door opened!
+      console.error('[CRITICAL] Business state update failed after pickup door opened:', stateError);
+      logDoorOperation({
+        operationId: doorResult.operationId,
+        action: 'pickup',
+        orderId: order?.id,
+        deviceId: device.id,
+        result: 'success',
+        message: 'Door opened but business state update FAILED — needs manual reconciliation',
+        durationMs: doorResult.durationMs,
+        apiCalls: doorResult.apiCalls,
+        businessStateUpdated: false,
+      });
+
+      // Still tell the customer the door is open
+      return NextResponse.json({
+        success: true,
+        orderNo: expressOrder?.orderNo || order?.orderNumber,
+        boxName,
+        boxOpened: true,
+        storageFee,
+        message: 'Locker opened! Please collect your package and close the door.',
+        _warning: 'Business state update pending — staff should verify records',
       });
     }
 
-    // Update device available count
-    if (order.deviceId) {
-      await db.device.update({
-        where: { id: order.deviceId },
-        data: { availableBoxes: { increment: 1 } },
-      });
-    }
-
-    // Send confirmation SMS
-    try {
-      await sendPickupConfirmation(order.customerPhone, order.customerName);
-    } catch (smsError) {
-      console.error('Failed to send pickup confirmation SMS:', smsError);
-    }
-
-    // Create activity log
-    await db.activity.create({
-      data: {
-        userId: order.customerId,
-        action: 'KIOSK_PICKUP',
-        description: `Package picked up via kiosk. Box: ${boxName}, Days: ${storageCalc.totalDays}, Fee: JMD $${storageFee}`,
-        orderId: order.id,
-      },
+    return NextResponse.json({
+      success: true,
+      orderNo: expressOrder?.orderNo || order?.orderNumber,
+      boxName,
+      boxOpened: true,
+      storageFee,
+      message: 'Locker opened! Please collect your package and close the door.',
     });
   }
+
+  // ============================================
+  // Door did NOT open confirmed — NO business state changes
+  // No payment recorded, no order marked PICKED_UP, no box marked AVAILABLE
+  // ============================================
+
+  const customerMsg = getCustomerMessage(doorResult, 'pickup');
+
+  logDoorOperation({
+    operationId: doorResult.operationId,
+    action: 'pickup',
+    orderId: order?.id,
+    deviceId: device.id,
+    boxId: order?.boxId,
+    boxNumber,
+    result: doorResult.success ? 'unknown' : 'failure',
+    errorType: doorResult.errorType,
+    durationMs: doorResult.durationMs,
+    apiCalls: doorResult.apiCalls,
+    businessStateUpdated: false,
+    message: `Door not confirmed. No business state changes. No payment recorded. ${doorResult.message}`,
+  });
 
   return NextResponse.json({
-    success: true,
+    success: false,
+    boxOpened: false,
+    error: customerMsg.message,
+    retryable: doorResult.retryable,
+    showRetry: customerMsg.showRetry,
+    showStaffAssist: customerMsg.showStaffAssist,
+    operationRef: doorResult.operationId,
+    // Preserve fee info so customer can retry payment
     orderNo: expressOrder?.orderNo || order?.orderNumber,
     boxName,
-    boxOpened,
-    storageFee,
-    message: 'Locker opened! Please collect your package and close the door.',
-  });
+    storageFee: feeOwed > 0 ? feeOwed : storageFee,
+    requiresPayment: feeOwed > 0,
+  }, { status: doorResult.retryable ? 503 : 400 });
 }

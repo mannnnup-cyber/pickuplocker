@@ -48,6 +48,18 @@
     "src/app/api/sync/**/*.ts": {
       "memory": 512,
       "maxDuration": 30
+    },
+    "src/app/api/kiosk/**/*.ts": {
+      "memory": 512,
+      "maxDuration": 60
+    },
+    "src/app/api/kiosk-action/**/*.ts": {
+      "memory": 512,
+      "maxDuration": 60
+    },
+    "src/app/api/webhooks/**/*.ts": {
+      "memory": 256,
+      "maxDuration": 30
     }
   },
   "crons": [

@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { action, boxSize, phone, email } = body;
 
-    console.log('[Kiosk Payment] POST Request:', { action, boxSize, phone, email });
+    console.log('[Kiosk Payment] POST Request:', { action, boxSize });
 
     // Create drop-off payment
     if (action === 'create_dropoff_payment') {
@@ -172,14 +172,14 @@ export async function GET(request: NextRequest) {
 
       // Auto-complete after 5 seconds in demo mode
       if (elapsed > 5000) {
-        console.log('[Kiosk Payment] Demo payment completed! saveCode:', demoData.saveCode);
+        console.log('[Kiosk Payment] Demo payment completed!');
 
         // Send SMS notification
         try {
           await sendSMS(demoData.phone,
             `Pickup Jamaica: Your drop-off payment of JMD $${demoData.amount} is confirmed. Your save code is ${demoData.saveCode}. Use this code at the locker to store your package.`
           );
-          console.log('[Kiosk Payment] SMS sent to:', demoData.phone);
+          console.log('[Kiosk Payment] SMS sent');
         } catch (smsError) {
           console.error('[Kiosk Payment] Failed to send SMS:', smsError);
         }
@@ -313,7 +313,7 @@ export async function GET(request: NextRequest) {
 
 // Create drop-off credit payment - Uses real DimePay if configured, otherwise demo mode
 async function createDropoffPayment(boxSize: string, phone: string, email?: string) {
-  console.log('[Kiosk Payment] createDropoffPayment called with:', { boxSize, phone, email });
+  console.log('[Kiosk Payment] createDropoffPayment called with boxSize:', boxSize);
 
   // Validate box size
   if (!boxSize || !['S', 'M', 'L', 'XL'].includes(boxSize)) {
@@ -773,7 +773,7 @@ async function createStorageFeePayment(orderId: string, amount: number, phone?: 
 
 // Open box immediately after payment - skips code entry step
 async function openBoxAfterPayment(saveCode: string, recipientPhone: string) {
-  console.log('[Kiosk Payment] openBoxAfterPayment called:', { saveCode, recipientPhone });
+  console.log('[Kiosk Payment] openBoxAfterPayment called');
 
   if (!saveCode || saveCode.length !== 6) {
     return NextResponse.json({

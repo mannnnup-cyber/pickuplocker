@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { courierId, tempPin, newPin, confirmPin, currentPin } = body;
 
-    console.log('[Courier PIN] Set PIN request for courier:', courierId);
+    console.log('[Courier PIN] Set PIN request for courier:', courierId ? 'provided' : 'missing');
 
     // Validate courier ID
     if (!courierId) {
@@ -137,7 +137,7 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    console.log('[Courier PIN] PIN set successfully for:', courier.name);
+    console.log('[Courier PIN] PIN set successfully for courier:', courierId ? 'id-provided' : 'unknown');
 
     return NextResponse.json({
       success: true,
@@ -159,7 +159,7 @@ export async function PUT(request: NextRequest) {
     const body = await request.json();
     const { phone, adminInitiated, courierId } = body;
 
-    console.log('[Courier PIN] Reset request for phone:', phone, 'admin:', adminInitiated);
+    console.log('[Courier PIN] Reset request for phone: ***REDACTED***', 'admin:', adminInitiated);
 
     // Find courier
     let courier;

@@ -21,6 +21,7 @@ import {
   Server,
   MessageSquare,
   CheckCircle,
+  AlertCircle,
   AlertTriangle,
   XCircle,
   Shield,

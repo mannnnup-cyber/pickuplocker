@@ -195,34 +195,69 @@ export async function openBoxWithCredentials(
   const boxHex = boxNo.toString(16).toLowerCase().padStart(2, '0');
   const defaultLockAddress = `01${boxHex}`; // e.g., "0101", "010a", "010c"
   
-  // First, try to get box list to find the correct lock_address
-  console.log('=== OPEN BOX DEBUG ===');
-  console.log('Device Number:', deviceNumber);
-  console.log('Box Number:', boxNo);
-  console.log('Default lock_address (HEX format):', defaultLockAddress);
+  // Try to use stored lock_address from DB first, then fetch box list as fallback
+  // This reduces API calls from 2+ to 1 for most door openings
+  console.log('[Bestwond] openBox device=%s box=%d lockAddr=%s', deviceNumber, boxNo, defaultLockAddress);
   
-  const boxListResult = await getBoxListWithCredentials(deviceNumber, credentials);
-  console.log('Box List Result:', JSON.stringify(boxListResult, null, 2));
+  // Check if we can skip the box list fetch by using a stored lock_address
+  let boxListResult: BestwondResponse<BoxInfo[]> = { code: -1, msg: 'Skipped — using default lock_address' };
   
-  let lockAddress = defaultLockAddress; // use correct HEX format as default
+  // Try to find lock_address from local DB
+  try {
+    const { db } = await import('./db');
+    const deviceRecord = await db.device.findFirst({ 
+      where: { deviceId: deviceNumber },
+      select: { id: true } 
+    });
+    if (deviceRecord) {
+      const boxRecord = await db.box.findFirst({
+        where: { deviceId: deviceRecord.id, boxNumber: boxNo },
+        select: { lockAddress: true }
+      });
+      if (boxRecord?.lockAddress) {
+        lockAddress = boxRecord.lockAddress;
+        console.log('[Bestwond] Using stored lock_address from DB: %s', lockAddress);
+        // Skip the box list fetch entirely!
+      } else {
+        // No stored address — fetch from API
+        boxListResult = await getBoxListWithCredentials(deviceNumber, credentials);
+      }
+    } else {
+      boxListResult = await getBoxListWithCredentials(deviceNumber, credentials);
+    }
+  } catch (dbError) {
+    // DB lookup failed — fall back to API
+    console.error('[Bestwond] DB lock_address lookup failed, fetching from API:', dbError instanceof Error ? dbError.message : 'Unknown');
+    boxListResult = await getBoxListWithCredentials(deviceNumber, credentials);
+  }
   
-  if (boxListResult.code === 0 && boxListResult.data) {
+  // If we fetched from API, resolve the lock_address from the result
+  if (boxListResult.code === 0 && boxListResult.data && lockAddress === defaultLockAddress) {
     const boxes = boxListResult.data as Array<{ 
       box_name: string; 
       lock_address?: string;
     }>;
-    console.log('Total boxes found:', boxes.length);
-    console.log('Looking for box:', boxNo);
     
     const box = boxes.find(b => parseInt(b.box_name, 10) === boxNo);
     if (box && box.lock_address) {
       lockAddress = box.lock_address;
-      console.log(`Found lock_address "${lockAddress}" for box ${boxNo} from box list`);
-    } else {
-      console.log(`Box ${boxNo} not found in box list, using HEX format: ${lockAddress}`);
+      console.log('[Bestwond] lock_address from API: %s', lockAddress);
+      
+      // Save to local DB for future use (fire-and-forget)
+      try {
+        const { db } = await import('./db');
+        const deviceRecord = await db.device.findFirst({ 
+          where: { deviceId: deviceNumber },
+          select: { id: true } 
+        });
+        if (deviceRecord) {
+          await db.box.updateMany({
+            where: { deviceId: deviceRecord.id, boxNumber: boxNo },
+            data: { lockAddress: box.lock_address }
+          }).catch(() => {});
+        }
+      } catch { /* non-critical */ }
     }
-  } else {
-    console.log('Could not fetch box list, using default lock_address:', lockAddress, 'Error:', boxListResult.msg);
   }
   
   const params: Record<string, string | number> = {
@@ -233,14 +268,7 @@ export async function openBoxWithCredentials(
     use_type: 'S', // S = Single open
   };
   
-  console.log('Request params:', { 
-    ...params, 
-    app_id: credentials.appId.substring(0, 8) + '...' 
-  });
-  
   const signature = await generateSignature(params, credentials.appSecret);
-  console.log('Signature:', signature.substring(0, 20) + '...');
-  console.log('=== END OPEN BOX DEBUG ===');
   
   try {
     const response = await fetchWithTimeout(`${baseUrl}/api/iot/open/box/?sign=${signature}`, {
@@ -253,8 +281,15 @@ export async function openBoxWithCredentials(
       body: JSON.stringify(params),
     });
     
+    // Check HTTP status before parsing JSON
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      console.error('[Bestwond] openBox HTTP %d: %s', response.status, errorText.substring(0, 200));
+      return { code: response.status, msg: `Bestwond HTTP ${response.status}: ${errorText.substring(0, 100)}` };
+    }
+    
     const data = await response.json();
-    console.log('Open box API response:', data);
+    console.log('[Bestwond] openBox result code=%d', data.code);
     return data as BestwondResponse;
   } catch (error) {
     console.error('Bestwond openBox error:', error);
@@ -281,8 +316,7 @@ export async function getDoorStatusWithCredentials(
     lock_address: lockAddress,
   };
   
-  console.log('=== DOOR STATUS CHECK ===');
-  console.log('Device:', deviceNumber, 'Lock Address:', lockAddress);
+  console.log('[Bestwond] doorStatus device=%s lockAddr=%s', deviceNumber, lockAddress);
   
   const signature = await generateSignature(params, credentials.appSecret);
   
@@ -297,9 +331,13 @@ export async function getDoorStatusWithCredentials(
       body: JSON.stringify(params),
     });
     
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      console.error('[Bestwond] doorStatus HTTP %d', response.status);
+      return { code: response.status, msg: `Bestwond HTTP ${response.status}` };
+    }
+    
     const data = await response.json();
-    console.log('Door status API response:', data);
-    console.log('=== END DOOR STATUS CHECK ===');
     return data as BestwondResponse<{ status: string; door_open?: boolean }>;
   } catch (error) {
     console.error('Bestwond getDoorStatus error:', error);
@@ -547,9 +585,7 @@ export async function getBoxLogWithCredentials(
   
   const signature = await generateSignature(params, credentials.appSecret);
   
-  console.log('=== BOX LOG DEBUG ===');
-  console.log('Device:', deviceNumber);
-  console.log('Box:', options?.boxNo || 'all');
+  console.log('[Bestwond] boxLog device=%s box=%s', deviceNumber, options?.boxNo || 'all');
   
   try {
     const response = await fetchWithTimeout(`${baseUrl}/api/iot/device/box/log/?sign=${signature}`, {
@@ -562,9 +598,11 @@ export async function getBoxLogWithCredentials(
       body: JSON.stringify(params),
     });
     
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      return { code: response.status, msg: `Bestwond HTTP ${response.status}` };
+    }
     const data = await response.json();
-    console.log('Box log response:', JSON.stringify(data, null, 2));
-    console.log('=== END BOX LOG DEBUG ===');
     return data as BestwondResponse;
   } catch (error) {
     console.error('Bestwond getBoxLog error:', error);
@@ -746,9 +784,7 @@ export async function setWebhookWithCredentials(
   
   const signature = await generateSignature(params, credentials.appSecret);
   
-  console.log('=== SET WEBHOOK ===');
-  console.log('Save URL:', webhookSettings.save_notify_url);
-  console.log('Take URL:', webhookSettings.take_notify_url);
+  console.log('[Bestwond] setWebhook');
   
   try {
     const response = await fetchWithTimeout(`${baseUrl}/api/iot/set/app/webhook/?sign=${signature}`, {
@@ -761,9 +797,11 @@ export async function setWebhookWithCredentials(
       body: JSON.stringify(params),
     });
     
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      return { code: response.status, msg: `Bestwond HTTP ${response.status}` };
+    }
     const data = await response.json();
-    console.log('Set webhook response:', data);
-    console.log('=== END SET WEBHOOK ===');
     return data as BestwondResponse;
   } catch (error) {
     console.error('Bestwond setWebhook error:', error);
@@ -794,8 +832,7 @@ export async function setSaveOrderWithCredentials(
   
   const signature = await generateSignature(params, credentials.appSecret);
   
-  console.log('=== SET SAVE ORDER ===');
-  console.log('Device:', deviceNumber, 'Order:', orderNo, 'Size:', boxSize);
+  console.log('[Bestwond] setSaveOrder device=%s order=%s size=%s', deviceNumber, orderNo, boxSize);
   
   try {
     const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/set/save/order/?sign=${signature}`, {
@@ -808,9 +845,11 @@ export async function setSaveOrderWithCredentials(
       body: JSON.stringify(params),
     });
     
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      return { code: response.status, msg: `Bestwond HTTP ${response.status}` } as BestwondResponse<ExpressOrderResult>;
+    }
     const data = await response.json();
-    console.log('Set save order response:', JSON.stringify(data, null, 2));
-    console.log('=== END SET SAVE ORDER ===');
     return data as BestwondResponse<ExpressOrderResult>;
   } catch (error) {
     console.error('Bestwond setSaveOrder error:', error);
@@ -845,11 +884,7 @@ export async function expressSaveOrTakeWithCredentials(
   
   const signature = await generateSignature(params, credentials.appSecret);
   
-  console.log('=== EXPRESS SAVE/TAKE ===');
-  console.log('Device:', deviceNumber);
-  console.log('Action:', actionType);
-  console.log('Code:', actionCode);
-  console.log('Box Size:', boxSize);
+  console.log('[Bestwond] express device=%s action=%s size=%s', deviceNumber, actionType, boxSize);
   
   try {
     const response = await fetchWithTimeout(`${baseUrl}/api/iot/kd/order/save/or/take/?sign=${signature}`, {
@@ -862,9 +897,14 @@ export async function expressSaveOrTakeWithCredentials(
       body: JSON.stringify(params),
     });
     
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      console.error('[Bestwond] expressSaveOrTake HTTP %d', response.status);
+      return { code: response.status, msg: `Bestwond HTTP ${response.status}: ${errorText.substring(0, 100)}` } as BestwondResponse<ExpressOrderResult>;
+    }
+    
     const data = await response.json();
-    console.log('Express save/take response:', JSON.stringify(data, null, 2));
-    console.log('=== END EXPRESS SAVE/TAKE ===');
+    console.log('[Bestwond] express result code=%d', data.code);
     return data as BestwondResponse<ExpressOrderResult>;
   } catch (error) {
     console.error('Bestwond expressSaveOrTake error:', error);

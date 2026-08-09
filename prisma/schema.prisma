@@ -23,12 +23,13 @@ enum UserRole {
 
 // Order status tracking
 enum OrderStatus {
-  PENDING      // Awaiting drop-off
-  STORED       // Successfully stored in locker
-  READY        // Ready for pickup
-  PICKED_UP    // Customer has picked up
-  ABANDONED    // Exceeded 30 days
-  CANCELLED    // Cancelled order
+  PENDING                // Awaiting drop-off
+  STORED                 // Successfully stored in locker
+  READY                  // Ready for pickup
+  PICKED_UP              // Customer has picked up
+  PAID_PENDING_DOOR_OPEN // Payment completed but door not yet confirmed open (safety state)
+  ABANDONED              // Exceeded 30 days
+  CANCELLED              // Cancelled order
 }
 
 // Payment status
@@ -717,4 +718,52 @@ model GracePeriodExtension {
   @@index([manualPaymentId])
   @@index([createdAt])
   @@map("grace_period_extensions")
+}
+
+// Door Operation Record — tracks every physical door operation with idempotency
+model DoorOperationRecord {
+  id              String   @id @default(cuid())
+  
+  // Idempotency — prevents duplicate door operations
+  idempotencyKey  String   @unique  // e.g., "pickup:order123:456789" or "dropoff:order456:123456"
+  
+  // Operation details
+  operationId     String   @unique  // Unique operation ID for tracking
+  action          String   // "dropoff", "pickup", "admin-open"
+  orderId         String?
+  
+  // Device and box
+  deviceId        String
+  boxId           String?
+  boxNumber       Int?
+  lockAddress     String?
+  
+  // Result
+  success         Boolean
+  confirmed       Boolean  // Whether door opening was physically confirmed
+  retryable       Boolean  // Whether this failure is transient
+  errorType       String?  // Structured error type from bestwond-safe
+  
+  // Timing
+  startedAt       DateTime
+  completedAt     DateTime
+  durationMs      Int
+  apiCalls        Int      // Number of Bestwond API calls made
+  attempts        Int      // Number of attempts including retries
+  
+  // Business state
+  businessStateUpdated Boolean @default(false)  // Whether order/box/payment was updated
+  
+  // Provider details (privacy-safe)
+  providerCode    Int?
+  message         String?
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  
+  @@index([orderId])
+  @@index([deviceId, createdAt])
+  @@index([action, createdAt])
+  @@index([success, confirmed])
+  @@map("door_operation_records")
 }
