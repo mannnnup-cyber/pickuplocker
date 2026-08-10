@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getStorageCalculation } from '@/lib/storage';
-import { openBoxWithCredentials, getCredentialsForDevice } from '@/lib/bestwond';
+import { executeDoorOperation, type DoorOperationResult } from '@/lib/door-operation';
 import { sendSMS } from '@/lib/textbee';
 
 // POST /api/payments/manual - Record a manual payment for an order
@@ -81,22 +81,23 @@ export async function POST(request: NextRequest) {
     const graceUntil = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
     let boxOpened = false;
+    let doorResult: DoorOperationResult | null = null;
 
-    // If openBoxNow, try to open the box via Bestwond API
+    // If openBoxNow, try to open the box via DoorOperationService
     if (openBoxNow && order.device && order.boxNumber) {
-      try {
-        const credentials = await getCredentialsForDevice(order.device.id);
-        if (credentials.appId && credentials.appSecret) {
-          const result = await openBoxWithCredentials(
-            order.device.deviceId,
-            order.boxNumber,
-            credentials
-          );
-          boxOpened = result.code === 0;
-        }
-      } catch (boxError) {
-        console.error('[Manual Payment] Failed to open box:', boxError);
-      }
+      doorResult = await executeDoorOperation({
+        orderId: order.id,
+        orderNo: order.orderNumber,
+        deviceId: order.device.id,
+        deviceNumber: order.device.deviceId,
+        boxId: order.boxId,
+        boxNumber: order.boxNumber,
+        action: 'pickup',
+        actionCode: order.trackingCode,
+        idempotencyKey: `manual-pay:${order.id}:${Date.now()}`,
+        useExpressApi: true,
+      });
+      boxOpened = doorResult.success && doorResult.confirmed;
     }
 
     // Create the ManualPayment record
@@ -127,10 +128,14 @@ export async function POST(request: NextRequest) {
     };
 
     // If box was opened immediately, mark as picked up
+    // If door was requested but failed, mark as PAID_PENDING_DOOR_OPEN (payment safe)
     if (openBoxNow && boxOpened) {
       orderUpdateData.status = 'PICKED_UP';
       orderUpdateData.pickUpAt = now;
       orderUpdateData.pickUpBy = staffName;
+    } else if (openBoxNow && !boxOpened && doorResult) {
+      // Door was requested but failed — payment is recorded but door not confirmed
+      orderUpdateData.status = 'PAID_PENDING_DOOR_OPEN';
     }
 
     await db.order.update({

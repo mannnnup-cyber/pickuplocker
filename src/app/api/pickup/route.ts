@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { calculateStorageFee, getStorageCalculation } from '@/lib/storage';
-import { openBoxWithCredentials, getCredentialsForDevice } from '@/lib/bestwond';
+import { executeDoorOperation, type DoorOperationResult } from '@/lib/door-operation';
 import { sendPickupConfirmation } from '@/lib/textbee';
 
 // GET /api/pickup?code=123456 - Verify pickup code and get order details
@@ -177,24 +177,44 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Open the box using device-specific credentials
+    // Open the box via DoorOperationService (safe: retry, fallback, verification)
+    let doorResult: DoorOperationResult | null = null;
     if (order.device && order.boxNumber) {
-      try {
-        const credentials = await getCredentialsForDevice(order.device.id);
-        const boxResult = await openBoxWithCredentials(order.device.deviceId, order.boxNumber, credentials);
-        
-        // Bestwond returns code 0 for success (not 200)
-        if (boxResult.code !== 0) {
-          console.error('Failed to open box:', boxResult);
-          // Don't fail the whole operation - staff can open manually
-        }
-      } catch (boxError) {
-        console.error('Error opening box:', boxError);
-        // Don't fail the whole operation - staff can open manually
-      }
+      doorResult = await executeDoorOperation({
+        orderId: order.id,
+        orderNo: order.orderNumber,
+        deviceId: order.device.id,
+        deviceNumber: order.device.deviceId,
+        boxId: order.boxId,
+        boxNumber: order.boxNumber,
+        action: 'pickup',
+        actionCode: order.trackingCode,
+        idempotencyKey: `pickup:${order.id}:${Date.now()}`,
+        useExpressApi: true,
+      });
     }
 
-    // Update order status
+    // SAFETY: Only update business state after confirmed door opening
+    const doorConfirmed = doorResult ? (doorResult.success && doorResult.confirmed) : false;
+
+    if (!doorConfirmed && doorResult) {
+      // Door failed — do NOT mark as picked up
+      if (storageFee > 0 && paymentMethod) {
+        await db.order.update({
+          where: { id: order.id },
+          data: { status: 'PAID_PENDING_DOOR_OPEN' },
+        });
+      }
+      return NextResponse.json({
+        success: false,
+        error: doorResult.message || 'Could not open locker door. Please try again or contact staff.',
+        retryable: doorResult.retryable,
+        orderNumber: order.orderNumber,
+        boxNumber: order.boxNumber,
+      }, { status: 503 });
+    }
+
+    // Door confirmed open — update business state
     await db.order.update({
       where: { id: order.id },
       data: {

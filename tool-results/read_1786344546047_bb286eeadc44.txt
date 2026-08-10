@@ -1,0 +1,928 @@
+     1→     1→/**
+     2→     2→ * door-operation.ts — Centralized Door Operation Service
+     3→     3→ *
+     4→     4→ * ALL physical door operations in the system MUST go through this service.
+     5→     5→ * No route should call bestwond.ts functions directly.
+     6→     6→ *
+     7→     7→ * Guarantees:
+     8→     8→ * 1. Business state (order status, box status, payment) is ONLY updated
+     9→     9→ *    after a confirmed successful door opening.
+    10→    10→ * 2. Fallback runs on ANY non-success result, not just thrown exceptions.
+    11→    11→ * 3. Lock address is read from the local DB first; only fetched from
+    12→    12→ *    Bestwond as a one-time fallback.
+    13→    13→ * 4. Idempotency key prevents duplicate operations.
+    14→    14→ * 5. Every operation is logged with privacy-safe diagnostics.
+    15→    15→ * 6. Retry policy is based on error type (transient only).
+    16→    16→ */
+    17→    17→
+    18→    18→import { db } from '@/lib/db';
+    19→    19→import {
+    20→    20→  openBoxWithCredentials,
+    21→    21→  expressSaveOrTakeWithCredentials,
+    22→    22→  getBoxListWithCredentials,
+    23→    23→  getDoorStatusWithCredentials,
+    24→    24→  getDeviceStatusWithCredentials,
+    25→    25→  getCredentialsForDevice,
+    26→    26→  type BestwondCredentials,
+    27→    27→} from '@/lib/bestwond';
+    28→    28→import {
+    29→    29→  type BestwondResult,
+    30→    30→  type BestwondErrorType,
+    31→    31→  type BestwondFailure,
+    32→    32→  parseBestwondResponse,
+    33→    33→  failureFromError,
+    34→    34→  isRetryable,
+    35→    35→  logDoorOperation,
+    36→    36→  redactForLog,
+    37→    37→} from './bestwond-safe';
+    38→    38→
+    39→    39→// ============================================
+    40→    40→// Types
+    41→    41→// ============================================
+    42→    42→
+    43→    43→export type DoorAction = 'dropoff' | 'pickup' | 'admin-open';
+    44→    44→
+    45→    45→export interface DoorOperationResult {
+    46→    46→  success: boolean;
+    47→    47→  confirmed: boolean;
+    48→    48→  retryable: boolean;
+    49→    49→  operationId: string;
+    50→    50→  deviceId: string;
+    51→    51→  boxId?: string | null;
+    52→    52→  boxNumber?: number;
+    53→    53→  lockAddress?: string;
+    54→    54→  attempts: number;
+    55→    55→  errorType?: BestwondErrorType;
+    56→    56→  message: string;
+    57→    57→  providerCode?: number;
+    58→    58→  providerStatus?: string;
+    59→    59→  startedAt: string;
+    60→    60→  completedAt: string;
+    61→    61→  durationMs: number;
+    62→    62→  apiCalls: number;
+    63→    63→  /** Whether business state (order/box/payment) was updated */
+    64→    64→  businessStateUpdated: boolean;
+    65→    65→}
+    66→    66→
+    67→    67→export interface DoorOperationOptions {
+    68→    68→  orderId: string;
+    69→    69→  orderNo: string;
+    70→    70→  deviceId: string;
+    71→    71→  deviceNumber: string; // Bestwond device_number
+    72→    72→  boxId?: string | null;
+    73→    73→  boxNumber?: number;
+    74→    74→  boxSize?: 'S' | 'M' | 'L' | 'XL';
+    75→    75→  lockAddress?: string; // Pre-known lock address
+    76→    76→  action: DoorAction;
+    77→    77→  actionCode?: string; // save_code or pick_code for express API
+    78→    78→  /** Idempotency key to prevent duplicate operations */
+    79→    79→  idempotencyKey: string;
+    80→    80→  /** Maximum retry attempts for transient errors */
+    81→    81→  maxRetries?: number;
+    82→    82→  /** Whether to use express API (save/take) vs direct open */
+    83→    83→  useExpressApi?: boolean;
+    84→    84→}
+    85→    85→
+    86→    86→// ============================================
+    87→    87→// Constants
+    88→    88→// ============================================
+    89→    89→
+    90→    90→const DEFAULT_MAX_RETRIES = 2; // Total 3 attempts (1 initial + 2 retries)
+    91→    91→const RETRY_BASE_DELAY_MS = 500;
+    92→    92→const DOOR_CHECK_DELAY_MS = 1500;
+    93→    93→const DOOR_CHECK_MAX_WAIT_MS = 5000;
+    94→    94→
+    95→    95→// ============================================
+    96→    96→// Idempotency check
+    97→    97→// ============================================
+    98→    98→
+    99→    99→/**
+   100→   100→ * Check if this exact operation was already processed.
+   101→   101→ * Returns the previous result if found, null otherwise.
+   102→   102→ */
+   103→   103→async function checkIdempotency(
+   104→   104→  idempotencyKey: string,
+   105→   105→): Promise<DoorOperationResult | null> {
+   106→   106→  try {
+   107→   107→    const existing = await db.boxLog.findFirst({
+   108→   108→      where: {
+   109→   109→        metadata: { contains: idempotencyKey },
+   110→   110→        action: 'DOOR_OPERATION',
+   111→   111→      },
+   112→   112→      orderBy: { occurredAt: 'desc' },
+   113→   113→    });
+   114→   114→
+   115→   115→    if (existing && existing.metadata) {
+   116→   116→      try {
+   117→   117→        const parsed = JSON.parse(existing.metadata);
+   118→   118→        if (parsed.idempotencyKey === idempotencyKey && parsed.result) {
+   119→   119→          return parsed.result as DoorOperationResult;
+   120→   120→        }
+   121→   121→      } catch {
+   122→   122→        // Malformed metadata, ignore
+   123→   123→      }
+   124→   124→    }
+   125→   125→  } catch (error) {
+   126→   126→    // DB error during idempotency check — proceed with operation
+   127→   127→    console.error('[DoorOp] Idempotency check failed:', error);
+   128→   128→  }
+   129→   129→
+   130→   130→  return null;
+   131→   131→}
+   132→   132→
+   133→   133→/**
+   134→   134→ * Record the operation result for idempotency.
+   135→   135→ */
+   136→   136→async function recordOperation(
+   137→   137→  result: DoorOperationResult,
+   138→   138→  idempotencyKey: string,
+   139→   139→): Promise<void> {
+   140→   140→  try {
+   141→   141→    await db.boxLog.create({
+   142→   142→      data: {
+   143→   143→        boxId: result.boxId || 'unknown',
+   144→   144→        deviceId: result.deviceId,
+   145→   145→        action: 'DOOR_OPERATION',
+   146→   146→        orderNo: result.operationId,
+   147→   147→        occurredAt: new Date(),
+   148→   148→        metadata: JSON.stringify({
+   149→   149→          idempotencyKey,
+   150→   150→          result,
+   151→   151→        }),
+   152→   152→      },
+   153→   153→    });
+   154→   154→  } catch (error) {
+   155→   155→    console.error('[DoorOp] Failed to record operation:', error);
+   156→   156→  }
+   157→   157→}
+   158→   158→
+   159→   159→// ============================================
+   160→   160→// Lock address resolution (local first)
+   161→   161→// ============================================
+   162→   162→
+   163→   163→/**
+   164→   164→ * Get the lock_address for a box, preferring the locally-stored value
+   165→   165→ * and only falling back to a Bestwond API call if needed.
+   166→   166→ */
+   167→   167→async function resolveLockAddress(
+   168→   168→  deviceNumber: string,
+   169→   169→  boxNumber: number,
+   170→   170→  boxId: string | undefined,
+   171→   171→  credentials: BestwondCredentials,
+   172→   172→): Promise<{ lockAddress: string; source: 'local' | 'api' | 'default' }> {
+   173→   173→  // 1. Try local DB first
+   174→   174→  if (boxId) {
+   175→   175→    try {
+   176→   176→      const box = await db.box.findUnique({
+   177→   177→        where: { id: boxId },
+   178→   178→        select: { lockAddress: true },
+   179→   179→      });
+   180→   180→      if (box?.lockAddress) {
+   181→   181→        return { lockAddress: box.lockAddress, source: 'local' };
+   182→   182→      }
+   183→   183→    } catch (error) {
+   184→   184→      console.error('[DoorOp] Failed to read lock address from DB:', error);
+   185→   185→    }
+   186→   186→  }
+   187→   187→
+   188→   188→  // 2. Try Bestwond API (one-time fetch)
+   189→   189→  try {
+   190→   190→    const startTime = Date.now();
+   191→   191→    const response = await getBoxListWithCredentials(deviceNumber, credentials);
+   192→   192→
+   193→   193→    // getBoxListWithCredentials returns a BestwondResponse, not a raw Response
+   194→   194→    // so we check it directly
+   195→   195→    if (response.code === 0 && response.data) {
+   196→   196→      const boxes = response.data as Array<{
+   197→   197→        box_name: string;
+   198→   198→        lock_address?: string;
+   199→   199→      }>;
+   200→   200→      const box = boxes.find(b => parseInt(b.box_name, 10) === boxNumber);
+   201→   201→
+   202→   202→      if (box?.lock_address) {
+   203→   203→        // Save to local DB for next time
+   204→   204→        if (boxId) {
+   205→   205→          try {
+   206→   206→            await db.box.update({
+   207→   207→              where: { id: boxId },
+   208→   208→              data: { lockAddress: box.lock_address },
+   209→   209→            });
+   210→   210→          } catch {
+   211→   211→            // Non-critical — we have the address for this operation
+   212→   212→          }
+   213→   213→        }
+   214→   214→        return { lockAddress: box.lock_address, source: 'api' };
+   215→   215→      }
+   216→   216→    }
+   217→   217→  } catch (error) {
+   218→   218→    console.error('[DoorOp] Failed to fetch lock address from API:', error);
+   219→   219→  }
+   220→   220→
+   221→   221→  // 3. Default HEX format
+   222→   222→  const boxHex = boxNumber.toString(16).toLowerCase().padStart(2, '0');
+   223→   223→  return { lockAddress: `01${boxHex}`, source: 'default' };
+   224→   224→}
+   225→   225→
+   226→   226→// ============================================
+   227→   227→// Retry with exponential backoff + jitter
+   228→   228→// ============================================
+   229→   229→
+   230→   230→function retryDelay(attempt: number): number {
+   231→   231→  const base = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+   232→   232→  const jitter = Math.random() * RETRY_BASE_DELAY_MS;
+   233→   233→  return base + jitter;
+   234→   234→}
+   235→   235→
+   236→   236→// ============================================
+   237→   237→// Door status verification
+   238→   238→// ============================================
+   239→   239→
+   240→   240→/**
+   241→   241→ * Verify the door actually opened by checking door status.
+   242→   242→ * Returns true only if the door sensor confirms the door is open.
+   243→   243→ */
+   244→   244→async function verifyDoorOpened(
+   245→   245→  deviceNumber: string,
+   246→   246→  lockAddress: string,
+   247→   247→  credentials: BestwondCredentials,
+   248→   248→): Promise<{ confirmed: boolean; doorStatus?: string }> {
+   249→   249→  try {
+   250→   250→    // Wait for the physical door to respond
+   251→   251→    await new Promise(resolve => setTimeout(resolve, DOOR_CHECK_DELAY_MS));
+   252→   252→
+   253→   253→    const doorResult = await getDoorStatusWithCredentials(
+   254→   254→      deviceNumber,
+   255→   255→      lockAddress,
+   256→   256→      credentials,
+   257→   257→    );
+   258→   258→
+   259→   259→    if (doorResult.code === 0 && doorResult.data) {
+   260→   260→      const data = doorResult.data as { status?: string; door_open?: boolean };
+   261→   261→
+   262→   262→      // Check multiple possible indicators of door being open
+   263→   263→      if (data.door_open === true) {
+   264→   264→        return { confirmed: true, doorStatus: 'open' };
+   265→   265→      }
+   266→   266→      if (data.status === 'open' || data.status === 'opened') {
+   267→   267→        return { confirmed: true, doorStatus: data.status };
+   268→   268→      }
+   269→   269→      if (data.status === 'closed' || data.status === 'close') {
+   270→   270→        return { confirmed: false, doorStatus: 'closed' };
+   271→   271→      }
+   272→   272→
+   273→   273→      // Status is ambiguous — not confirmed
+   274→   274→      return { confirmed: false, doorStatus: data.status || 'unknown' };
+   275→   275→    }
+   276→   276→
+   277→   277→    // API error checking door status — inconclusive
+   278→   278→    return { confirmed: false, doorStatus: 'check_failed' };
+   279→   279→  } catch (error) {
+   280→   280→    console.error('[DoorOp] Door status check failed:', error);
+   281→   281→    return { confirmed: false, doorStatus: 'check_error' };
+   282→   282→  }
+   283→   283→}
+   284→   284→
+   285→   285→// ============================================
+   286→   286→// Main entry point: executeDoorOperation
+   287→   287→// ============================================
+   288→   288→
+   289→   289→/**
+   290→   290→ * Execute a physical door operation with all safety guarantees.
+   291→   291→ *
+   292→   292→ * This is the ONLY function that should be called to open a locker door.
+   293→   293→ * It handles:
+   294→   294→ * - Idempotency (duplicate protection)
+   295→   295→ * - Lock address resolution (local first, API fallback)
+   296→   296→ * - Retry with backoff for transient errors
+   297→   297→ * - Fallback on ANY non-success (not just thrown exceptions)
+   298→   298→ * - Physical door verification when possible
+   299→   299→ * - Privacy-safe diagnostic logging
+   300→   300→ * - Recording the operation for audit
+   301→   301→ *
+   302→   302→ * IMPORTANT: This function does NOT update business state (order/box/payment).
+   303→   303→ * The caller must check `result.success && result.confirmed` before
+   304→   304→ * updating any business state.
+   305→   305→ */
+   306→   306→export async function executeDoorOperation(
+   307→   307→  options: DoorOperationOptions,
+   308→   308→): Promise<DoorOperationResult> {
+   309→   309→  const startedAt = new Date().toISOString();
+   310→   310→  const startTime = Date.now();
+   311→   311→  const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+   312→   312→  const operationId = `door-${options.action}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+   313→   313→
+   314→   314→  // 1. Idempotency check
+   315→   315→  const existing = await checkIdempotency(options.idempotencyKey);
+   316→   316→  if (existing) {
+   317→   317→    logDoorOperation({
+   318→   318→      operationId,
+   319→   319→      action: options.action,
+   320→   320→      orderId: options.orderId,
+   321→   321→      deviceId: options.deviceId,
+   322→   322→      result: existing.success ? 'success' : 'failure',
+   323→   323→      message: 'Duplicate operation — returning cached result',
+   324→   324→      durationMs: Date.now() - startTime,
+   325→   325→      apiCalls: 0,
+   326→   326→      businessStateUpdated: existing.businessStateUpdated,
+   327→   327→    });
+   328→   328→    return existing;
+   329→   329→  }
+   330→   330→
+   331→   331→  // 2. Get credentials
+   332→   332→  let credentials: BestwondCredentials;
+   333→   333→  try {
+   334→   334→    credentials = await getCredentialsForDevice(options.deviceId);
+   335→   335→  } catch (error) {
+   336→   336→    const result = buildResult({
+   337→   337→      success: false,
+   338→   338→      confirmed: false,
+   339→   339→      retryable: false,
+   340→   340→      errorType: 'CREDENTIALS_MISSING',
+   341→   341→      message: 'Failed to get Bestwond credentials for device',
+   342→   342→      attempts: 0,
+   343→   343→      apiCalls: 0,
+   344→   344→    }, options, startTime, startedAt);
+   345→   345→    await recordOperation(result, options.idempotencyKey);
+   346→   346→    return result;
+   347→   347→  }
+   348→   348→
+   349→   349→  if (!credentials.appId || !credentials.appSecret) {
+   350→   350→    const result = buildResult({
+   351→   351→      success: false,
+   352→   352→      confirmed: false,
+   353→   353→      retryable: false,
+   354→   354→      errorType: 'CREDENTIALS_MISSING',
+   355→   355→      message: 'Bestwond API credentials not configured for this device',
+   356→   356→      attempts: 0,
+   357→   357→      apiCalls: 0,
+   358→   358→    }, options, startTime, startedAt);
+   359→   359→    await recordOperation(result, options.idempotencyKey);
+   360→   360→    return result;
+   361→   361→  }
+   362→   362→
+   363→   363→  // 3. Resolve lock address (local first)
+   364→   364→  let totalApiCalls = 0;
+   365→   365→  const lockInfo = await resolveLockAddress(
+   366→   366→    options.deviceNumber,
+   367→   367→    options.boxNumber ?? 1,
+   368→   368→    options.boxId ?? undefined,
+   369→   369→    credentials,
+   370→   370→  );
+   371→   371→  if (lockInfo.source === 'api') totalApiCalls++;
+   372→   372→
+   373→   373→  // 4. Execute with retry
+   374→   374→  let lastResult: { success: boolean; confirmed: boolean; errorType?: BestwondErrorType; message: string; providerCode?: number; apiCalls: number } | null = null;
+   375→   375→  let attempts = 0;
+   376→   376→
+   377→   377→  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+   378→   378→    attempts = attempt + 1;
+   379→   379→
+   380→   380→    // Retry delay (skip on first attempt)
+   381→   381→    if (attempt > 0) {
+   382→   382→      const delay = retryDelay(attempt);
+   383→   383→      logDoorOperation({
+   384→   384→        operationId,
+   385→   385→        action: options.action,
+   386→   386→        orderId: options.orderId,
+   387→   387→        deviceId: options.deviceId,
+   388→   388→        boxId: options.boxId,
+   389→   389→        boxNumber: options.boxNumber,
+   390→   390→        attempt: attempts,
+   391→   391→        result: 'timeout',
+   392→   392→        errorType: lastResult?.errorType,
+   393→   393→        message: `Retrying after ${Math.round(delay)}ms delay`,
+   394→   394→        durationMs: Date.now() - startTime,
+   395→   395→        apiCalls: totalApiCalls,
+   396→   396→        businessStateUpdated: false,
+   397→   397→      });
+   398→   398→      await new Promise(resolve => setTimeout(resolve, delay));
+   399→   399→    }
+   400→   400→
+   401→   401→    try {
+   402→   402→      const attemptStart = Date.now();
+   403→   403→
+   404→   404→      // Choose express API or direct open
+   405→   405→      if (options.useExpressApi && options.actionCode) {
+   406→   406→        // Express API path
+   407→   407→        const expressResult = await expressSaveOrTakeWithCredentials(
+   408→   408→          options.deviceNumber,
+   409→   409→          options.boxSize ?? 'M',
+   410→   410→          options.actionCode,
+   411→   411→          options.action === 'dropoff' ? 'save' : 'take',
+   412→   412→          credentials,
+   413→   413→        );
+   414→   414→        totalApiCalls++;
+   415→   415→
+   416→   416→        // Express API returns BestwondResponse (not raw Response)
+   417→   417→        // We need to check it directly since parseBestwondResponse
+   418→   418→        // requires a raw Response object
+   419→   419→        if (expressResult.code === 0 && expressResult.data) {
+   420→   420→          const data = expressResult.data as unknown as Record<string, unknown>;
+   421→   421→
+   422→   422→          // Check for device-level failure in response data
+   423→   423→          if (data.status === 'fail') {
+   424→   424→            const deviceMsg = typeof data.msg === 'string' ? data.msg : 'Device rejected command';
+   425→   425→            const errorType = deviceMsg.toLowerCase().includes('offline') ? 'DEVICE_OFFLINE' as BestwondErrorType
+   426→   426→              : deviceMsg.toLowerCase().includes('uqkey') || deviceMsg.toLowerCase().includes('key') ? 'DEVICE_NOT_LINKED' as BestwondErrorType
+   427→   427→              : 'LOCKER_REJECTED_CMD' as BestwondErrorType;
+   428→   428→
+   429→   429→            lastResult = {
+   430→   430→              success: false,
+   431→   431→              confirmed: false,
+   432→   432→              errorType,
+   433→   433→              message: deviceMsg,
+   434→   434→              providerCode: expressResult.code,
+   435→   435→              apiCalls: 1,
+   436→   436→            };
+   437→   437→
+   438→   438→            // Non-retryable errors — stop immediately
+   439→   439→            if (!isRetryable(errorType)) break;
+   440→   440→            continue;
+   441→   441→          }
+   442→   442→
+   443→   443→          // API reports success — verify door
+   444→   444→          const doorVerify = await verifyDoorOpened(
+   445→   445→            options.deviceNumber,
+   446→   446→            lockInfo.lockAddress,
+   447→   447→            credentials,
+   448→   448→          );
+   449→   449→          totalApiCalls++;
+   450→   450→
+   451→   451→          lastResult = {
+   452→   452→            success: true,
+   453→   453→            confirmed: doorVerify.confirmed,
+   454→   454→            message: doorVerify.confirmed
+   455→   455→              ? 'Door opened and confirmed'
+   456→   456→              : 'API reports success but door opening not confirmed',
+   457→   457→            apiCalls: 2,
+   458→   458→          };
+   459→   459→
+   460→   460→          // If confirmed, we're done
+   461→   461→          if (doorVerify.confirmed) break;
+   462→   462→
+   463→   463→          // If not confirmed but API said success, still break (don't retry success)
+   464→   464→          break;
+   465→   465→        }
+   466→   466→
+   467→   467→        // Express API returned non-zero code — this is a failure
+   468→   468→        const errorType = classifyExpressError(expressResult.code, expressResult.msg || '');
+   469→   469→        lastResult = {
+   470→   470→          success: false,
+   471→   471→          confirmed: false,
+   472→   472→          errorType,
+   473→   473→          message: expressResult.msg || `Express API error code ${expressResult.code}`,
+   474→   474→          providerCode: expressResult.code,
+   475→   475→          apiCalls: 1,
+   476→   476→        };
+   477→   477→
+   478→   478→        // Try fallback (direct open) for any non-success, not just exceptions
+   479→   479→        if (options.boxNumber) {
+   480→   480→          logDoorOperation({
+   481→   481→            operationId,
+   482→   482→            action: options.action,
+   483→   483→            orderId: options.orderId,
+   484→   484→            deviceId: options.deviceId,
+   485→   485→            attempt: attempts,
+   486→   486→            result: 'failure',
+   487→   487→            errorType,
+   488→   488→            message: 'Express API failed — trying direct open fallback',
+   489→   489→            durationMs: Date.now() - attemptStart,
+   490→   490→            apiCalls: totalApiCalls,
+   491→   491→            businessStateUpdated: false,
+   492→   492→          });
+   493→   493→
+   494→   494→          try {
+   495→   495→            const fallbackResult = await openBoxWithCredentials(
+   496→   496→              options.deviceNumber,
+   497→   497→              options.boxNumber,
+   498→   498→              credentials,
+   499→   499→            );
+   500→   500→            totalApiCalls++;
+   501→   501→
+   502→   502→            if (fallbackResult.code === 0) {
+   503→   503→              const doorVerify = await verifyDoorOpened(
+   504→   504→                options.deviceNumber,
+   505→   505→                lockInfo.lockAddress,
+   506→   506→                credentials,
+   507→   507→              );
+   508→   508→              totalApiCalls++;
+   509→   509→
+   510→   510→              lastResult = {
+   511→   511→                success: true,
+   512→   512→                confirmed: doorVerify.confirmed,
+   513→   513→                message: doorVerify.confirmed
+   514→   514→                  ? 'Fallback: Door opened and confirmed'
+   515→   515→                  : 'Fallback: API reports success but door not confirmed',
+   516→   516→                apiCalls: 3,
+   517→   517→              };
+   518→   518→              break;
+   519→   519→            }
+   520→   520→
+   521→   521→            // Fallback also failed
+   522→   522→            const fbErrorType = classifyExpressError(fallbackResult.code, fallbackResult.msg || '');
+   523→   523→            lastResult = {
+   524→   524→              success: false,
+   525→   525→              confirmed: false,
+   526→   526→              errorType: fbErrorType,
+   527→   527→              message: `Both express and fallback failed. Express: ${expressResult.msg}, Fallback: ${fallbackResult.msg}`,
+   528→   528→              providerCode: fallbackResult.code,
+   529→   529→              apiCalls: 2,
+   530→   530→            };
+   531→   531→          } catch (fallbackError) {
+   532→   532→            lastResult = {
+   533→   533→              success: false,
+   534→   534→              confirmed: false,
+   535→   535→              errorType: failureFromError(fallbackError, attemptStart, 1).errorType,
+   536→   536→              message: `Express failed, fallback threw: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+   537→   537→              apiCalls: 1,
+   538→   538→            };
+   539→   539→          }
+   540→   540→        }
+   541→   541→
+   542→   542→        // Non-retryable — stop
+   543→   543→        if (lastResult.errorType && !isRetryable(lastResult.errorType)) break;
+   544→   544→        continue;
+   545→   545→      }
+   546→   546→
+   547→   547→      // Direct open path
+   548→   548→      const openResult = await openBoxWithCredentials(
+   549→   549→        options.deviceNumber,
+   550→   550→        options.boxNumber ?? 1,
+   551→   551→        credentials,
+   552→   552→      );
+   553→   553→      totalApiCalls++;
+   554→   554→
+   555→   555→      if (openResult.code === 0) {
+   556→   556→        // Check for device-level failure
+   557→   557→        const data = openResult.data as Record<string, unknown> | undefined;
+   558→   558→        if (data?.status === 'fail') {
+   559→   559→          const deviceMsg = typeof data.msg === 'string' ? data.msg : 'Device rejected command';
+   560→   560→          lastResult = {
+   561→   561→            success: false,
+   562→   562→            confirmed: false,
+   563→   563→            errorType: 'LOCKER_REJECTED_CMD',
+   564→   564→            message: deviceMsg,
+   565→   565→            providerCode: 0,
+   566→   566→            apiCalls: 1,
+   567→   567→          };
+   568→   568→          break; // Device rejection is not retryable
+   569→   569→        }
+   570→   570→
+   571→   571→        // Verify door
+   572→   572→        const doorVerify = await verifyDoorOpened(
+   573→   573→          options.deviceNumber,
+   574→   574→          lockInfo.lockAddress,
+   575→   575→          credentials,
+   576→   576→        );
+   577→   577→        totalApiCalls++;
+   578→   578→
+   579→   579→        lastResult = {
+   580→   580→          success: true,
+   581→   581→          confirmed: doorVerify.confirmed,
+   582→   582→          message: doorVerify.confirmed
+   583→   583→            ? 'Door opened and confirmed'
+   584→   584→            : 'API reports success but door not confirmed',
+   585→   585→          apiCalls: 2,
+   586→   586→        };
+   587→   587→        break;
+   588→   588→      }
+   589→   589→
+   590→   590→      // Direct open returned non-zero — failure
+   591→   591→      const errorType = classifyExpressError(openResult.code, openResult.msg || '');
+   592→   592→      lastResult = {
+   593→   593→        success: false,
+   594→   594→        confirmed: false,
+   595→   595→        errorType,
+   596→   596→        message: openResult.msg || `Open box error code ${openResult.code}`,
+   597→   597→        providerCode: openResult.code,
+   598→   598→        apiCalls: 1,
+   599→   599→      };
+   600→   600→
+   601→   601→      // Non-retryable — stop
+   602→   602→      if (!isRetryable(errorType)) break;
+   603→   603→
+   604→   604→    } catch (error) {
+   605→   605→      totalApiCalls++;
+   606→   606→      const errResult = failureFromError(error, startTime, totalApiCalls);
+   607→   607→
+   608→   608→      lastResult = {
+   609→   609→        success: false,
+   610→   610→        confirmed: false,
+   611→   611→        errorType: errResult.errorType,
+   612→   612→        message: errResult.message,
+   613→   613→        apiCalls: totalApiCalls,
+   614→   614→      };
+   615→   615→
+   616→   616→      // Non-retryable network errors — stop
+   617→   617→      if (!isRetryable(errResult.errorType)) break;
+   618→   618→    }
+   619→   619→  }
+   620→   620→
+   621→   621→  // 5. Build final result
+   622→   622→  const finalResult = buildResult({
+   623→   623→    success: lastResult?.success ?? false,
+   624→   624→    confirmed: lastResult?.confirmed ?? false,
+   625→   625→    retryable: lastResult?.errorType ? isRetryable(lastResult.errorType) : false,
+   626→   626→    errorType: lastResult?.errorType,
+   627→   627→    message: lastResult?.message || 'Operation completed with no result',
+   628→   628→    providerCode: lastResult?.providerCode,
+   629→   629→    attempts,
+   630→   630→    apiCalls: totalApiCalls,
+   631→   631→  }, options, startTime, startedAt, lockInfo.lockAddress);
+   632→   632→
+   633→   633→  // 6. Log and record
+   634→   634→  logDoorOperation({
+   635→   635→    operationId,
+   636→   636→    action: options.action,
+   637→   637→    orderId: options.orderId,
+   638→   638→    deviceId: options.deviceId,
+   639→   639→    boxId: options.boxId,
+   640→   640→    boxNumber: options.boxNumber,
+   641→   641→    attempt: attempts,
+   642→   642→    result: finalResult.success ? 'success' : 'failure',
+   643→   643→    errorType: finalResult.errorType,
+   644→   644→    providerCode: finalResult.providerCode,
+   645→   645→    durationMs: finalResult.durationMs,
+   646→   646→    apiCalls: totalApiCalls,
+   647→   647→    businessStateUpdated: false, // We never update business state here
+   648→   648→    message: finalResult.message,
+   649→   649→  });
+   650→   650→
+   651→   651→  await recordOperation(finalResult, options.idempotencyKey);
+   652→   652→
+   653→   653→  return finalResult;
+   654→   654→}
+   655→   655→
+   656→   656→// ============================================
+   657→   657→// Helpers
+   658→   658→// ============================================
+   659→   659→
+   660→   660→function buildResult(
+   661→   661→  partial: {
+   662→   662→    success: boolean;
+   663→   663→    confirmed: boolean;
+   664→   664→    retryable?: boolean;
+   665→   665→    errorType?: BestwondErrorType;
+   666→   666→    message: string;
+   667→   667→    providerCode?: number;
+   668→   668→    attempts: number;
+   669→   669→    apiCalls: number;
+   670→   670→  },
+   671→   671→  options: DoorOperationOptions,
+   672→   672→  startTime: number,
+   673→   673→  startedAt: string,
+   674→   674→  lockAddress?: string,
+   675→   675→): DoorOperationResult {
+   676→   676→  return {
+   677→   677→    success: partial.success,
+   678→   678→    confirmed: partial.confirmed,
+   679→   679→    retryable: partial.retryable ?? false,
+   680→   680→    operationId: `door-${options.action}-${Date.now()}`,
+   681→   681→    deviceId: options.deviceId,
+   682→   682→    boxId: options.boxId,
+   683→   683→    boxNumber: options.boxNumber,
+   684→   684→    lockAddress,
+   685→   685→    attempts: partial.attempts,
+   686→   686→    errorType: partial.errorType,
+   687→   687→    message: partial.message,
+   688→   688→    providerCode: partial.providerCode,
+   689→   689→    startedAt,
+   690→   690→    completedAt: new Date().toISOString(),
+   691→   691→    durationMs: Date.now() - startTime,
+   692→   692→    apiCalls: partial.apiCalls,
+   693→   693→    businessStateUpdated: false, // Caller must update business state
+   694→   694→  };
+   695→   695→}
+   696→   696→
+   697→   697→function classifyExpressError(code: number, msg: string): BestwondErrorType {
+   698→   698→  const msgLower = msg.toLowerCase();
+   699→   699→  if (msgLower.includes('uqkey') || msgLower.includes('key')) return 'DEVICE_NOT_LINKED';
+   700→   700→  if (msgLower.includes('offline') || msgLower.includes('not online')) return 'DEVICE_OFFLINE';
+   701→   701→  if (msgLower.includes('invalid sign') || msgLower.includes('signature')) return 'INVALID_SIGNATURE';
+   702→   702→  if (msgLower.includes('timestamp')) return 'TIMESTAMP_REJECTED';
+   703→   703→  if (msgLower.includes('rate limit')) return 'PROVIDER_RATE_LIMIT';
+   704→   704→  if (msgLower.includes('order not found') || msgLower.includes('no order')) return 'ORDER_NOT_FOUND';
+   705→   705→  if (msgLower.includes('code') && (msgLower.includes('invalid') || msgLower.includes('expired'))) return 'INVALID_CODE';
+   706→   706→  if (code === 401 || code === 403) return 'PROVIDER_AUTH_FAILED';
+   707→   707→  if (code === 429) return 'PROVIDER_RATE_LIMIT';
+   708→   708→  if (code >= 500) return 'PROVIDER_UNAVAILABLE';
+   709→   709→  return 'UNKNOWN';
+   710→   710→}
+   711→   711→
+   712→   712→// ============================================
+   713→   713→// Safe business state update helpers
+   714→   714→// ============================================
+   715→   715→
+   716→   716→/**
+   717→   717→ * Update business state for a SUCCESSFUL drop-off (STORED).
+   718→   718→ * ONLY call this after confirming the door opened.
+   719→   719→ */
+   720→   720→export async function updateBusinessStateForDropoff(params: {
+   721→   721→  expressOrderId: string;
+   722→   722→  orderId?: string | null;
+   723→   723→  boxId?: string | null;
+   724→   724→  deviceId?: string | null;
+   725→   725→  customerPhone: string;
+   726→   726→  boxName: string;
+   727→   727→  saveCode: string;
+   728→   728→  pickCode: string;
+   729→   729→  deviceLocation?: string;
+   730→   730→  customerName?: string;
+   731→   731→}): Promise<void> {
+   732→   732→  const now = new Date();
+   733→   733→
+   734→   734→  // Update express order
+   735→   735→  await db.expressOrder.update({
+   736→   736→    where: { id: params.expressOrderId },
+   737→   737→    data: {
+   738→   738→      status: 'STORED',
+   739→   739→      saveTime: now,
+   740→   740→      customerPhone: params.customerPhone,
+   741→   741→    },
+   742→   742→  });
+   743→   743→
+   744→   744→  // Update main order
+   745→   745→  if (params.orderId) {
+   746→   746→    await db.order.update({
+   747→   747→      where: { id: params.orderId },
+   748→   748→      data: {
+   749→   749→        status: 'STORED',
+   750→   750→        dropOffAt: now,
+   751→   751→        customerPhone: params.customerPhone,
+   752→   752→        storageStartAt: now,
+   753→   753→      },
+   754→   754→    });
+   755→   755→
+   756→   756→    // Mark box as occupied
+   757→   757→    if (params.boxId) {
+   758→   758→      await db.box.update({
+   759→   759→        where: { id: params.boxId },
+   760→   760→        data: { status: 'OCCUPIED', lastUsedAt: now },
+   761→   761→      });
+   762→   762→    }
+   763→   763→  }
+   764→   764→}
+   765→   765→
+   766→   766→/**
+   767→   767→ * Update business state for a SUCCESSFUL pickup (PICKED_UP).
+   768→   768→ * ONLY call this after confirming the door opened.
+   769→   769→ */
+   770→   770→export async function updateBusinessStateForPickup(params: {
+   771→   771→  expressOrderId?: string;
+   772→   772→  orderId?: string | null;
+   773→   773→  boxId?: string | null;
+   774→   774→  deviceId?: string | null;
+   775→   775→  storageDays: number;
+   776→   776→  storageFee: number;
+   777→   777→  feeOwed?: number;
+   778→   778→  paymentMethod?: string;
+   779→   779→  customerPhone?: string;
+   780→   780→  customerName?: string;
+   781→   781→  boxName: string;
+   782→   782→}): Promise<void> {
+   783→   783→  const now = new Date();
+   784→   784→
+   785→   785→  // Update express order
+   786→   786→  if (params.expressOrderId) {
+   787→   787→    await db.expressOrder.update({
+   788→   788→      where: { id: params.expressOrderId },
+   789→   789→      data: {
+   790→   790→        status: 'PICKED_UP',
+   791→   791→        pickTime: now,
+   792→   792→      },
+   793→   793→    });
+   794→   794→  }
+   795→   795→
+   796→   796→  // Update main order
+   797→   797→  if (params.orderId) {
+   798→   798→    await db.order.update({
+   799→   799→      where: { id: params.orderId },
+   800→   800→      data: {
+   801→   801→        status: 'PICKED_UP',
+   802→   802→        pickUpAt: now,
+   803→   803→        storageDays: params.storageDays,
+   804→   804→        storageFee: params.feeOwed && params.feeOwed > 0 ? params.feeOwed : params.storageFee,
+   805→   805→      },
+   806→   806→    });
+   807→   807→
+   808→   808→    // Record payment if applicable
+   809→   809→    if (params.feeOwed && params.feeOwed > 0 && params.paymentMethod && params.orderId) {
+   810→   810→      const order = await db.order.findUnique({ where: { id: params.orderId } });
+   811→   811→      if (order) {
+   812→   812→        await db.payment.create({
+   813→   813→          data: {
+   814→   814→            orderId: params.orderId,
+   815→   815→            userId: order.customerId,
+   816→   816→            amount: params.feeOwed,
+   817→   817→            method: params.paymentMethod as 'CASH' | 'CARD' | 'ONLINE',
+   818→   818→            status: 'COMPLETED',
+   819→   819→            paidAt: now,
+   820→   820→          },
+   821→   821→        });
+   822→   822→      }
+   823→   823→    }
+   824→   824→
+   825→   825→    // Mark box as available
+   826→   826→    if (params.boxId) {
+   827→   827→      await db.box.update({
+   828→   828→        where: { id: params.boxId },
+   829→   829→        data: { status: 'AVAILABLE' },
+   830→   830→      });
+   831→   831→    }
+   832→   832→
+   833→   833→    // Increment device available count
+   834→   834→    if (params.deviceId) {
+   835→   835→      await db.device.update({
+   836→   836→        where: { id: params.deviceId },
+   837→   837→        data: { availableBoxes: { increment: 1 } },
+   838→   838→      });
+   839→   839→    }
+   840→   840→  }
+   841→   841→}
+   842→   842→
+   843→   843→// ============================================
+   844→   844→// Customer-facing messages
+   845→   845→// ============================================
+   846→   846→
+   847→   847→export function getCustomerMessage(result: DoorOperationResult, action: DoorAction): {
+   848→   848→  title: string;
+   849→   849→  message: string;
+   850→   850→  showRetry: boolean;
+   851→   851→  showCancel: boolean;
+   852→   852→  showStaffAssist: boolean;
+   853→   853→} {
+   854→   854→  if (result.success && result.confirmed) {
+   855→   855→    return {
+   856→   856→      title: action === 'dropoff' ? 'Locker Opened' : 'Locker Opened',
+   857→   857→      message: action === 'dropoff'
+   858→   858→        ? 'Please place your package inside and close the door.'
+   859→   859→        : 'Please collect your package and close the door.',
+   860→   860→      showRetry: false,
+   861→   861→      showCancel: false,
+   862→   862→      showStaffAssist: false,
+   863→   863→    };
+   864→   864→  }
+   865→   865→
+   866→   866→  if (result.success && !result.confirmed) {
+   867→   867→    return {
+   868→   868→      title: 'Opening Locker…',
+   869→   869→      message: 'The locker command was sent but we could not confirm the door opened. Please check if the door is open.',
+   870→   870→      showRetry: true,
+   871→   871→      showCancel: true,
+   872→   872→      showStaffAssist: true,
+   873→   873→    };
+   874→   874→  }
+   875→   875→
+   876→   876→  // Failure
+   877→   877→  if (result.errorType === 'DEVICE_OFFLINE') {
+   878→   878→    return {
+   879→   879→      title: 'Locker Reconnecting',
+   880→   880→      message: 'The locker is temporarily reconnecting. Please wait and try again.',
+   881→   881→      showRetry: true,
+   882→   882→      showCancel: true,
+   883→   883→      showStaffAssist: true,
+   884→   884→    };
+   885→   885→  }
+   886→   886→
+   887→   887→  if (result.errorType === 'DEVICE_NOT_LINKED') {
+   888→   888→    return {
+   889→   889→      title: 'Locker Configuration Error',
+   890→   890→      message: 'This locker needs technical attention. Please contact staff for assistance.',
+   891→   891→      showRetry: false,
+   892→   892→      showCancel: true,
+   893→   893→      showStaffAssist: true,
+   894→   894→    };
+   895→   895→  }
+   896→   896→
+   897→   897→  if (result.errorType === 'INVALID_CODE') {
+   898→   898→    return {
+   899→   899→      title: 'Invalid Code',
+   900→   900→      message: 'The code you entered is invalid or has expired.',
+   901→   901→      showRetry: false,
+   902→   902→      showCancel: true,
+   903→   903→      showStaffAssist: false,
+   904→   904→    };
+   905→   905→  }
+   906→   906→
+   907→   907→  if (result.errorType === 'TIMEOUT' || result.errorType === 'PROVIDER_UNAVAILABLE') {
+   908→   908→    return {
+   909→   909→      title: 'Locker Temporarily Unavailable',
+   910→   910→      message: 'The locker service is experiencing a delay. Please try again in a moment.',
+   911→   911→      showRetry: true,
+   912→   912→      showCancel: true,
+   913→   913→      showStaffAssist: true,
+   914→   914→    };
+   915→   915→  }
+   916→   916→
+   917→   917→  // Generic failure
+   918→   918→  return {
+   919→   919→    title: 'Could Not Open Locker',
+   920→   920→    message: result.retryable
+   921→   921→      ? 'We could not open the locker. Please press Retry.'
+   922→   922→      : 'We could not open the locker. Please contact staff for assistance.',
+   923→   923→    showRetry: result.retryable,
+   924→   924→    showCancel: true,
+   925→   925→    showStaffAssist: true,
+   926→   926→  };
+   927→   927→}
+   928→   928→

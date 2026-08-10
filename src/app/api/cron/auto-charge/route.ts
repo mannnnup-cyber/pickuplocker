@@ -4,7 +4,7 @@ import { getStorageCalculation } from '@/lib/storage';
 import { chargeCardToken, DimePaySDKConfig } from '@/lib/dimepay';
 import { getDimepayConfig } from '@/lib/settings';
 import { sendSMS } from '@/lib/textbee';
-import { openBoxWithCredentials, getCredentialsForDevice } from '@/lib/bestwond';
+import { executeDoorOperation } from '@/lib/door-operation';
 
 /**
  * Storage Fee Auto-Charge Cron Job
@@ -221,53 +221,50 @@ export async function GET(request: NextRequest) {
             },
           });
 
-          // Update order status and storage fee
-          await db.order.update({
-            where: { id: order.id },
-            data: {
-              status: 'PICKED_UP',
-              pickUpAt: new Date(),
-              storageFee,
-              storageDays: calc.totalDays,
-            },
-          });
-
-          // Mark box as available
-          if (order.boxId) {
-            await db.box.update({
-              where: { id: order.boxId },
-              data: { status: 'AVAILABLE' },
-            });
-          }
-
-          // Update device available count
-          if (order.deviceId) {
-            await db.device.update({
-              where: { id: order.deviceId },
-              data: { availableBoxes: { increment: 1 } },
-            });
-          }
-
-          // Open the box for pickup
+          // Open the box FIRST — only update business state after confirmed door opening
+          let doorConfirmed = false;
           if (order.device && order.boxNumber) {
             try {
-              const credentials = await getCredentialsForDevice(order.device.id);
-              if (credentials.appId && credentials.appSecret) {
-                await openBoxWithCredentials(
-                  order.device.deviceId,
-                  order.boxNumber,
-                  credentials
-                );
-                console.log(
-                  `[Auto-Charge] Box ${order.boxNumber} opened for order ${order.orderNumber}`
-                );
+              const doorResult = await executeDoorOperation({
+                orderId: order.id,
+                orderNo: order.orderNumber,
+                deviceId: order.device.id,
+                deviceNumber: order.device.deviceId,
+                boxId: order.boxId,
+                boxNumber: order.boxNumber,
+                action: 'pickup',
+                actionCode: order.trackingCode,
+                idempotencyKey: `auto-charge:${order.id}:${Date.now()}`,
+                useExpressApi: true,
+              });
+              doorConfirmed = doorResult.success && doorResult.confirmed;
+              if (!doorConfirmed) {
+                console.error(`[Auto-Charge] Door not confirmed for order ${order.orderNumber}: ${doorResult.message}`);
               }
-            } catch (boxError) {
-              console.error(
-                `[Auto-Charge] Failed to open box for order ${order.orderNumber}:`,
-                boxError
-              );
+            } catch (doorError) {
+              console.error(`[Auto-Charge] Failed to open box for order ${order.orderNumber}:`, doorError);
             }
+          }
+
+          // SAFETY: Only update business state after confirmed door opening
+          if (doorConfirmed) {
+            await db.order.update({
+              where: { id: order.id },
+              data: { status: 'PICKED_UP', pickUpAt: new Date(), storageFee, storageDays: calc.totalDays },
+            });
+            if (order.boxId) {
+              await db.box.update({ where: { id: order.boxId }, data: { status: 'AVAILABLE' } });
+            }
+            if (order.deviceId) {
+              await db.device.update({ where: { id: order.deviceId }, data: { availableBoxes: { increment: 1 } } });
+            }
+          } else {
+            // Door didn't open — mark as PAID_PENDING_DOOR_OPEN to preserve payment
+            await db.order.update({
+              where: { id: order.id },
+              data: { status: 'PAID_PENDING_DOOR_OPEN', storageFee, storageDays: calc.totalDays },
+            });
+            console.warn(`[Auto-Charge] Order ${order.orderNumber} marked PAID_PENDING_DOOR_OPEN — door did not confirm`);
           }
 
           // Update card's last used timestamp

@@ -5,6 +5,7 @@ import { getDimepayConfig } from '@/lib/settings';
 import { sendSMS } from '@/lib/textbee';
 import { sendEmail, isEmailEnabled } from '@/lib/email';
 import { db } from '@/lib/db';
+import { executeDoorOperation, type DoorOperationResult } from '@/lib/door-operation';
 import QRCode from 'qrcode';
 
 // Box sizes and their prices for drop-off credits (JMD)
@@ -844,12 +845,12 @@ async function openBoxAfterPayment(saveCode: string, recipientPhone: string) {
   }
 
   const box = device.boxes[0];
-  const boxName = box.boxName || box.boxNumber?.toString().padStart(2, '0') || '01';
+  const boxName = box.boxNumber?.toString().padStart(2, '0') || '01';
 
   // Generate order number
   const orderNumber = `P${Date.now().toString().slice(-8)}`;
 
-  // Create ExpressOrder
+  // Create ExpressOrder (CREATED only — do NOT mark STORED until door opens)
   const expressOrder = await db.expressOrder.create({
     data: {
       orderNo: orderNumber,
@@ -858,34 +859,49 @@ async function openBoxAfterPayment(saveCode: string, recipientPhone: string) {
       boxSize,
       saveCode,
       pickCode,
-      status: 'STORED',
+      status: 'CREATED',
       customerPhone,
-      saveTime: new Date(),
     }
   });
 
-  // Update box status
-  await db.box.update({
-    where: { id: box.id },
-    data: { status: 'OCCUPIED', lastUsedAt: new Date() }
-  });
-
-  // Open the box via Bestwond
+  // Open the box via DoorOperationService (handles retry, fallback, verification)
   let boxOpened = false;
+  let doorResult: DoorOperationResult | null = null;
   try {
-    const { getCredentialsForDevice, expressSaveOrTakeWithCredentials } = await import('@/lib/bestwond');
-    const credentials = await getCredentialsForDevice(device.id);
-    const result = await expressSaveOrTakeWithCredentials(
-      device.deviceId,
-      boxSize as 'S' | 'M' | 'L' | 'XL',
-      saveCode,
-      'save',
-      credentials
-    );
-    boxOpened = result.code === 0;
-    console.log('[Kiosk Payment] Box open result:', result);
+    doorResult = await executeDoorOperation({
+      orderId: `express:${expressOrder.id}`,
+      orderNo: orderNumber,
+      deviceId: device.id,
+      deviceNumber: device.deviceId,
+      boxId: box.id,
+      boxNumber: parseInt(boxName),
+      boxSize: boxSize as 'S' | 'M' | 'L' | 'XL',
+      action: 'dropoff',
+      actionCode: saveCode,
+      idempotencyKey: `dropoff:${expressOrder.id}:${Date.now()}`,
+      useExpressApi: true,
+    });
+    boxOpened = doorResult.success && doorResult.confirmed;
   } catch (error) {
     console.error('[Kiosk Payment] Failed to open box:', error);
+  }
+
+  // SAFETY: Only mark STORED + OCCUPIED after confirmed door opening
+  if (boxOpened) {
+    await db.expressOrder.update({
+      where: { id: expressOrder.id },
+      data: { status: 'STORED', saveTime: new Date() },
+    });
+    await db.box.update({
+      where: { id: box.id },
+      data: { status: 'OCCUPIED', lastUsedAt: new Date() }
+    });
+  } else {
+    // Door didn't open — express order stays CREATED, box stays AVAILABLE
+    await db.expressOrder.update({
+      where: { id: expressOrder.id },
+      data: { status: 'CREATED' },
+    });
   }
 
   console.log('[Kiosk Payment] Box opened successfully:', { orderNumber, boxName, boxOpened });

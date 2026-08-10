@@ -2,11 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import crypto from 'crypto';
 import {
-  expressSaveOrTakeWithCredentials,
-  getCredentialsForDevice,
-  openBoxWithCredentials,
-} from '@/lib/bestwond';
-import {
   generateOrderNumber,
   generateTrackingCode,
   getStorageCalculation,
@@ -17,6 +12,7 @@ import { getSetting, getDimepayConfig } from '@/lib/settings';
 import { createSDKPayment, chargeCardToken, DimePaySDKConfig } from '@/lib/dimepay';
 import QRCode from 'qrcode';
 import { allocateLocker, releaseLocker } from '@/lib/locker-alloc';
+import { executeDoorOperation, type DoorOperationResult, getCustomerMessage } from '@/lib/door-operation';
 
 // Box sizes and their prices for drop-off credits (JMD)
 const BOX_PRICES: Record<string, number> = {
@@ -596,117 +592,110 @@ async function handleUseSaveCode(formData: FormData): Promise<NextResponse> {
     `);
   }
 
-  // Get Bestwond credentials
-  const credentials = await getCredentialsForDevice(device.id);
-
-  // Call Bestwond API to open box
-  let boxOpened = false;
-  let boxName = expressOrder.boxName;
-
-  try {
-    const result = await expressSaveOrTakeWithCredentials(
-      expressOrder.deviceId,
-      expressOrder.boxSize as 'S' | 'M' | 'L' | 'XL',
-      saveCode,
-      'save',
-      credentials
-    );
-    if (result.code === 0 && result.data) {
-      boxOpened = true;
-      boxName = result.data.box_name || boxName;
-    }
-  } catch (bestwondError) {
-    console.error('Bestwond express save error:', bestwondError);
-    // Fallback: try direct box open
-    try {
-      if (boxName) {
-        const openResult = await openBoxWithCredentials(
-          device.deviceId,
-          parseInt(boxName),
-          credentials
-        );
-        boxOpened = openResult.code === 0;
-      }
-    } catch (openError) {
-      console.error('Direct box open error:', openError);
-    }
-  }
-
-  // Update ExpressOrder status to STORED
-  await db.expressOrder.update({
-    where: { id: expressOrder.id },
-    data: {
-      status: 'STORED',
-      saveTime: new Date(),
-      customerPhone: cleanPhone,
-    },
+  // Open box via centralized DoorOperationService
+  const doorResult = await executeDoorOperation({
+    orderId: expressOrder.id,
+    orderNo: expressOrder.orderNo,
+    deviceId: device.id,
+    deviceNumber: expressOrder.deviceId,
+    boxId: expressOrder.boxId,
+    boxNumber: expressOrder.boxName ? parseInt(expressOrder.boxName) : undefined,
+    boxSize: expressOrder.boxSize as 'S' | 'M' | 'L' | 'XL',
+    action: 'dropoff',
+    actionCode: saveCode,
+    idempotencyKey: `dropoff:${expressOrder.id}:${Date.now()}`,
+    useExpressApi: true,
   });
 
-  // Find and update main Order
-  const order = await db.order.findFirst({
-    where: { orderNumber: expressOrder.orderNo },
-  });
+  let boxName = expressOrder.boxName || String(doorResult.boxNumber || '');
 
-  if (order) {
-    await db.order.update({
-      where: { id: order.id },
+  if (doorResult.success && doorResult.confirmed) {
+    // Update ExpressOrder status to STORED
+    await db.expressOrder.update({
+      where: { id: expressOrder.id },
       data: {
         status: 'STORED',
-        dropOffAt: new Date(),
+        saveTime: new Date(),
         customerPhone: cleanPhone,
-        storageStartAt: new Date(),
       },
     });
 
-    // Mark box as OCCUPIED
-    if (order.boxId) {
-      await db.box.update({
-        where: { id: order.boxId },
-        data: { status: 'OCCUPIED', lastUsedAt: new Date() },
+    // Find and update main Order
+    const order = await db.order.findFirst({
+      where: { orderNumber: expressOrder.orderNo },
+    });
+
+    if (order) {
+      await db.order.update({
+        where: { id: order.id },
+        data: {
+          status: 'STORED',
+          dropOffAt: new Date(),
+          customerPhone: cleanPhone,
+          storageStartAt: new Date(),
+        },
+      });
+
+      // Mark box as OCCUPIED
+      if (order.boxId) {
+        await db.box.update({
+          where: { id: order.boxId },
+          data: { status: 'OCCUPIED', lastUsedAt: new Date() },
+        });
+      }
+
+      // Send pickup notification SMS
+      try {
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + 3);
+        await sendPickupNotification(
+          cleanPhone,
+          expressOrder.customerName || 'Customer',
+          expressOrder.pickCode,
+          device.location || 'Pickup Locker',
+          expiryDate.toLocaleDateString()
+        );
+      } catch (smsError) {
+        console.error('Failed to send pickup SMS:', smsError);
+      }
+
+      // Create activity log
+      await db.activity.create({
+        data: {
+          userId: order.customerId,
+          action: 'KIOSK_DROP_OFF',
+          description: `Package stored via kiosk (save code). Box: ${boxName}, Code: ${saveCode}`,
+          orderId: order.id,
+        },
       });
     }
 
-    // Send pickup notification SMS
-    try {
-      const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + 3);
-      await sendPickupNotification(
-        cleanPhone,
-        expressOrder.customerName || 'Customer',
-        expressOrder.pickCode,
-        device.location || 'Pickup Locker',
-        expiryDate.toLocaleDateString()
-      );
-    } catch (smsError) {
-      console.error('Failed to send pickup SMS:', smsError);
-    }
-
-    // Create activity log
-    await db.activity.create({
-      data: {
-        userId: order.customerId,
-        action: 'KIOSK_DROP_OFF',
-        description: `Package stored via kiosk (save code). Box: ${boxName}, Code: ${saveCode}`,
-        orderId: order.id,
-      },
-    });
+    // Show success page with pickCode
+    return htmlResponse(`
+      <div class="success-icon">&#10003;</div>
+      <h2 class="title">Locker Opened!</h2>
+      <p class="subtitle">Place your package inside and close the door.</p>
+      <div class="info-box">
+        <p style="text-align:center; color:#999999;">Pickup Code</p>
+        <div class="code-display">${esc(expressOrder.pickCode)}</div>
+        <p style="text-align:center; font-size:14px; color:#999999;">Save this code to retrieve your package!</p>
+      </div>
+      <div class="info-box">
+        <p><span class="label">Box:</span> <span class="value">${esc(boxName || 'N/A')}</span></p>
+        <p><span class="label">Size:</span> <span class="value">${esc(expressOrder.boxSize)}</span></p>
+      </div>
+      <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+    `);
   }
 
-  // Show success page with pickCode
+  // Door failed or unconfirmed — show error page
+  const customerMsg = getCustomerMessage(doorResult, 'dropoff');
   return htmlResponse(`
-    <div class="success-icon">&#10003;</div>
-    <h2 class="title">Locker Opened!</h2>
-    <p class="subtitle">Place your package inside and close the door.</p>
-    <div class="info-box">
-      <p style="text-align:center; color:#999999;">Pickup Code</p>
-      <div class="code-display">${esc(expressOrder.pickCode)}</div>
-      <p style="text-align:center; font-size:14px; color:#999999;">Save this code to retrieve your package!</p>
-    </div>
-    <div class="info-box">
-      <p><span class="label">Box:</span> <span class="value">${esc(boxName || 'N/A')}</span></p>
-      <p><span class="label">Size:</span> <span class="value">${esc(expressOrder.boxSize)}</span></p>
-    </div>
-    <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+    <h2 class="title">${esc(customerMsg.title)}</h2>
+    <p class="error-msg">${esc(customerMsg.message)}</p>
+    ${customerMsg.showRetry ? '<a href="/kiosk-lite?action=dropoff-save" class="btn btn-primary">Try Again</a>' : ''}
+    ${customerMsg.showStaffAssist ? '<p style="text-align:center; font-size:14px; color:#999;">If the problem persists, please contact staff for assistance.</p>' : ''}
+    <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
   `);
 }
 
@@ -1204,116 +1193,110 @@ async function handleOpenAfterPayment(formData: FormData): Promise<NextResponse>
     `);
   }
 
-  // Try to open box via Bestwond (non-blocking)
-  let boxOpened = false;
-  let boxName = expressOrder.boxName;
-
-  try {
-    const credentials = await getCredentialsForDevice(device.id);
-    const result = await expressSaveOrTakeWithCredentials(
-      expressOrder.deviceId,
-      expressOrder.boxSize as 'S' | 'M' | 'L' | 'XL',
-      saveCode,
-      'save',
-      credentials
-    );
-    if (result.code === 0 && result.data) {
-      boxOpened = true;
-      boxName = result.data.box_name || boxName;
-    }
-  } catch (bestwondError) {
-    console.error('[Open After Payment] Bestwond express save error (non-fatal):', bestwondError);
-    // Try direct box open as fallback
-    try {
-      if (boxName) {
-        const credentials = await getCredentialsForDevice(device.id);
-        const openResult = await openBoxWithCredentials(
-          device.deviceId,
-          parseInt(boxName),
-          credentials
-        );
-        boxOpened = openResult.code === 0;
-      }
-    } catch (openError) {
-      console.error('[Open After Payment] Direct box open error (non-fatal):', openError);
-    }
-  }
-
-  // Update ExpressOrder status to STORED
-  await db.expressOrder.update({
-    where: { id: expressOrder.id },
-    data: {
-      status: 'STORED',
-      saveTime: new Date(),
-      customerPhone: cleanPhone || expressOrder.customerPhone,
-    },
+  // Open box via centralized DoorOperationService
+  const doorResult = await executeDoorOperation({
+    orderId: expressOrder.id,
+    orderNo: expressOrder.orderNo,
+    deviceId: device.id,
+    deviceNumber: expressOrder.deviceId,
+    boxId: expressOrder.boxId,
+    boxNumber: expressOrder.boxName ? parseInt(expressOrder.boxName) : undefined,
+    boxSize: expressOrder.boxSize as 'S' | 'M' | 'L' | 'XL',
+    action: 'dropoff',
+    actionCode: saveCode,
+    idempotencyKey: `open-after-payment:${expressOrder.id}:${Date.now()}`,
+    useExpressApi: true,
   });
 
-  // Update main Order
-  const order = await db.order.findFirst({
-    where: { orderNumber: expressOrder.orderNo },
-  });
+  let boxName = expressOrder.boxName || String(doorResult.boxNumber || '');
 
-  if (order) {
-    await db.order.update({
-      where: { id: order.id },
+  if (doorResult.success && doorResult.confirmed) {
+    // Update ExpressOrder status to STORED
+    await db.expressOrder.update({
+      where: { id: expressOrder.id },
       data: {
         status: 'STORED',
-        dropOffAt: new Date(),
-        customerPhone: cleanPhone || order.customerPhone,
-        storageStartAt: new Date(),
+        saveTime: new Date(),
+        customerPhone: cleanPhone || expressOrder.customerPhone,
       },
     });
 
-    // Mark box as OCCUPIED
-    if (order.boxId) {
-      await db.box.update({
-        where: { id: order.boxId },
-        data: { status: 'OCCUPIED', lastUsedAt: new Date() },
+    // Update main Order
+    const order = await db.order.findFirst({
+      where: { orderNumber: expressOrder.orderNo },
+    });
+
+    if (order) {
+      await db.order.update({
+        where: { id: order.id },
+        data: {
+          status: 'STORED',
+          dropOffAt: new Date(),
+          customerPhone: cleanPhone || order.customerPhone,
+          storageStartAt: new Date(),
+        },
+      });
+
+      // Mark box as OCCUPIED
+      if (order.boxId) {
+        await db.box.update({
+          where: { id: order.boxId },
+          data: { status: 'OCCUPIED', lastUsedAt: new Date() },
+        });
+      }
+
+      // Send pickup notification SMS
+      try {
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + 3);
+        await sendPickupNotification(
+          cleanPhone || order.customerPhone,
+          expressOrder.customerName || order.customerName || 'Customer',
+          expressOrder.pickCode,
+          device.location || 'Pickup Locker',
+          expiryDate.toLocaleDateString()
+        );
+      } catch (smsError) {
+        console.error('Failed to send pickup SMS:', smsError);
+      }
+
+      // Create activity log
+      await db.activity.create({
+        data: {
+          userId: order.customerId,
+          action: 'KIOSK_DROP_OFF_PAID',
+          description: `Package stored via kiosk (paid drop-off). Box: ${boxName}, Code: ${saveCode}`,
+          orderId: order.id,
+        },
       });
     }
 
-    // Send pickup notification SMS
-    try {
-      const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + 3);
-      await sendPickupNotification(
-        cleanPhone || order.customerPhone,
-        expressOrder.customerName || order.customerName || 'Customer',
-        expressOrder.pickCode,
-        device.location || 'Pickup Locker',
-        expiryDate.toLocaleDateString()
-      );
-    } catch (smsError) {
-      console.error('Failed to send pickup SMS:', smsError);
-    }
-
-    // Create activity log
-    await db.activity.create({
-      data: {
-        userId: order.customerId,
-        action: 'KIOSK_DROP_OFF_PAID',
-        description: `Package stored via kiosk (paid drop-off). Box: ${boxName}, Code: ${saveCode}`,
-        orderId: order.id,
-      },
-    });
+    // Show success with pickCode
+    return htmlResponse(`
+      <div class="success-icon">&#10003;</div>
+      <h2 class="title">Locker Opened!</h2>
+      <p class="subtitle">Place your package inside and close the door.</p>
+      <div class="info-box">
+        <p style="text-align:center; color:#999999;">Pickup Code</p>
+        <div class="code-display">${esc(expressOrder.pickCode)}</div>
+        <p style="text-align:center; font-size:14px; color:#999999;">Save this code to retrieve your package!</p>
+      </div>
+      <div class="info-box">
+        <p><span class="label">Box:</span> <span class="value">${esc(boxName || 'N/A')}</span></p>
+        <p><span class="label">Size:</span> <span class="value">${esc(expressOrder.boxSize)}</span></p>
+      </div>
+      <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+    `);
   }
 
-  // Show success with pickCode
+  // Door failed or unconfirmed — show error page
+  const customerMsg = getCustomerMessage(doorResult, 'dropoff');
   return htmlResponse(`
-    <div class="success-icon">&#10003;</div>
-    <h2 class="title">Locker Opened!</h2>
-    <p class="subtitle">Place your package inside and close the door.</p>
-    <div class="info-box">
-      <p style="text-align:center; color:#999999;">Pickup Code</p>
-      <div class="code-display">${esc(expressOrder.pickCode)}</div>
-      <p style="text-align:center; font-size:14px; color:#999999;">Save this code to retrieve your package!</p>
-    </div>
-    <div class="info-box">
-      <p><span class="label">Box:</span> <span class="value">${esc(boxName || 'N/A')}</span></p>
-      <p><span class="label">Size:</span> <span class="value">${esc(expressOrder.boxSize)}</span></p>
-    </div>
-    <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+    <h2 class="title">${esc(customerMsg.title)}</h2>
+    <p class="error-msg">${esc(customerMsg.message)}</p>
+    ${customerMsg.showRetry ? '<a href="/kiosk-lite?action=dropoff-save" class="btn btn-primary">Try Again</a>' : ''}
+    ${customerMsg.showStaffAssist ? '<p style="text-align:center; font-size:14px; color:#999;">If the problem persists, please contact staff for assistance.</p>' : ''}
+    <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
   `);
 }
 
@@ -1703,100 +1686,100 @@ async function handleCourierDropoff(formData: FormData): Promise<NextResponse> {
       },
     });
 
-    // Deduct courier balance
-    await db.courier.update({
-      where: { id: courier.id },
-      data: {
-        balance: { decrement: boxPrice },
-        totalDropOffs: { increment: 1 },
-        totalSpent: { increment: boxPrice },
-        lastActivityAt: new Date(),
-      },
+    // Open box via centralized DoorOperationService
+    const doorResult = await executeDoorOperation({
+      orderId: order.id,
+      orderNo: bestwondOrderNo,
+      deviceId: alloc.device.id,
+      deviceNumber: alloc.device.deviceId,
+      boxId: alloc.box.id,
+      boxNumber: alloc.box.boxNumber,
+      boxSize: boxSize as 'S' | 'M' | 'L' | 'XL',
+      action: 'dropoff',
+      actionCode: bestwondSaveCode,
+      idempotencyKey: `courier-dropoff:${order.id}:${Date.now()}`,
+      useExpressApi: true,
     });
 
-    // Create courier transaction
-    await db.courierTransaction.create({
-      data: {
-        courierId: courier.id,
-        type: 'DROP_OFF',
-        amount: -boxPrice,
-        balanceAfter: courier.balance - boxPrice,
-        orderId: order.id,
-        reference: bestwondOrderNo,
-        description: `Drop-off: ${boxSize} box, Order ${bestwondOrderNo}`,
-        paymentMethod: 'PREPAID',
-      },
-    });
+    if (doorResult.success && doorResult.confirmed) {
+      // Deduct courier balance (only after door confirmed)
+      await db.courier.update({
+        where: { id: courier.id },
+        data: {
+          balance: { decrement: boxPrice },
+          totalDropOffs: { increment: 1 },
+          totalSpent: { increment: boxPrice },
+          lastActivityAt: new Date(),
+        },
+      });
 
-    // Try to open the box via Bestwond (non-blocking — already allocated from DB)
-    let boxOpened = false;
-    try {
-      const credentials = await getCredentialsForDevice(alloc.device.id);
-      const result = await expressSaveOrTakeWithCredentials(
-        alloc.device.deviceId,
-        boxSize as 'S' | 'M' | 'L' | 'XL',
-        bestwondSaveCode,
-        'save',
-        credentials
-      );
-      boxOpened = result.code === 0;
-    } catch (bestwondError) {
-      console.error('[Courier Drop-Off] Bestwond express save error (non-fatal):', bestwondError);
-      // Try direct open as fallback
-      try {
-        const credentials = await getCredentialsForDevice(alloc.device.id);
-        const openResult = await openBoxWithCredentials(
-          alloc.device.deviceId,
-          alloc.box.boxNumber,
-          credentials
-        );
-        boxOpened = openResult.code === 0;
-      } catch (openError) {
-        console.error('[Courier Drop-Off] Direct box open error (non-fatal):', openError);
+      // Create courier transaction
+      await db.courierTransaction.create({
+        data: {
+          courierId: courier.id,
+          type: 'DROP_OFF',
+          amount: -boxPrice,
+          balanceAfter: courier.balance - boxPrice,
+          orderId: order.id,
+          reference: bestwondOrderNo,
+          description: `Drop-off: ${boxSize} box, Order ${bestwondOrderNo}`,
+          paymentMethod: 'PREPAID',
+        },
+      });
+
+      // Send SMS if courier has phone
+      if (courier.phone) {
+        try {
+          await sendSMS(
+            courier.phone,
+            `Pickup Jamaica: Drop-off confirmed. Order ${bestwondOrderNo}. Pickup code for recipient: ${bestwondPickCode}. Box: ${boxName}.`
+          );
+        } catch (smsError) {
+          console.error('Failed to send courier SMS:', smsError);
+        }
       }
+
+      // Create activity log
+      await db.activity.create({
+        data: {
+          userId: customer.id,
+          action: 'COURIER_DROP_OFF',
+          description: `Courier ${courier.name} dropped off package. Box: ${boxName}, Size: ${boxSize}, Order: ${bestwondOrderNo}${alloc.bestwondRegistered ? '' : ' (DB-only allocation)'}`,
+          orderId: order.id,
+        },
+      });
+
+      const newBalance = courier.balance - boxPrice;
+
+      // Show success page
+      return htmlResponse(`
+        <div class="success-icon">&#10003;</div>
+        <h2 class="title">Drop-Off Complete!</h2>
+        <p class="subtitle">Place your package inside and close the door.</p>
+        <div class="info-box">
+          <p style="text-align:center; color:#999999;">Pickup Code (give to recipient)</p>
+          <div class="code-display">${esc(bestwondPickCode)}</div>
+        </div>
+        <div class="info-box">
+          <p><span class="label">Order:</span> <span class="value">${esc(bestwondOrderNo)}</span></p>
+          <p><span class="label">Box:</span> <span class="value">${esc(boxName)}</span></p>
+          <p><span class="label">Size:</span> <span class="value">${esc(boxSize)}</span></p>
+          <p><span class="label">Cost:</span> <span class="value">JMD $${boxPrice}</span></p>
+          <p><span class="label">Remaining Balance:</span> <span class="value" style="color:#FFD439;">JMD $${newBalance.toFixed(2)}</span></p>
+        </div>
+        <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+      `);
     }
 
-    // Send SMS if courier has phone
-    if (courier.phone) {
-      try {
-        await sendSMS(
-          courier.phone,
-          `Pickup Jamaica: Drop-off confirmed. Order ${bestwondOrderNo}. Pickup code for recipient: ${bestwondPickCode}. Box: ${boxName}.`
-        );
-      } catch (smsError) {
-        console.error('Failed to send courier SMS:', smsError);
-      }
-    }
-
-    // Create activity log
-    await db.activity.create({
-      data: {
-        userId: customer.id,
-        action: 'COURIER_DROP_OFF',
-        description: `Courier ${courier.name} dropped off package. Box: ${boxName}, Size: ${boxSize}, Order: ${bestwondOrderNo}${alloc.bestwondRegistered ? '' : ' (DB-only allocation)'}`,
-        orderId: order.id,
-      },
-    });
-
-    const newBalance = courier.balance - boxPrice;
-
-    // Show success page
+    // Door failed or unconfirmed — show error page (balance NOT deducted)
+    const customerMsg = getCustomerMessage(doorResult, 'dropoff');
     return htmlResponse(`
-      <div class="success-icon">&#10003;</div>
-      <h2 class="title">Drop-Off Complete!</h2>
-      <p class="subtitle">Place your package inside and close the door.</p>
-      <div class="info-box">
-        <p style="text-align:center; color:#999999;">Pickup Code (give to recipient)</p>
-        <div class="code-display">${esc(bestwondPickCode)}</div>
-      </div>
-      <div class="info-box">
-        <p><span class="label">Order:</span> <span class="value">${esc(bestwondOrderNo)}</span></p>
-        <p><span class="label">Box:</span> <span class="value">${esc(boxName)}</span></p>
-        <p><span class="label">Size:</span> <span class="value">${esc(boxSize)}</span></p>
-        <p><span class="label">Cost:</span> <span class="value">JMD $${boxPrice}</span></p>
-        <p><span class="label">Remaining Balance:</span> <span class="value" style="color:#FFD439;">JMD $${newBalance.toFixed(2)}</span></p>
-      </div>
-      <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+      <h2 class="title">${esc(customerMsg.title)}</h2>
+      <p class="error-msg">${esc(customerMsg.message)}</p>
+      <p style="text-align:center; font-size:14px; color:#999;">Your balance has not been charged.</p>
+      ${customerMsg.showRetry ? '<a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>' : ''}
+      ${customerMsg.showStaffAssist ? '<p style="text-align:center; font-size:14px; color:#999;">If the problem persists, please contact staff for assistance.</p>' : ''}
+      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
     `);
   } catch (error) {
     console.error('[Courier Drop-Off] Error:', error);
@@ -2140,47 +2123,68 @@ async function handleChargeSavedCard(formData: FormData): Promise<NextResponse> 
       });
 
       if (order && order.device && order.box) {
-        try {
-          const credentials = await getCredentialsForDevice(order.device.id);
-          await openBoxWithCredentials(order.device.deviceId, parseInt(order.box.boxNumber.toString()), credentials);
-        } catch (e) {
-          console.error('Failed to open box after card charge:', e);
+        const doorResult = await executeDoorOperation({
+          orderId: order.id,
+          orderNo: order.orderNumber,
+          deviceId: order.device.id,
+          deviceNumber: order.device.deviceId,
+          boxId: order.box.id,
+          boxNumber: parseInt(order.box.boxNumber.toString()),
+          action: 'pickup',
+          idempotencyKey: `charge-saved-card:${order.id}:${Date.now()}`,
+        });
+
+        if (doorResult.success && doorResult.confirmed) {
+          // Update order status to PICKED_UP only after door confirmed
+          await db.order.update({
+            where: { id: orderId },
+            data: { status: 'PICKED_UP', pickUpAt: new Date(), storageFee: amount },
+          });
+
+          // Free the box
+          await db.box.update({
+            where: { id: order.box.id },
+            data: { status: 'AVAILABLE', lastUsedAt: new Date() },
+          });
+
+          // Update saved card lastUsedAt
+          await db.savedPaymentMethod.updateMany({
+            where: { cardToken },
+            data: { lastUsedAt: new Date() },
+          });
+
+          // Send confirmation SMS
+          try {
+            await sendPickupConfirmation(order.customerPhone, order.trackingCode);
+          } catch (e) {
+            console.error('Failed to send pickup SMS:', e);
+          }
+
+          return htmlResponse(`
+            <div class="success-icon">&#10003;</div>
+            <h2 class="title">Payment Confirmed!</h2>
+            <p class="subtitle">JMD $${amount} charged to your card.</p>
+            <div class="info-box">
+              <p style="text-align:center;">Locker is opening...</p>
+              <p><span class="label">Box:</span> <span class="value">${esc(boxName || order.boxNumber?.toString() || 'N/A')}</span></p>
+            </div>
+            <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+          `);
         }
 
-        // Update order status
+        // Door failed or unconfirmed — mark PAID_PENDING_DOOR_OPEN
         await db.order.update({
           where: { id: orderId },
-          data: { status: 'PICKED_UP', pickUpAt: new Date(), storageFee: amount },
+          data: { status: 'PAID_PENDING_DOOR_OPEN', storageFee: amount },
         });
 
-        // Free the box
-        await db.box.update({
-          where: { id: order.box.id },
-          data: { status: 'AVAILABLE', lastUsedAt: new Date() },
-        });
-
-        // Update saved card lastUsedAt
-        await db.savedPaymentMethod.updateMany({
-          where: { cardToken },
-          data: { lastUsedAt: new Date() },
-        });
-
-        // Send confirmation SMS
-        try {
-          await sendPickupConfirmation(order.customerPhone, order.trackingCode);
-        } catch (e) {
-          console.error('Failed to send pickup SMS:', e);
-        }
-
+        const customerMsg = getCustomerMessage(doorResult, 'pickup');
         return htmlResponse(`
-          <div class="success-icon">&#10003;</div>
-          <h2 class="title">Payment Confirmed!</h2>
-          <p class="subtitle">JMD $${amount} charged to your card.</p>
-          <div class="info-box">
-            <p style="text-align:center;">Locker is opening...</p>
-            <p><span class="label">Box:</span> <span class="value">${esc(boxName || order.boxNumber?.toString() || 'N/A')}</span></p>
-          </div>
-          <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+          <h2 class="title">${esc(customerMsg.title)}</h2>
+          <p class="error-msg">${esc(customerMsg.message)}</p>
+          <p style="text-align:center; font-size:14px; color:#999;">Your payment was processed. Staff will assist with opening the locker.</p>
+          ${customerMsg.showStaffAssist ? '<p style="text-align:center; font-size:14px; color:#999;">Please contact staff for assistance.</p>' : ''}
+          <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
         `);
       }
     }
@@ -2207,22 +2211,52 @@ async function handleChargeSavedCard(formData: FormData): Promise<NextResponse> 
   });
 
   if (order && order.device && order.box) {
-    try {
-      const credentials = await getCredentialsForDevice(order.device.id);
-      await openBoxWithCredentials(order.device.deviceId, parseInt(order.box.boxNumber.toString()), credentials);
-    } catch (e) {
-      console.error('Failed to open box (demo):', e);
+    const doorResult = await executeDoorOperation({
+      orderId: order.id,
+      orderNo: order.orderNumber,
+      deviceId: order.device.id,
+      deviceNumber: order.device.deviceId,
+      boxId: order.box.id,
+      boxNumber: parseInt(order.box.boxNumber.toString()),
+      action: 'pickup',
+      idempotencyKey: `demo-charge-saved-card:${order.id}:${Date.now()}`,
+    });
+
+    if (doorResult.success && doorResult.confirmed) {
+      await db.order.update({
+        where: { id: orderId },
+        data: { status: 'PICKED_UP', pickUpAt: new Date(), storageFee: amount },
+      });
+
+      await db.box.update({
+        where: { id: order.box.id },
+        data: { status: 'AVAILABLE', lastUsedAt: new Date() },
+      });
+
+      return htmlResponse(`
+        <div class="success-icon">&#10003;</div>
+        <h2 class="title">[DEMO] Payment Confirmed!</h2>
+        <p class="subtitle">JMD $${amount} charged (demo mode).</p>
+        <div class="info-box">
+          <p style="text-align:center;">Locker is opening...</p>
+        </div>
+        <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+      `);
     }
 
+    // Door failed in demo mode — mark PAID_PENDING_DOOR_OPEN
     await db.order.update({
       where: { id: orderId },
-      data: { status: 'PICKED_UP', pickUpAt: new Date(), storageFee: amount },
+      data: { status: 'PAID_PENDING_DOOR_OPEN', storageFee: amount },
     });
 
-    await db.box.update({
-      where: { id: order.box.id },
-      data: { status: 'AVAILABLE', lastUsedAt: new Date() },
-    });
+    const customerMsg = getCustomerMessage(doorResult, 'pickup');
+    return htmlResponse(`
+      <h2 class="title">${esc(customerMsg.title)}</h2>
+      <p class="error-msg">${esc(customerMsg.message)}</p>
+      <p style="text-align:center; font-size:14px; color:#999;">Your payment was processed (demo). Staff will assist with opening the locker.</p>
+      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+    `);
   }
 
   return htmlResponse(`
@@ -2398,111 +2432,108 @@ async function openLockerForPickup(
     `);
   }
 
-  // Get credentials
-  const credentials = await getCredentialsForDevice(device.id);
+  // Open box via centralized DoorOperationService
+  const doorResult = await executeDoorOperation({
+    orderId: expressOrder?.id || order?.id || '',
+    orderNo: expressOrder?.orderNo || order?.orderNumber || '',
+    deviceId: device.id,
+    deviceNumber: deviceId,
+    boxId: expressOrder?.boxId || order?.boxId,
+    boxNumber: parseInt(boxName),
+    boxSize: boxSize as 'S' | 'M' | 'L' | 'XL',
+    action: 'pickup',
+    actionCode: pickCode,
+    idempotencyKey: `pickup:${expressOrder?.id || order?.id}:${Date.now()}`,
+    useExpressApi: true,
+  });
 
-  // Open box via Bestwond
-  let boxOpened = false;
-  try {
-    const result = await expressSaveOrTakeWithCredentials(
-      device.deviceId,
-      boxSize as 'S' | 'M' | 'L' | 'XL',
-      pickCode,
-      'take',
-      credentials
-    );
-    if (result.code === 0) {
-      boxOpened = true;
-    }
-  } catch (bestwondError) {
-    console.error('Bestwond express take error:', bestwondError);
-    try {
-      const openResult = await openBoxWithCredentials(
-        device.deviceId,
-        parseInt(boxName),
-        credentials
-      );
-      boxOpened = openResult.code === 0;
-    } catch (openError) {
-      console.error('Direct box open error:', openError);
-    }
-  }
-
-  // Update ExpressOrder
-  if (expressOrder) {
-    await db.expressOrder.update({
-      where: { id: expressOrder.id },
-      data: {
-        status: 'PICKED_UP',
-        pickTime: new Date(),
-      },
-    });
-  }
-
-  // Update main Order
-  if (order) {
-    const storageStart = order.storageStartAt || order.dropOffAt || order.createdAt;
-    let storageFee = 0;
-    let storageDays = 0;
-    if (storageStart) {
-      const calc = getStorageCalculation(new Date(storageStart));
-      storageFee = calc.storageFee;
-      storageDays = calc.totalDays;
-    }
-
-    await db.order.update({
-      where: { id: order.id },
-      data: {
-        status: 'PICKED_UP',
-        pickUpAt: new Date(),
-        storageDays,
-        storageFee,
-      },
-    });
-
-    // Mark box as AVAILABLE
-    if (order.boxId) {
-      await db.box.update({
-        where: { id: order.boxId },
-        data: { status: 'AVAILABLE' },
+  if (doorResult.success && doorResult.confirmed) {
+    // Update ExpressOrder
+    if (expressOrder) {
+      await db.expressOrder.update({
+        where: { id: expressOrder.id },
+        data: {
+          status: 'PICKED_UP',
+          pickTime: new Date(),
+        },
       });
     }
 
-    // Update device available count
-    if (order.deviceId) {
-      await db.device.update({
-        where: { id: order.deviceId },
-        data: { availableBoxes: { increment: 1 } },
+    // Update main Order
+    if (order) {
+      const storageStart = order.storageStartAt || order.dropOffAt || order.createdAt;
+      let storageFee = 0;
+      let storageDays = 0;
+      if (storageStart) {
+        const calc = getStorageCalculation(new Date(storageStart));
+        storageFee = calc.storageFee;
+        storageDays = calc.totalDays;
+      }
+
+      await db.order.update({
+        where: { id: order.id },
+        data: {
+          status: 'PICKED_UP',
+          pickUpAt: new Date(),
+          storageDays,
+          storageFee,
+        },
+      });
+
+      // Mark box as AVAILABLE
+      if (order.boxId) {
+        await db.box.update({
+          where: { id: order.boxId },
+          data: { status: 'AVAILABLE' },
+        });
+      }
+
+      // Update device available count
+      if (order.deviceId) {
+        await db.device.update({
+          where: { id: order.deviceId },
+          data: { availableBoxes: { increment: 1 } },
+        });
+      }
+
+      // Send pickup confirmation SMS
+      try {
+        await sendPickupConfirmation(order.customerPhone, order.customerName);
+      } catch (smsError) {
+        console.error('Failed to send pickup confirmation SMS:', smsError);
+      }
+
+      // Create activity log
+      await db.activity.create({
+        data: {
+          userId: order.customerId,
+          action: 'KIOSK_PICKUP',
+          description: `Package picked up via kiosk. Box: ${boxName}, Days: ${storageDays}, Fee: JMD $${storageFee}`,
+          orderId: order.id,
+        },
       });
     }
 
-    // Send pickup confirmation SMS
-    try {
-      await sendPickupConfirmation(order.customerPhone, order.customerName);
-    } catch (smsError) {
-      console.error('Failed to send pickup confirmation SMS:', smsError);
-    }
-
-    // Create activity log
-    await db.activity.create({
-      data: {
-        userId: order.customerId,
-        action: 'KIOSK_PICKUP',
-        description: `Package picked up via kiosk. Box: ${boxName}, Days: ${storageDays}, Fee: JMD $${storageFee}`,
-        orderId: order.id,
-      },
-    });
+    // Show success page
+    return htmlResponse(`
+      <div class="success-icon">&#10003;</div>
+      <h2 class="title">Locker Opened!</h2>
+      <p class="subtitle">Please collect your package and close the door.</p>
+      <div class="info-box">
+        <p><span class="label">Box:</span> <span class="value">${esc(boxName)}</span></p>
+        <p><span class="label">Size:</span> <span class="value">${esc(boxSize)}</span></p>
+      </div>
+      <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+    `);
   }
 
-  // Show success page
+  // Door failed or unconfirmed — show error page
+  const customerMsg = getCustomerMessage(doorResult, 'pickup');
   return htmlResponse(`
-    <div class="success-icon">&#10003;</div>
-    <h2 class="title">Locker Opened!</h2>
-    <p class="subtitle">Please collect your package and close the door.</p>
-    <div class="info-box">
-      <p><span class="label">Box:</span> <span class="value">${esc(boxName)}</span></p>
-      <p><span class="label">Size:</span> <span class="value">${esc(boxSize)}</span></p>
-    </div>
-    <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+    <h2 class="title">${esc(customerMsg.title)}</h2>
+    <p class="error-msg">${esc(customerMsg.message)}</p>
+    ${customerMsg.showRetry ? '<a href="/kiosk-lite?action=pickup" class="btn btn-primary">Try Again</a>' : ''}
+    ${customerMsg.showStaffAssist ? '<p style="text-align:center; font-size:14px; color:#999;">If the problem persists, please contact staff for assistance.</p>' : ''}
+    <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
   `);
 }

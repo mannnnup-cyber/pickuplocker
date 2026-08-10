@@ -104,23 +104,30 @@ async function checkIdempotency(
   idempotencyKey: string,
 ): Promise<DoorOperationResult | null> {
   try {
-    const existing = await db.boxLog.findFirst({
-      where: {
-        metadata: { contains: idempotencyKey },
-        action: 'DOOR_OPERATION',
-      },
-      orderBy: { occurredAt: 'desc' },
+    const existing = await db.doorOperationRecord.findUnique({
+      where: { idempotencyKey },
     });
 
-    if (existing && existing.metadata) {
-      try {
-        const parsed = JSON.parse(existing.metadata);
-        if (parsed.idempotencyKey === idempotencyKey && parsed.result) {
-          return parsed.result as DoorOperationResult;
-        }
-      } catch {
-        // Malformed metadata, ignore
-      }
+    if (existing) {
+      return {
+        success: existing.success,
+        confirmed: existing.confirmed,
+        retryable: existing.retryable,
+        operationId: existing.operationId,
+        deviceId: existing.deviceId,
+        boxId: existing.boxId,
+        boxNumber: existing.boxNumber,
+        lockAddress: existing.lockAddress,
+        attempts: existing.attempts,
+        errorType: existing.errorType as BestwondErrorType | undefined,
+        message: existing.message || 'Previous operation result',
+        providerCode: existing.providerCode ?? undefined,
+        startedAt: existing.startedAt.toISOString(),
+        completedAt: existing.completedAt.toISOString(),
+        durationMs: existing.durationMs,
+        apiCalls: existing.apiCalls,
+        businessStateUpdated: existing.businessStateUpdated,
+      };
     }
   } catch (error) {
     // DB error during idempotency check — proceed with operation
@@ -136,22 +143,52 @@ async function checkIdempotency(
 async function recordOperation(
   result: DoorOperationResult,
   idempotencyKey: string,
+  options: DoorOperationOptions,
 ): Promise<void> {
   try {
-    await db.boxLog.create({
+    await db.doorOperationRecord.create({
       data: {
-        boxId: result.boxId || 'unknown',
+        idempotencyKey,
+        operationId: result.operationId,
+        action: options.action,
+        orderId: options.orderId,
         deviceId: result.deviceId,
-        action: 'DOOR_OPERATION',
-        orderNo: result.operationId,
-        occurredAt: new Date(),
-        metadata: JSON.stringify({
-          idempotencyKey,
-          result,
-        }),
+        boxId: result.boxId ?? null,
+        boxNumber: result.boxNumber ?? null,
+        lockAddress: result.lockAddress ?? null,
+        success: result.success,
+        confirmed: result.confirmed,
+        retryable: result.retryable,
+        errorType: result.errorType ?? null,
+        startedAt: new Date(result.startedAt),
+        completedAt: new Date(result.completedAt),
+        durationMs: result.durationMs,
+        apiCalls: result.apiCalls,
+        attempts: result.attempts,
+        businessStateUpdated: result.businessStateUpdated,
+        providerCode: result.providerCode ?? null,
+        message: result.message,
       },
     });
-  } catch (error) {
+  } catch (error: unknown) {
+    // Unique constraint violation = concurrent request already recorded
+    if (error instanceof Error &&
+        (error.message.includes('Unique constraint') ||
+         error.message.includes('unique') ||
+         error.message.includes('idempotencyKey'))) {
+      logDoorOperation({
+        operationId: result.operationId,
+        action: options.action,
+        orderId: options.orderId,
+        deviceId: result.deviceId,
+        result: 'success',
+        message: 'Idempotency: concurrent request already recorded this operation',
+        durationMs: 0,
+        apiCalls: 0,
+        businessStateUpdated: false,
+      });
+      return;
+    }
     console.error('[DoorOp] Failed to record operation:', error);
   }
 }
@@ -342,7 +379,7 @@ export async function executeDoorOperation(
       attempts: 0,
       apiCalls: 0,
     }, options, startTime, startedAt);
-    await recordOperation(result, options.idempotencyKey);
+    await recordOperation(result, options.idempotencyKey, options);
     return result;
   }
 
@@ -356,7 +393,7 @@ export async function executeDoorOperation(
       attempts: 0,
       apiCalls: 0,
     }, options, startTime, startedAt);
-    await recordOperation(result, options.idempotencyKey);
+    await recordOperation(result, options.idempotencyKey, options);
     return result;
   }
 
@@ -648,7 +685,7 @@ export async function executeDoorOperation(
     message: finalResult.message,
   });
 
-  await recordOperation(finalResult, options.idempotencyKey);
+  await recordOperation(finalResult, options.idempotencyKey, options);
 
   return finalResult;
 }

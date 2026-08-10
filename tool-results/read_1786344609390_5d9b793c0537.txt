@@ -1,0 +1,902 @@
+     1→import { NextRequest, NextResponse } from 'next/server';
+     2→import { generateTrackingCode } from '@/lib/storage';
+     3→import { createSDKPayment, DimePaySDKConfig } from '@/lib/dimepay';
+     4→import { getDimepayConfig } from '@/lib/settings';
+     5→import { sendSMS } from '@/lib/textbee';
+     6→import { sendEmail, isEmailEnabled } from '@/lib/email';
+     7→import { db } from '@/lib/db';
+     8→import QRCode from 'qrcode';
+     9→
+    10→// Box sizes and their prices for drop-off credits (JMD)
+    11→const BOX_PRICES: Record<string, number> = {
+    12→  'S': 150,
+    13→  'M': 200,
+    14→  'L': 300,
+    15→  'XL': 400,
+    16→};
+    17→
+    18→// Generate QR code as data URL
+    19→async function generateQRCodeDataUrl(data: string): Promise<string> {
+    20→  try {
+    21→    const qrDataUrl = await QRCode.toDataURL(data, {
+    22→      width: 300,
+    23→      margin: 2,
+    24→      color: {
+    25→        dark: '#111111',
+    26→        light: '#ffffff',
+    27→      },
+    28→    });
+    29→    return qrDataUrl;
+    30→  } catch (error) {
+    31→    console.error('Failed to generate QR code:', error);
+    32→    throw error;
+    33→  }
+    34→}
+    35→
+    36→// POST /api/kiosk/payment - Create payment for drop-off credit or check status
+    37→export async function POST(request: NextRequest) {
+    38→  try {
+    39→    const body = await request.json();
+    40→    const { action, boxSize, phone, email } = body;
+    41→
+    42→    console.log('[Kiosk Payment] POST Request:', { action, boxSize });
+    43→
+    44→    // Create drop-off payment
+    45→    if (action === 'create_dropoff_payment') {
+    46→      return await createDropoffPayment(boxSize, phone, email);
+    47→    }
+    48→
+    49→    // Open box immediately after payment (skip code entry)
+    50→    if (action === 'open_box_after_payment') {
+    51→      const { saveCode, recipientPhone } = body;
+    52→      return await openBoxAfterPayment(saveCode, recipientPhone);
+    53→    }
+    54→
+    55→    // Create storage fee payment
+    56→    if (action === 'create_storage_fee_payment') {
+    57→      const { orderId, amount } = body;
+    58→      return await createStorageFeePayment(orderId, amount, phone);
+    59→    }
+    60→
+    61→    return NextResponse.json({
+    62→      success: false,
+    63→      error: 'Invalid action. Use: create_dropoff_payment, create_storage_fee_payment',
+    64→    }, { status: 400 });
+    65→
+    66→  } catch (error) {
+    67→    console.error('Kiosk payment error:', error);
+    68→    return NextResponse.json({
+    69→      success: false,
+    70→      error: error instanceof Error ? error.message : 'Failed to process payment',
+    71→    }, { status: 500 });
+    72→  }
+    73→}
+    74→
+    75→// GET /api/kiosk/payment?paymentId=xxx - Check payment status
+    76→export async function GET(request: NextRequest) {
+    77→  try {
+    78→    const { searchParams } = new URL(request.url);
+    79→    const paymentId = searchParams.get('paymentId');
+    80→
+    81→    console.log('[Kiosk Payment] GET Request for paymentId:', paymentId);
+    82→
+    83→    if (!paymentId) {
+    84→      return NextResponse.json({
+    85→        success: false,
+    86→        error: 'Payment ID is required',
+    87→      }, { status: 400 });
+    88→    }
+    89→
+    90→    // Get payment session from database
+    91→    const sessionSetting = await db.setting.findUnique({
+    92→      where: { key: `sdk_payment_${paymentId}` }
+    93→    });
+    94→
+    95→    if (sessionSetting) {
+    96→      const paymentData = JSON.parse(sessionSetting.value);
+    97→      console.log('[Kiosk Payment] Found SDK payment in database:', paymentId, 'status:', paymentData.status);
+    98→
+    99→      if (paymentData.status === 'COMPLETED') {
+   100→        // Send email if not already sent and email exists
+   101→        if (paymentData.metadata?.customerEmail && !paymentData.emailSent) {
+   102→          try {
+   103→            const emailEnabled = await isEmailEnabled();
+   104→            if (emailEnabled) {
+   105→              await sendEmail(
+   106→                paymentData.metadata.customerEmail,
+   107→                'Your Pickup Jamaica Drop-off Code',
+   108→                `
+   109→                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+   110→                  <div style="background: #111111; padding: 20px; text-align: center;">
+   111→                    <h1 style="color: #FFD439; margin: 0;">PICK<span style="color: white;">UP</span></h1>
+   112→                    <p style="color: #999; margin: 5px 0 0 0;">Smart Locker System</p>
+   113→                  </div>
+   114→                  <div style="padding: 30px; background: #f9f9f9;">
+   115→                    <h2 style="color: #111;">Payment Confirmed!</h2>
+   116→                    <p style="font-size: 16px; color: #333;">Your drop-off payment has been received.</p>
+   117→                    
+   118→                    <div style="background: #FFD439; padding: 20px; text-align: center; border-radius: 10px; margin: 20px 0;">
+   119→                      <p style="margin: 0; color: #666; font-size: 14px;">Your Save Code</p>
+   120→                      <p style="font-size: 36px; font-weight: bold; margin: 10px 0; letter-spacing: 5px;">${paymentData.metadata?.saveCode}</p>
+   121→                    </div>
+   122→                    
+   123→                    <p style="font-size: 14px; color: #666;">
+   124→                      <strong>How to use:</strong><br>
+   125→                      1. Go to any Pickup locker<br>
+   126→                      2. Select "DROP-OFF"<br>
+   127→                      3. Enter your 6-digit save code<br>
+   128→                      4. Place your package in the opened locker<br>
+   129→                      5. Close the door
+   130→                    </p>
+   131→                  </div>
+   132→                </div>
+   133→                `,
+   134→                `Pickup Jamaica: Your drop-off payment is confirmed. Your save code is ${paymentData.metadata?.saveCode}. Use this code at the locker to store your package.`
+   135→              );
+   136→              console.log('[Kiosk Payment] Email sent to:', paymentData.metadata.customerEmail);
+   137→              
+   138→              // Mark email as sent
+   139→              await db.setting.update({
+   140→                where: { key: `sdk_payment_${paymentId}` },
+   141→                data: { value: JSON.stringify({ ...paymentData, emailSent: true }) }
+   142→              }).catch(() => {});
+   143→            }
+   144→          } catch (emailError) {
+   145→            console.error('[Kiosk Payment] Failed to send email:', emailError);
+   146→          }
+   147→        }
+   148→
+   149→        return NextResponse.json({
+   150→          success: true,
+   151→          status: 'completed',
+   152→          saveCode: paymentData.metadata?.saveCode,
+   153→        });
+   154→      }
+   155→
+   156→      return NextResponse.json({
+   157→        success: true,
+   158→        status: 'pending',
+   159→        message: 'Payment pending. Please complete payment on your device.',
+   160→      });
+   161→    }
+   162→
+   163→    // Check for demo payments (also stored in database now)
+   164→    const demoSetting = await db.setting.findUnique({
+   165→      where: { key: `demo_payment_${paymentId}` }
+   166→    });
+   167→
+   168→    if (demoSetting) {
+   169→      const demoData = JSON.parse(demoSetting.value);
+   170→      const elapsed = Date.now() - demoData.createdAt;
+   171→      console.log('[Kiosk Payment] Demo payment elapsed time:', elapsed, 'ms');
+   172→
+   173→      // Auto-complete after 5 seconds in demo mode
+   174→      if (elapsed > 5000) {
+   175→        console.log('[Kiosk Payment] Demo payment completed!');
+   176→
+   177→        // Send SMS notification
+   178→        try {
+   179→          await sendSMS(demoData.phone,
+   180→            `Pickup Jamaica: Your drop-off payment of JMD $${demoData.amount} is confirmed. Your save code is ${demoData.saveCode}. Use this code at the locker to store your package.`
+   181→          );
+   182→          console.log('[Kiosk Payment] SMS sent');
+   183→        } catch (smsError) {
+   184→          console.error('[Kiosk Payment] Failed to send SMS:', smsError);
+   185→        }
+   186→
+   187→        // Send email notification if email provided
+   188→        if (demoData.email) {
+   189→          try {
+   190→            const emailEnabled = await isEmailEnabled();
+   191→            if (emailEnabled) {
+   192→              await sendEmail(
+   193→                demoData.email,
+   194→                'Your Pickup Jamaica Drop-off Code',
+   195→                `
+   196→                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+   197→                  <div style="background: #111111; padding: 20px; text-align: center;">
+   198→                    <h1 style="color: #FFD439; margin: 0;">PICK<span style="color: white;">UP</span></h1>
+   199→                    <p style="color: #999; margin: 5px 0 0 0;">Smart Locker System</p>
+   200→                  </div>
+   201→                  <div style="padding: 30px; background: #f9f9f9;">
+   202→                    <h2 style="color: #111;">Payment Confirmed!</h2>
+   203→                    <p style="font-size: 16px; color: #333;">Your drop-off payment of <strong>JMD $${demoData.amount}</strong> has been received.</p>
+   204→                    
+   205→                    <div style="background: #FFD439; padding: 20px; text-align: center; border-radius: 10px; margin: 20px 0;">
+   206→                      <p style="margin: 0; color: #666; font-size: 14px;">Your Save Code</p>
+   207→                      <p style="font-size: 36px; font-weight: bold; margin: 10px 0; letter-spacing: 5px;">${demoData.saveCode}</p>
+   208→                    </div>
+   209→                    
+   210→                    <p style="font-size: 14px; color: #666;">
+   211→                      <strong>How to use:</strong><br>
+   212→                      1. Go to any Pickup locker<br>
+   213→                      2. Select "DROP-OFF"<br>
+   214→                      3. Enter your 6-digit save code<br>
+   215→                      4. Place your package in the opened locker<br>
+   216→                      5. Close the door
+   217→                    </p>
+   218→                    
+   219→                    <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+   220→                    
+   221→                    <p style="font-size: 12px; color: #999;">
+   222→                      Box Size: ${demoData.boxSize}<br>
+   223→                      Phone: ${demoData.phone}<br>
+   224→                      Payment ID: ${paymentId}
+   225→                    </p>
+   226→                  </div>
+   227→                </div>
+   228→                `,
+   229→                `Pickup Jamaica: Your drop-off payment of JMD $${demoData.amount} is confirmed. Your save code is ${demoData.saveCode}. Use this code at the locker to store your package.`
+   230→              );
+   231→              console.log('[Kiosk Payment] Email sent to:', demoData.email);
+   232→            }
+   233→          } catch (emailError) {
+   234→            console.error('[Kiosk Payment] Failed to send email:', emailError);
+   235→          }
+   236→        }
+   237→
+   238→        // Create or update customer record with email
+   239→        try {
+   240→          const existingCustomer = await db.user.findFirst({
+   241→            where: { phone: demoData.phone }
+   242→          });
+   243→
+   244→          if (existingCustomer) {
+   245→            // Update email if it was placeholder and now we have real email - check for duplicates first
+   246→            if (demoData.email && existingCustomer.email.includes('@pickup.local')) {
+   247→              try {
+   248→                const emailTaken = await db.user.findFirst({
+   249→                  where: { email: demoData.email, NOT: { id: existingCustomer.id } }
+   250→                });
+   251→                if (!emailTaken) {
+   252→                  await db.user.update({
+   253→                    where: { id: existingCustomer.id },
+   254→                    data: { email: demoData.email }
+   255→                  });
+   256→                  console.log('[Kiosk Payment] Updated customer email:', demoData.email);
+   257→                } else {
+   258→                  console.log('[Kiosk Payment] Email already in use, skipping update:', demoData.email);
+   259→                }
+   260→              } catch (emailErr) {
+   261→                console.error('[Kiosk Payment] Failed to update customer email:', emailErr);
+   262→              }
+   263→            }
+   264→          } else if (demoData.email) {
+   265→            // Create new customer with real email
+   266→            await db.user.create({
+   267→              data: {
+   268→                phone: demoData.phone,
+   269→                email: demoData.email,
+   270→                name: 'Customer',
+   271→                role: 'CUSTOMER',
+   272→              }
+   273→            });
+   274→            console.log('[Kiosk Payment] Created new customer with email:', demoData.email);
+   275→          }
+   276→        } catch (customerError) {
+   277→          console.error('[Kiosk Payment] Failed to update customer:', customerError);
+   278→        }
+   279→
+   280→        // Update status in database
+   281→        await db.setting.update({
+   282→          where: { key: `demo_payment_${paymentId}` },
+   283→          data: { value: JSON.stringify({ ...demoData, status: 'COMPLETED' }) }
+   284→        }).catch(() => {});
+   285→
+   286→        return NextResponse.json({
+   287→          success: true,
+   288→          status: 'completed',
+   289→          saveCode: demoData.saveCode,
+   290→        });
+   291→      }
+   292→
+   293→      return NextResponse.json({
+   294→        success: true,
+   295→        status: 'pending',
+   296→      });
+   297→    }
+   298→
+   299→    return NextResponse.json({
+   300→      success: false,
+   301→      status: 'pending',
+   302→      error: 'Payment not found',
+   303→    });
+   304→
+   305→  } catch (error) {
+   306→    console.error('Payment status check error:', error);
+   307→    return NextResponse.json({
+   308→      success: false,
+   309→      error: error instanceof Error ? error.message : 'Failed to check payment status',
+   310→    }, { status: 500 });
+   311→  }
+   312→}
+   313→
+   314→// Create drop-off credit payment - Uses real DimePay if configured, otherwise demo mode
+   315→async function createDropoffPayment(boxSize: string, phone: string, email?: string) {
+   316→  console.log('[Kiosk Payment] createDropoffPayment called with boxSize:', boxSize);
+   317→
+   318→  // Validate box size
+   319→  if (!boxSize || !['S', 'M', 'L', 'XL'].includes(boxSize)) {
+   320→    console.log('[Kiosk Payment] Invalid box size:', boxSize);
+   321→    return NextResponse.json({
+   322→      success: false,
+   323→      error: 'Invalid box size. Must be S, M, L, or XL',
+   324→    }, { status: 400 });
+   325→  }
+   326→
+   327→  // Validate phone
+   328→  if (!phone || phone.length < 7) {
+   329→    console.log('[Kiosk Payment] Invalid phone:', phone);
+   330→    return NextResponse.json({
+   331→      success: false,
+   332→      error: 'Valid phone number is required (at least 7 digits)',
+   333→    }, { status: 400 });
+   334→  }
+   335→
+   336→  const cleanPhone = phone.replace(/[^0-9+]/g, '');
+   337→  const amount = BOX_PRICES[boxSize];
+   338→  const saveCode = generateTrackingCode();
+   339→  const pickCode = generateTrackingCode(); // Generate pick code upfront
+   340→
+   341→  // Create or update customer record DURING payment creation (not just after)
+   342→  let customer = await db.user.findFirst({
+   343→    where: { phone: cleanPhone }
+   344→  });
+   345→
+   346→  if (!customer) {
+   347→    customer = await db.user.create({
+   348→      data: {
+   349→        phone: cleanPhone,
+   350→        email: email || `${cleanPhone}@pickup.local`,
+   351→        name: 'Customer',
+   352→        role: 'CUSTOMER',
+   353→      }
+   354→    });
+   355→    console.log('[Kiosk Payment] Created customer:', customer.id);
+   356→  } else if (email && customer.email.includes('@pickup.local')) {
+   357→    // Update with real email if we have one - but only if not already taken
+   358→    try {
+   359→      const existingWithEmail = await db.user.findFirst({
+   360→        where: { email, NOT: { id: customer.id } }
+   361→      });
+   362→      if (!existingWithEmail) {
+   363→        customer = await db.user.update({
+   364→          where: { id: customer.id },
+   365→          data: { email }
+   366→        });
+   367→        console.log('[Kiosk Payment] Updated customer email:', email);
+   368→      } else {
+   369→        console.log('[Kiosk Payment] Email already in use by another account, skipping update:', email);
+   370→      }
+   371→    } catch (emailError) {
+   372→      console.error('[Kiosk Payment] Failed to update customer email:', emailError);
+   373→    }
+   374→  }
+   375→
+   376→  // Check if DimePay is configured
+   377→  const config = await getDimepayConfig();
+   378→
+   379→  console.log('[Kiosk Payment] DimePay config loaded:', {
+   380→    hasClientId: !!config.clientId,
+   381→    hasSecretKey: !!config.secretKey,
+   382→    sandboxMode: config.sandboxMode,
+   383→    sandboxClientIdSet: !!config.sandboxClientId,
+   384→    sandboxSecretKeySet: !!config.sandboxSecretKey,
+   385→    liveClientIdSet: !!config.liveClientId,
+   386→    liveSecretKeySet: !!config.liveSecretKey,
+   387→  });
+   388→
+   389→  // Determine which credentials to use based on mode
+   390→  const effectiveClientId = config.sandboxMode ? config.sandboxClientId : config.liveClientId;
+   391→  const effectiveSecretKey = config.sandboxMode ? config.sandboxSecretKey : config.liveSecretKey;
+   392→
+   393→  console.log('[Kiosk Payment] Effective credentials for', config.sandboxMode ? 'SANDBOX' : 'LIVE', 'mode:', {
+   394→    clientIdSet: !!effectiveClientId,
+   395→    secretKeySet: !!effectiveSecretKey,
+   396→    clientIdPrefix: effectiveClientId ? effectiveClientId.substring(0, 12) + '...' : '(none)',
+   397→  });
+   398→
+   399→  // Use real DimePay SDK if credentials are configured
+   400→  if (effectiveClientId && effectiveSecretKey) {
+   401→    console.log('[Kiosk Payment] Using real DimePay SDK');
+   402→
+   403→    try {
+   404→      // Always use production URL for QR codes (users scan with their phones)
+   405→      const baseUrl = 'https://pickupja.com';
+   406→      const orderId = `DROPOFF-${Date.now()}`;
+   407→
+   408→      // Create SDK config
+   409→      const sdkConfig: DimePaySDKConfig = {
+   410→        clientId: effectiveClientId,
+   411→        secretKey: effectiveSecretKey,
+   412→        sandboxMode: config.sandboxMode,
+   413→        passFeeToCustomer: config.passFeeToCustomer,
+   414→        passFeeToCourier: config.passFeeToCourier,
+   415→        feePercentage: config.feePercentage,
+   416→        fixedFee: config.fixedFee,
+   417→      };
+   418→
+   419→      const result = await createSDKPayment({
+   420→        amount: Math.round(amount * 100), // Convert to cents
+   421→        currency: 'JMD',
+   422→        orderId: orderId,
+   423→        description: `Drop-off Credit - ${boxSize} Box`,
+   424→        customerPhone: cleanPhone,
+   425→        customerEmail: email || undefined,
+   426→        redirectUrl: `${baseUrl}/kiosk?payment=success`,
+   427→        webhookUrl: `${baseUrl}/api/webhooks/dimepay`,
+   428→        passFeeToCustomer: config.passFeeToCustomer,
+   429→        metadata: {
+   430→          type: 'dropoff_credit',
+   431→          boxSize,
+   432→          saveCode,
+   433→          pickCode,
+   434→          customerId: customer.id,
+   435→          customerPhone: cleanPhone,
+   436→          customerEmail: email || undefined,
+   437→        },
+   438→      }, sdkConfig);
+   439→
+   440→      console.log('[Kiosk Payment] SDK Payment Result:', {
+   441→        success: result.success,
+   442→        amount: result.data?.amount,
+   443→        originalAmount: result.data?.originalAmount,
+   444→        feeAmount: result.data?.feeAmount,
+   445→        passFeeToCustomer: config.passFeeToCustomer,
+   446→        feePercentage: config.feePercentage,
+   447→        fixedFee: config.fixedFee,
+   448→      });
+   449→
+   450→      if (result.success && result.data && result.data.sdkConfig) {
+   451→        // Generate payment URL for the payment page
+   452→        const paymentUrl = `${baseUrl}/pay/${orderId}`;
+   453→
+   454→        // Generate QR code from payment URL
+   455→        let qrCodeDataUrl: string | undefined;
+   456→        try {
+   457→          qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
+   458→          console.log('[Kiosk Payment] QR code generated for payment URL');
+   459→        } catch (qrError) {
+   460→          console.error('[Kiosk Payment] QR generation error:', qrError);
+   461→        }
+   462→
+   463→        // Store payment data in DATABASE for retrieval by payment page
+   464→        const paymentSessionData = {
+   465→          amount: result.data.amount,
+   466→          originalAmount: result.data.originalAmount,
+   467→          feeAmount: result.data.feeAmount,
+   468→          currency: result.data.currency,
+   469→          description: `Drop-off Credit - ${boxSize} Box`,
+   470→          reference: orderId,
+   471→          sdkConfig: result.data.sdkConfig,
+   472→          metadata: {
+   473→            type: 'dropoff_credit',
+   474→            boxSize,
+   475→            saveCode,
+   476→            pickCode,
+   477→            customerId: customer.id,
+   478→            customerPhone: cleanPhone,
+   479→            customerEmail: email || undefined,
+   480→          },
+   481→          status: 'PENDING',
+   482→          createdAt: Date.now(),
+   483→        };
+   484→
+   485→        await db.setting.upsert({
+   486→          where: { key: `sdk_payment_${orderId}` },
+   487→          create: {
+   488→            key: `sdk_payment_${orderId}`,
+   489→            value: JSON.stringify(paymentSessionData),
+   490→            description: `SDK Payment: ${orderId}`,
+   491→          },
+   492→          update: {
+   493→            value: JSON.stringify(paymentSessionData),
+   494→          }
+   495→        });
+   496→
+   497→        console.log('[Kiosk Payment] SDK payment stored in database:', orderId);
+   498→
+   499→        return NextResponse.json({
+   500→          success: true,
+   501→          paymentId: orderId,
+   502→          paymentUrl,
+   503→          qrCodeDataUrl,
+   504→          amount: result.data.amount,
+   505→          originalAmount: result.data.originalAmount,
+   506→          feeAmount: result.data.feeAmount,
+   507→          boxSize,
+   508→          saveCode,
+   509→          pickCode,
+   510→          customerId: customer.id,
+   511→          message: `Scan QR to pay JMD $${result.data.amount} for ${boxSize} box drop-off`,
+   512→          isDemoMode: false,
+   513→        });
+   514→      } else {
+   515→        console.error('[Kiosk Payment] DimePay SDK payment failed:', result.error);
+   516→        // Fall through to demo mode
+   517→      }
+   518→    } catch (dimepayError) {
+   519→      console.error('[Kiosk Payment] DimePay SDK error:', dimepayError);
+   520→      // Fall through to demo mode
+   521→    }
+   522→  }
+   523→
+   524→  // Demo mode fallback
+   525→  console.log('[Kiosk Payment] Using demo mode - no valid DimePay credentials');
+   526→  const paymentId = `DEMO-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+   527→  const demoPaymentUrl = `https://pickupja.com/pay/${paymentId}`;
+   528→
+   529→  // Generate QR code
+   530→  let qrCodeDataUrl: string | undefined;
+   531→  try {
+   532→    qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
+   533→    console.log('[Kiosk Payment] Demo QR code generated successfully');
+   534→  } catch (qrError) {
+   535→    console.error('[Kiosk Payment] QR generation error:', qrError);
+   536→  }
+   537→
+   538→  // Store demo payment in DATABASE
+   539→  await db.setting.upsert({
+   540→    where: { key: `demo_payment_${paymentId}` },
+   541→    create: {
+   542→      key: `demo_payment_${paymentId}`,
+   543→      value: JSON.stringify({
+   544→        saveCode,
+   545→        pickCode,
+   546→        boxSize,
+   547→        phone: cleanPhone,
+   548→        email: email || undefined,
+   549→        customerId: customer.id,
+   550→        amount,
+   551→        createdAt: Date.now(),
+   552→        status: 'PENDING',
+   553→      }),
+   554→      description: `Demo Payment: ${paymentId}`,
+   555→    },
+   556→    update: {
+   557→      value: JSON.stringify({
+   558→        saveCode,
+   559→        pickCode,
+   560→        boxSize,
+   561→        phone: cleanPhone,
+   562→        email: email || undefined,
+   563→        customerId: customer.id,
+   564→        amount,
+   565→        createdAt: Date.now(),
+   566→        status: 'PENDING',
+   567→      }),
+   568→    }
+   569→  });
+   570→
+   571→  console.log('[Kiosk Payment] Demo payment stored in database:', paymentId);
+   572→
+   573→  return NextResponse.json({
+   574→    success: true,
+   575→    paymentId,
+   576→    paymentUrl: demoPaymentUrl,
+   577→    qrCodeDataUrl,
+   578→    amount,
+   579→    boxSize,
+   580→    saveCode,
+   581→    pickCode,
+   582→    customerId: customer.id,
+   583→    message: `[DEMO MODE] Scan QR to simulate payment of JMD $${amount} for ${boxSize} box`,
+   584→    isDemoMode: true,
+   585→  });
+   586→}
+   587→
+   588→// Create storage fee payment - Uses real DimePay if configured, otherwise demo mode
+   589→async function createStorageFeePayment(orderId: string, amount: number, phone?: string) {
+   590→  console.log('[Kiosk Payment] createStorageFeePayment called:', { orderId, amount, phone });
+   591→
+   592→  if (!orderId || !amount || amount <= 0) {
+   593→    return NextResponse.json({
+   594→      success: false,
+   595→      error: 'Order ID and valid amount are required',
+   596→    }, { status: 400 });
+   597→  }
+   598→
+   599→  // Get order details for better payment context
+   600→  const order = await db.order.findUnique({
+   601→    where: { id: orderId },
+   602→  });
+   603→
+   604→  const customerPhone = phone || order?.customerPhone || '';
+   605→  const cleanPhone = customerPhone.replace(/[^0-9+]/g, '');
+   606→
+   607→  // Check if DimePay is configured
+   608→  const config = await getDimepayConfig();
+   609→  const effectiveClientId = config.sandboxMode ? config.sandboxClientId : config.liveClientId;
+   610→  const effectiveSecretKey = config.sandboxMode ? config.sandboxSecretKey : config.liveSecretKey;
+   611→
+   612→  console.log('[Kiosk Payment] Storage fee - DimePay config:', {
+   613→    sandboxMode: config.sandboxMode,
+   614→    hasClientId: !!effectiveClientId,
+   615→    hasSecretKey: !!effectiveSecretKey,
+   616→  });
+   617→
+   618→  // Use real DimePay SDK if credentials are configured
+   619→  if (effectiveClientId && effectiveSecretKey) {
+   620→    console.log('[Kiosk Payment] Storage fee - Using real DimePay SDK');
+   621→
+   622→    try {
+   623→      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pickupja.com';
+   624→      const paymentOrderId = `STORAGE-${orderId}-${Date.now()}`;
+   625→
+   626→      const sdkConfig: DimePaySDKConfig = {
+   627→        clientId: effectiveClientId,
+   628→        secretKey: effectiveSecretKey,
+   629→        sandboxMode: config.sandboxMode,
+   630→        passFeeToCustomer: config.passFeeToCustomer,
+   631→        passFeeToCourier: config.passFeeToCourier,
+   632→        feePercentage: config.feePercentage,
+   633→        fixedFee: config.fixedFee,
+   634→      };
+   635→
+   636→      const result = await createSDKPayment({
+   637→        amount: Math.round(amount * 100), // Convert to cents
+   638→        currency: 'JMD',
+   639→        orderId: paymentOrderId,
+   640→        description: `Storage Fee - Order ${order?.orderNumber || orderId}`,
+   641→        customerPhone: cleanPhone || undefined,
+   642→        customerEmail: order?.customerEmail || undefined,
+   643→        redirectUrl: `${baseUrl}/kiosk?payment=success`,
+   644→        webhookUrl: `${baseUrl}/api/webhooks/dimepay`,
+   645→        passFeeToCustomer: config.passFeeToCustomer,
+   646→        metadata: {
+   647→          type: 'storage_fee',
+   648→          orderId,
+   649→          orderNumber: order?.orderNumber,
+   650→          customerPhone: cleanPhone,
+   651→        },
+   652→      }, sdkConfig);
+   653→
+   654→      console.log('[Kiosk Payment] Storage fee - SDK Payment Result:', {
+   655→        success: result.success,
+   656→        amount: result.data?.amount,
+   657→      });
+   658→
+   659→      if (result.success && result.data && result.data.sdkConfig) {
+   660→        const paymentUrl = `${baseUrl}/pay/${paymentOrderId}`;
+   661→
+   662→        // Generate QR code
+   663→        let qrCodeDataUrl: string | undefined;
+   664→        try {
+   665→          qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
+   666→        } catch (qrError) {
+   667→          console.error('[Kiosk Payment] QR generation error:', qrError);
+   668→        }
+   669→
+   670→        // Store payment session in database
+   671→        const paymentSessionData = {
+   672→          amount: result.data.amount,
+   673→          originalAmount: result.data.originalAmount,
+   674→          feeAmount: result.data.feeAmount,
+   675→          currency: result.data.currency,
+   676→          description: `Storage Fee - Order ${order?.orderNumber || orderId}`,
+   677→          reference: paymentOrderId,
+   678→          sdkConfig: result.data.sdkConfig,
+   679→          metadata: {
+   680→            type: 'storage_fee',
+   681→            orderId,
+   682→            orderNumber: order?.orderNumber,
+   683→            customerPhone: cleanPhone,
+   684→          },
+   685→          status: 'PENDING',
+   686→          createdAt: Date.now(),
+   687→        };
+   688→
+   689→        await db.setting.upsert({
+   690→          where: { key: `sdk_payment_${paymentOrderId}` },
+   691→          create: {
+   692→            key: `sdk_payment_${paymentOrderId}`,
+   693→            value: JSON.stringify(paymentSessionData),
+   694→            description: `SDK Storage Fee Payment: ${paymentOrderId}`,
+   695→          },
+   696→          update: {
+   697→            value: JSON.stringify(paymentSessionData),
+   698→          }
+   699→        });
+   700→
+   701→        return NextResponse.json({
+   702→          success: true,
+   703→          paymentId: paymentOrderId,
+   704→          paymentUrl,
+   705→          qrCodeDataUrl,
+   706→          amount: result.data.amount,
+   707→          originalAmount: result.data.originalAmount,
+   708→          feeAmount: result.data.feeAmount,
+   709→          message: `Scan QR to pay JMD $${result.data.amount} storage fee`,
+   710→          isDemoMode: false,
+   711→        });
+   712→      } else {
+   713→        console.error('[Kiosk Payment] Storage fee - DimePay SDK payment failed:', result.error);
+   714→        // Fall through to demo mode
+   715→      }
+   716→    } catch (dimepayError) {
+   717→      console.error('[Kiosk Payment] Storage fee - DimePay SDK error:', dimepayError);
+   718→      // Fall through to demo mode
+   719→    }
+   720→  }
+   721→
+   722→  // Demo mode fallback
+   723→  console.log('[Kiosk Payment] Storage fee - Using demo mode (no valid DimePay credentials)');
+   724→  const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+   725→  const demoPaymentUrl = `https://pickupja.com/pay/${paymentId}`;
+   726→
+   727→  let qrCodeDataUrl: string | undefined;
+   728→  try {
+   729→    qrCodeDataUrl = await generateQRCodeDataUrl(demoPaymentUrl);
+   730→  } catch (qrError) {
+   731→    console.error('[Kiosk Payment] QR generation error:', qrError);
+   732→  }
+   733→
+   734→  // Store in database
+   735→  await db.setting.upsert({
+   736→    where: { key: `demo_payment_${paymentId}` },
+   737→    create: {
+   738→      key: `demo_payment_${paymentId}`,
+   739→      value: JSON.stringify({
+   740→        orderId,
+   741→        saveCode: '',
+   742→        boxSize: '',
+   743→        phone: cleanPhone,
+   744→        amount,
+   745→        createdAt: Date.now(),
+   746→        status: 'PENDING',
+   747→      }),
+   748→      description: `Storage Fee Payment: ${paymentId}`,
+   749→    },
+   750→    update: {
+   751→      value: JSON.stringify({
+   752→        orderId,
+   753→        saveCode: '',
+   754→        boxSize: '',
+   755→        phone: cleanPhone,
+   756→        amount,
+   757→        createdAt: Date.now(),
+   758→        status: 'PENDING',
+   759→      }),
+   760→    }
+   761→  });
+   762→
+   763→  return NextResponse.json({
+   764→    success: true,
+   765→    paymentId,
+   766→    paymentUrl: demoPaymentUrl,
+   767→    qrCodeDataUrl,
+   768→    amount,
+   769→    message: `[DEMO MODE] Scan QR to simulate payment of JMD $${amount} storage fee`,
+   770→    isDemoMode: true,
+   771→  });
+   772→}
+   773→
+   774→// Open box immediately after payment - skips code entry step
+   775→async function openBoxAfterPayment(saveCode: string, recipientPhone: string) {
+   776→  console.log('[Kiosk Payment] openBoxAfterPayment called');
+   777→
+   778→  if (!saveCode || saveCode.length !== 6) {
+   779→    return NextResponse.json({
+   780→      success: false,
+   781→      error: 'Invalid save code',
+   782→    }, { status: 400 });
+   783→  }
+   784→
+   785→  // Find the payment session with this save code
+   786→  const settings = await db.setting.findMany({
+   787→    where: {
+   788→      OR: [
+   789→        { key: { startsWith: 'sdk_payment_' } },
+   790→        { key: { startsWith: 'demo_payment_' } },
+   791→      ]
+   792→    }
+   793→  });
+   794→
+   795→  let paymentData: any = null;
+   796→  let settingKey = '';
+   797→
+   798→  for (const setting of settings) {
+   799→    const data = JSON.parse(setting.value);
+   800→    if (data.saveCode === saveCode || data.metadata?.saveCode === saveCode) {
+   801→      paymentData = data;
+   802→      settingKey = setting.key;
+   803→      break;
+   804→    }
+   805→  }
+   806→
+   807→  if (!paymentData) {
+   808→    return NextResponse.json({
+   809→      success: false,
+   810→      error: 'Payment not found for this save code',
+   811→    }, { status: 404 });
+   812→  }
+   813→
+   814→  // Check payment is completed
+   815→  if (paymentData.status !== 'COMPLETED') {
+   816→    return NextResponse.json({
+   817→      success: false,
+   818→      error: 'Payment not yet completed',
+   819→    }, { status: 400 });
+   820→  }
+   821→
+   822→  // Get box info
+   823→  const boxSize = paymentData.boxSize || paymentData.metadata?.boxSize;
+   824→  const customerId = paymentData.customerId || paymentData.metadata?.customerId;
+   825→  const customerPhone = recipientPhone || paymentData.phone || paymentData.metadata?.customerPhone;
+   826→  const pickCode = paymentData.pickCode || paymentData.metadata?.pickCode || generateTrackingCode();
+   827→
+   828→  // Get device and assign box
+   829→  const device = await db.device.findFirst({
+   830→    where: { status: 'ONLINE' },
+   831→    include: {
+   832→      boxes: {
+   833→        where: { status: 'AVAILABLE' },
+   834→        take: 1,
+   835→      }
+   836→    }
+   837→  });
+   838→
+   839→  if (!device || !device.boxes[0]) {
+   840→    return NextResponse.json({
+   841→      success: false,
+   842→      error: 'No available locker boxes',
+   843→    }, { status: 400 });
+   844→  }
+   845→
+   846→  const box = device.boxes[0];
+   847→  const boxName = box.boxName || box.boxNumber?.toString().padStart(2, '0') || '01';
+   848→
+   849→  // Generate order number
+   850→  const orderNumber = `P${Date.now().toString().slice(-8)}`;
+   851→
+   852→  // Create ExpressOrder
+   853→  const expressOrder = await db.expressOrder.create({
+   854→    data: {
+   855→      orderNo: orderNumber,
+   856→      deviceId: device.deviceId,
+   857→      boxName,
+   858→      boxSize,
+   859→      saveCode,
+   860→      pickCode,
+   861→      status: 'STORED',
+   862→      customerPhone,
+   863→      saveTime: new Date(),
+   864→    }
+   865→  });
+   866→
+   867→  // Update box status
+   868→  await db.box.update({
+   869→    where: { id: box.id },
+   870→    data: { status: 'OCCUPIED', lastUsedAt: new Date() }
+   871→  });
+   872→
+   873→  // Open the box via Bestwond
+   874→  let boxOpened = false;
+   875→  try {
+   876→    const { getCredentialsForDevice, expressSaveOrTakeWithCredentials } = await import('@/lib/bestwond');
+   877→    const credentials = await getCredentialsForDevice(device.id);
+   878→    const result = await expressSaveOrTakeWithCredentials(
+   879→      device.deviceId,
+   880→      boxSize as 'S' | 'M' | 'L' | 'XL',
+   881→      saveCode,
+   882→      'save',
+   883→      credentials
+   884→    );
+   885→    boxOpened = result.code === 0;
+   886→    console.log('[Kiosk Payment] Box open result:', result);
+   887→  } catch (error) {
+   888→    console.error('[Kiosk Payment] Failed to open box:', error);
+   889→  }
+   890→
+   891→  console.log('[Kiosk Payment] Box opened successfully:', { orderNumber, boxName, boxOpened });
+   892→
+   893→  return NextResponse.json({
+   894→    success: true,
+   895→    orderNo: orderNumber,
+   896→    boxName,
+   897→    boxOpened,
+   898→    pickCode,
+   899→    message: 'Locker opened! Please place your package inside and close the door.',
+   900→  });
+   901→}
+   902→
