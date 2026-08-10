@@ -7,6 +7,8 @@
   "/api/account/route": "app/api/account/route.js",
   "/api/activity/route": "app/api/activity/route.js",
   "/api/admin/sync-schema/route": "app/api/admin/sync-schema/route.js",
+  "/api/app-version/download/route": "app/api/app-version/download/route.js",
+  "/api/app-version/route": "app/api/app-version/route.js",
   "/api/auth/login/route": "app/api/auth/login/route.js",
   "/api/auth/logout/route": "app/api/auth/logout/route.js",
   "/api/auth/session/route": "app/api/auth/session/route.js",

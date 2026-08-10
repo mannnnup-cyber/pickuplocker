@@ -157,6 +157,18 @@
       "namedRegex": "^/api/admin/sync\\-schema(?:/)?$"
     },
     {
+      "page": "/api/app-version",
+      "regex": "^/api/app\\-version(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/app\\-version(?:/)?$"
+    },
+    {
+      "page": "/api/app-version/download",
+      "regex": "^/api/app\\-version/download(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/app\\-version/download(?:/)?$"
+    },
+    {
       "page": "/api/auth/login",
       "regex": "^/api/auth/login(?:/)?$",
       "routeKeys": {},

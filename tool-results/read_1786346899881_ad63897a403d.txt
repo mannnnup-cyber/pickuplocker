@@ -1,0 +1,2002 @@
+     1→import { NextRequest, NextResponse } from 'next/server';
+     2→import { db } from '@/lib/db';
+     3→import crypto from 'crypto';
+     4→import {
+     5→  expressSaveOrTakeWithCredentials,
+     6→  getCredentialsForDevice,
+     7→  openBoxWithCredentials,
+     8→} from '@/lib/bestwond';
+     9→import {
+    10→  generateOrderNumber,
+    11→  generateTrackingCode,
+    12→  getStorageCalculation,
+    13→} from '@/lib/storage';
+    14→import { sendSMS, sendPickupNotification, sendPickupConfirmation } from '@/lib/textbee';
+    15→import { sendEmail, sendDropoffCodeEmail, isEmailEnabled } from '@/lib/email';
+    16→import { getSetting, getDimepayConfig } from '@/lib/settings';
+    17→import { createSDKPayment, chargeCardToken, DimePaySDKConfig } from '@/lib/dimepay';
+    18→import QRCode from 'qrcode';
+    19→import { allocateLocker, releaseLocker } from '@/lib/locker-alloc';
+    20→
+    21→// Box sizes and their prices for drop-off credits (JMD)
+    22→const BOX_PRICES: Record<string, number> = {
+    23→  S: 150,
+    24→  M: 200,
+    25→  L: 300,
+    26→  XL: 400,
+    27→};
+    28→
+    29→// ============================================
+    30→// HTML HELPERS
+    31→// ============================================
+    32→
+    33→/** Escape user input for safe HTML insertion */
+    34→function esc(str: string | null | undefined): string {
+    35→  if (!str) return '';
+    36→  return String(str)
+    37→    .replace(/&/g, '&amp;')
+    38→    .replace(/</g, '&lt;')
+    39→    .replace(/>/g, '&gt;')
+    40→    .replace(/"/g, '&quot;')
+    41→    .replace(/'/g, '&#39;');
+    42→}
+    43→
+    44→/** Shared CSS – brand colors Yellow #FFD439 / Black #111111, flexbox only, -webkit- prefixes */
+    45→const SHARED_CSS = `
+    46→  * { margin: 0; padding: 0; -webkit-box-sizing: border-box; box-sizing: border-box; }
+    47→  body {
+    48→    font-family: Arial, Helvetica, sans-serif;
+    49→    background: #111111;
+    50→    min-height: 100vh;
+    51→    color: #ffffff;
+    52→    -webkit-font-smoothing: antialiased;
+    53→  }
+    54→  .container {
+    55→    max-width: 800px;
+    56→    margin: 0 auto;
+    57→    padding: 20px;
+    58→  }
+    59→  .header {
+    60→    text-align: center;
+    61→    padding: 20px 0;
+    62→    border-bottom: 2px solid #333333;
+    63→    margin-bottom: 20px;
+    64→  }
+    65→  .header h1 { color: #FFD439; font-size: 28px; }
+    66→  .header p { color: #999999; margin-top: 5px; }
+    67→  .title { text-align: center; font-size: 28px; margin-bottom: 30px; color: #FFD439; }
+    68→  .subtitle { color: #999999; margin-bottom: 20px; text-align: center; font-size: 18px; }
+    69→  .btn {
+    70→    display: block;
+    71→    width: 100%;
+    72→    padding: 25px;
+    73→    margin: 15px 0;
+    74→    font-size: 24px;
+    75→    font-weight: bold;
+    76→    border: none;
+    77→    border-radius: 10px;
+    78→    cursor: pointer;
+    79→    text-decoration: none;
+    80→    text-align: center;
+    81→    -webkit-appearance: none;
+    82→    appearance: none;
+    83→    -webkit-tap-highlight-color: rgba(0,0,0,0);
+    84→  }
+    85→  .btn-primary { background: #FFD439; color: #111111; }
+    86→  .btn-primary:hover, .btn-primary:active { background: #f0c800; }
+    87→  .btn-secondary { background: #333333; color: #ffffff; }
+    88→  .btn-secondary:hover, .btn-secondary:active { background: #444444; }
+    89→  .btn-success { background: #4CAF50; color: white; }
+    90→  .btn-success:hover, .btn-success:active { background: #45a049; }
+    91→  .btn-back {
+    92→    background: transparent;
+    93→    border: 2px solid #666666;
+    94→    color: #999999;
+    95→    padding: 15px 30px;
+    96→    display: inline-block;
+    97→    width: auto;
+    98→    font-size: 18px;
+    99→    text-decoration: none;
+   100→  }
+   101→  .form-group { margin-bottom: 20px; }
+   102→  .form-group label {
+   103→    display: block;
+   104→    margin-bottom: 8px;
+   105→    font-size: 18px;
+   106→    color: #999999;
+   107→  }
+   108→  .form-group input {
+   109→    width: 100%;
+   110→    padding: 15px;
+   111→    font-size: 20px;
+   112→    border: 2px solid #333333;
+   113→    border-radius: 8px;
+   114→    background: #1a1a1a;
+   115→    color: #ffffff;
+   116→    -webkit-appearance: none;
+   117→    appearance: none;
+   118→  }
+   119→  .form-group input:focus { outline: none; border-color: #FFD439; }
+   120→  .box-sizes {
+   121→    display: -webkit-flex;
+   122→    display: flex;
+   123→    -webkit-flex-wrap: wrap;
+   124→    flex-wrap: wrap;
+   125→    -webkit-justify-content: center;
+   126→    justify-content: center;
+   127→    margin: 20px 0;
+   128→  }
+   129→  .box-sizes form {
+   130→    margin: 5px;
+   131→  }
+   132→  .box-btn {
+   133→    padding: 20px 30px;
+   134→    font-size: 20px;
+   135→    color: white;
+   136→    border: none;
+   137→    border-radius: 8px;
+   138→    cursor: pointer;
+   139→    -webkit-appearance: none;
+   140→    appearance: none;
+   141→    -webkit-tap-highlight-color: rgba(0,0,0,0);
+   142→    font-weight: bold;
+   143→    min-width: 120px;
+   144→  }
+   145→  .box-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+   146→  .box-S { background: #2196F3; }
+   147→  .box-M { background: #4CAF50; }
+   148→  .box-L { background: #FF9800; }
+   149→  .box-XL { background: #9C27B0; }
+   150→  .info-box {
+   151→    background: #1a1a1a;
+   152→    padding: 20px;
+   153→    border-radius: 10px;
+   154→    margin: 15px 0;
+   155→    border: 1px solid #333333;
+   156→  }
+   157→  .info-box p { margin: 10px 0; font-size: 18px; }
+   158→  .label { color: #999999; }
+   159→  .value { color: #ffffff; font-weight: bold; }
+   160→  .success-icon { text-align: center; font-size: 80px; color: #4CAF50; margin: 20px 0; }
+   161→  .code-display {
+   162→    text-align: center;
+   163→    font-size: 48px;
+   164→    color: #FFD439;
+   165→    font-weight: bold;
+   166→    padding: 20px;
+   167→    background: #1a1a1a;
+   168→    border-radius: 10px;
+   169→    margin: 15px 0;
+   170→    border: 2px solid #FFD439;
+   171→    letter-spacing: 8px;
+   172→  }
+   173→  .error-msg { color: #ff6b6b; text-align: center; margin-bottom: 15px; font-size: 16px; }
+   174→  .legend {
+   175→    display: -webkit-flex;
+   176→    display: flex;
+   177→    -webkit-flex-wrap: wrap;
+   178→    flex-wrap: wrap;
+   179→    -webkit-justify-content: center;
+   180→    justify-content: center;
+   181→    margin: 20px 0;
+   182→    font-size: 14px;
+   183→  }
+   184→  .legend-item {
+   185→    display: -webkit-flex;
+   186→    display: flex;
+   187→    -webkit-align-items: center;
+   188→    align-items: center;
+   189→    margin: 0 8px;
+   190→  }
+   191→  .legend-item .legend-color {
+   192→    margin-right: 5px;
+   193→  }
+   194→  .legend-color { width: 20px; height: 20px; border-radius: 4px; }
+   195→  .nav-buttons {
+   196→    display: -webkit-flex;
+   197→    display: flex;
+   198→    -webkit-justify-content: space-between;
+   199→    justify-content: space-between;
+   200→    margin-top: 30px;
+   201→  }
+   202→  .payment-details {
+   203→    background: #1a1a1a;
+   204→    padding: 15px;
+   205→    border-radius: 8px;
+   206→    margin: 10px 0;
+   207→    border: 1px solid #333333;
+   208→  }
+   209→  .payment-details p { margin: 8px 0; }
+   210→  .qr-container { text-align: center; margin: 20px 0; }
+   211→  .qr-container img { max-width: 300px; border-radius: 8px; }
+   212→  .spinner {
+   213→    display: inline-block;
+   214→    width: 40px;
+   215→    height: 40px;
+   216→    border: 4px solid #333333;
+   217→    border-top: 4px solid #FFD439;
+   218→    border-radius: 50%;
+   219→    -webkit-animation: spin 1s linear infinite;
+   220→    animation: spin 1s linear infinite;
+   221→    margin: 20px auto;
+   222→  }
+   223→  @-webkit-keyframes spin { 0% { -webkit-transform: rotate(0deg); } 100% { -webkit-transform: rotate(360deg); } }
+   224→  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+   225→  #kiosk-clock {
+   226→    color: #FFD439;
+   227→    font-weight: bold;
+   228→  }
+   229→  .footer {
+   230→    text-align: center;
+   231→    margin-top: 40px;
+   232→    padding-top: 15px;
+   233→    border-top: 1px solid #333333;
+   234→    font-size: 12px;
+   235→    color: #555555;
+   236→  }
+   237→  @media (max-width: 480px) {
+   238→    .box-sizes { -webkit-flex-direction: column; flex-direction: column; -webkit-align-items: center; align-items: center; }
+   239→    .btn { font-size: 20px; padding: 20px; }
+   240→    .code-display { font-size: 36px; letter-spacing: 5px; }
+   241→  }
+   242→`;
+   243→
+   244→// Kiosk-mode JavaScript - Android 5.0 compatible (ES5 only, no arrow functions, no const/let, no Promises)
+   245→const KIOSK_JS = `
+   246→  var inactivityTimer;
+   247→  var INACTIVITY_MS = 90000;
+   248→  function resetInactivityTimer() {
+   249→    clearTimeout(inactivityTimer);
+   250→    inactivityTimer = setTimeout(function() {
+   251→      window.location.href = '/kiosk-lite';
+   252→    }, INACTIVITY_MS);
+   253→  }
+   254→  document.addEventListener('touchstart', resetInactivityTimer, false);
+   255→  document.addEventListener('click', resetInactivityTimer, false);
+   256→  document.addEventListener('keydown', resetInactivityTimer, false);
+   257→  resetInactivityTimer();
+   258→  function updateClock() {
+   259→    var el = document.getElementById('kiosk-clock');
+   260→    if (!el) return;
+   261→    var now = new Date();
+   262→    var h = now.getHours();
+   263→    var m = now.getMinutes();
+   264→    var ampm = h >= 12 ? 'PM' : 'AM';
+   265→    h = h % 12;
+   266→    if (h === 0) h = 12;
+   267→    if (m < 10) m = '0' + m;
+   268→    el.textContent = h + ':' + m + ' ' + ampm;
+   269→  }
+   270→  updateClock();
+   271→  setInterval(updateClock, 30000);
+   272→
+   273→  // ---- AJAX Payment Polling (Chrome 37 compatible) ----
+   274→  // Polls /api/kiosk/payment-status every N seconds.
+   275→  // When payment is completed, redirects to the appropriate screen.
+   276→  // The QR code stays visible on the page while polling runs.
+   277→  function startPaymentPolling(pollUrl, checkIntervalMs) {
+   278→    var pollInterval = setInterval(function() {
+   279→      var xhr = new XMLHttpRequest();
+   280→      xhr.open('GET', pollUrl, true);
+   281→      xhr.setRequestHeader('Accept', 'application/json');
+   282→      xhr.onreadystatechange = function() {
+   283→        if (xhr.readyState !== 4) return;
+   284→        if (xhr.status !== 200) return;
+   285→        try {
+   286→          var resp = JSON.parse(xhr.responseText);
+   287→          if (resp && resp.status === 'completed') {
+   288→            clearInterval(pollInterval);
+   289→            // Stop the inactivity timer while redirecting
+   290→            clearTimeout(inactivityTimer);
+   291→            // Redirect to the appropriate next screen
+   292→            window.location.href = resp.redirectUrl || '/kiosk-lite?action=payment-success&msg=' + encodeURIComponent(resp.message || 'Payment confirmed!');
+   293→          } else if (resp && resp.status === 'failed') {
+   294→            clearInterval(pollInterval);
+   295→            window.location.href = '/kiosk-lite?action=error&msg=' + encodeURIComponent(resp.message || 'Payment failed');
+   296→          } else if (resp && resp.status === 'not_found') {
+   297→            clearInterval(pollInterval);
+   298→            window.location.href = '/kiosk-lite?action=error&msg=' + encodeURIComponent('Payment session not found');
+   299→          }
+   300→          // status === 'pending' → keep polling, do nothing
+   301→        } catch(e) {
+   302→          // Non-JSON response — ignore, keep polling
+   303→        }
+   304→      };
+   305→      xhr.send();
+   306→    }, checkIntervalMs || 5000);
+   307→  }
+   308→`;
+   309→
+   310→/** Render a full HTML page with shared chrome */
+   311→function renderPage(content: string, extraHead: string = ''): string {
+   312→  return `<!DOCTYPE html>
+   313→<html lang="en">
+   314→<head>
+   315→  <meta charset="UTF-8">
+   316→  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+   317→  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+   318→  <title>Smart Locker</title>
+   319→  ${extraHead}
+   320→  <style>${SHARED_CSS}</style>
+   321→</head>
+   322→<body>
+   323→  <div class="container">
+   324→    <div class="header">
+   325→      <h1>PICKUP</h1>
+   326→      <p>Smart Locker System <span id="kiosk-clock" style="margin-left:10px;"></span></p>
+   327→    </div>
+   328→    ${content}
+   329→  </div>
+   330→  <script>${KIOSK_JS}</script>
+   331→</body>
+   332→</html>`;
+   333→}
+   334→
+   335→/** Helper – return an HTML NextResponse */
+   336→function htmlResponse(content: string, extraHead: string = ''): NextResponse {
+   337→  return new NextResponse(renderPage(content, extraHead), {
+   338→    headers: { 'Content-Type': 'text/html' },
+   339→  });
+   340→}
+   341→
+   342→/** Generate QR code data URL */
+   343→async function generateQRCodeDataUrl(data: string): Promise<string> {
+   344→  try {
+   345→    return await QRCode.toDataURL(data, {
+   346→      width: 300,
+   347→      margin: 2,
+   348→      color: { dark: '#111111', light: '#ffffff' },
+   349→    });
+   350→  } catch (error) {
+   351→    console.error('QR generation error:', error);
+   352→    return '';
+   353→  }
+   354→}
+   355→
+   356→// ============================================
+   357→// GET handler – for polling / meta-refresh redirects
+   358→// ============================================
+   359→export async function GET(request: NextRequest) {
+   360→  const { searchParams } = request.nextUrl;
+   361→  const flow = searchParams.get('flow');
+   362→  const step = searchParams.get('step');
+   363→
+   364→  // Check drop-off payment status (polling via meta refresh)
+   365→  if (flow === 'dropoff' && step === 'check_payment') {
+   366→    return await handleCheckPayment(searchParams.get('paymentId') || '');
+   367→  }
+   368→
+   369→  // Check storage fee payment status (polling via meta refresh)
+   370→  if (flow === 'pickup' && step === 'check_storage_payment') {
+   371→    return await handleCheckStoragePayment(searchParams.get('paymentId') || '');
+   372→  }
+   373→
+   374→  // Default – redirect to kiosk home
+   375→  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
+   376→}
+   377→
+   378→// ============================================
+   379→// POST handler – all form submissions
+   380→// ============================================
+   381→export async function POST(request: NextRequest) {
+   382→  const formData = await request.formData();
+   383→  const flow = formData.get('flow') as string;
+   384→  const step = formData.get('step') as string;
+   385→
+   386→  try {
+   387→    // ============================================
+   388→    // DROP-OFF FLOW
+   389→    // ============================================
+   390→    if (flow === 'dropoff') {
+   391→      return await handleDropoffFlow(step, formData, request);
+   392→    }
+   393→
+   394→    // ============================================
+   395→    // PICKUP FLOW
+   396→    // ============================================
+   397→    if (flow === 'pickup') {
+   398→      return await handlePickupFlow(step, formData, request);
+   399→    }
+   400→  } catch (error) {
+   401→    console.error('Kiosk action error:', error);
+   402→    return htmlResponse(`
+   403→      <h2 class="title">Error</h2>
+   404→      <p class="error-msg">Something went wrong. Please try again.</p>
+   405→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+   406→    `);
+   407→  }
+   408→
+   409→  // Fallback
+   410→  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
+   411→}
+   412→
+   413→// ============================================
+   414→// DROP-OFF FLOW HANDLER
+   415→// ============================================
+   416→async function handleDropoffFlow(
+   417→  step: string,
+   418→  formData: FormData,
+   419→  request: NextRequest
+   420→): Promise<NextResponse> {
+   421→  // step=1 → Redirect to drop-off page (303 = See Other, browser follows with GET)
+   422→  if (step === '1') {
+   423→    return NextResponse.redirect(
+   424→      new URL('/kiosk-lite?action=dropoff', request.url), 303
+   425→    );
+   426→  }
+   427→
+   428→  // step=enter_save_code → Redirect to save-code entry page
+   429→  if (step === 'enter_save_code') {
+   430→    return NextResponse.redirect(
+   431→      new URL('/kiosk-lite?action=dropoff-save', request.url), 303
+   432→    );
+   433→  }
+   434→
+   435→  // step=select_size → Redirect to box size selection page
+   436→  if (step === 'select_size') {
+   437→    return NextResponse.redirect(
+   438→      new URL('/kiosk-lite?action=dropoff-size', request.url), 303
+   439→    );
+   440→  }
+   441→
+   442→  // step=buy_enter_phone → Redirect to phone entry page with boxSize
+   443→  if (step === 'buy_enter_phone') {
+   444→    const boxSize = formData.get('boxSize') as string;
+   445→    return NextResponse.redirect(
+   446→      new URL(`/kiosk-lite?action=dropoff-phone&boxSize=${esc(boxSize)}`, request.url), 303
+   447→    );
+   448→  }
+   449→
+   450→  // step=courier_login → Redirect to courier login page
+   451→  if (step === 'courier_login') {
+   452→    return NextResponse.redirect(
+   453→      new URL('/kiosk-lite?action=courier-login', request.url), 303
+   454→    );
+   455→  }
+   456→
+   457→  // step=use_save_code → Process save code drop-off
+   458→  if (step === 'use_save_code') {
+   459→    return await handleUseSaveCode(formData);
+   460→  }
+   461→
+   462→  // step=buy_create_payment → Create DimePay payment, show QR
+   463→  if (step === 'buy_create_payment') {
+   464→    return await handleBuyCreatePayment(formData);
+   465→  }
+   466→
+   467→  // step=check_payment → Check payment status
+   468→  if (step === 'check_payment') {
+   469→    const paymentId = formData.get('paymentId') as string;
+   470→    return await handleCheckPayment(paymentId);
+   471→  }
+   472→
+   473→  // step=open_after_payment → Open box after confirmed payment
+   474→  if (step === 'open_after_payment') {
+   475→    return await handleOpenAfterPayment(formData);
+   476→  }
+   477→
+   478→  // step=courier_auth → Verify courier PIN
+   479→  if (step === 'courier_auth') {
+   480→    return await handleCourierAuth(formData);
+   481→  }
+   482→
+   483→  // step=courier_set_pin → Set permanent PIN after temp PIN login
+   484→  if (step === 'courier_set_pin') {
+   485→    return await handleCourierSetPin(formData);
+   486→  }
+   487→
+   488→  // step=courier_dropoff → Process courier drop-off
+   489→  if (step === 'courier_dropoff') {
+   490→    return await handleCourierDropoff(formData);
+   491→  }
+   492→
+   493→  // Unknown step – redirect home
+   494→  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
+   495→}
+   496→
+   497→// ============================================
+   498→// PICKUP FLOW HANDLER
+   499→// ============================================
+   500→async function handlePickupFlow(
+   501→  step: string,
+   502→  formData: FormData,
+   503→  request: NextRequest
+   504→): Promise<NextResponse> {
+   505→  // step=1 → Redirect to pickup code entry page
+   506→  if (step === '1') {
+   507→    return NextResponse.redirect(
+   508→      new URL('/kiosk-lite?action=pickup', request.url), 303
+   509→    );
+   510→  }
+   511→
+   512→  // step=lookup → Find order by pickCode
+   513→  if (step === 'lookup') {
+   514→    return await handlePickupLookup(formData);
+   515→  }
+   516→
+   517→  // step=pay_storage_fee → Create storage fee payment, show QR
+   518→  if (step === 'pay_storage_fee') {
+   519→    return await handlePayStorageFee(formData);
+   520→  }
+   521→
+   522→  // step=pay_storage_fee_qr → Pay storage fee via QR (no saved card)
+   523→  if (step === 'pay_storage_fee_qr') {
+   524→    return await handlePayStorageFeeQR(formData, request);
+   525→  }
+   526→
+   527→  // step=charge_saved_card → Charge user's saved card token
+   528→  if (step === 'charge_saved_card') {
+   529→    return await handleChargeSavedCard(formData);
+   530→  }
+   531→
+   532→  // step=check_storage_payment → Check storage fee payment status
+   533→  if (step === 'check_storage_payment') {
+   534→    const paymentId = formData.get('paymentId') as string;
+   535→    return await handleCheckStoragePayment(paymentId);
+   536→  }
+   537→
+   538→  // step=open_pickup → Open locker for pickup
+   539→  if (step === 'open_pickup') {
+   540→    return await handleOpenPickup(formData);
+   541→  }
+   542→
+   543→  // Unknown step – redirect home
+   544→  return NextResponse.redirect(new URL('/kiosk-lite', request.url), 303);
+   545→}
+   546→
+   547→// ============================================
+   548→// DROP-OFF: Use save code
+   549→// ============================================
+   550→async function handleUseSaveCode(formData: FormData): Promise<NextResponse> {
+   551→  const saveCode = formData.get('saveCode') as string;
+   552→  const recipientPhone = formData.get('phone') as string;
+   553→
+   554→  if (!saveCode || saveCode.length !== 6) {
+   555→    return htmlResponse(`
+   556→      <h2 class="title">Invalid Code</h2>
+   557→      <p class="error-msg">Please enter a valid 6-digit drop-off code.</p>
+   558→      <a href="/kiosk-lite?action=dropoff-save" class="btn btn-primary">Try Again</a>
+   559→    `);
+   560→  }
+   561→
+   562→  // Find ExpressOrder by saveCode where status=CREATED
+   563→  const expressOrder = await db.expressOrder.findFirst({
+   564→    where: { saveCode, status: 'CREATED' },
+   565→  });
+   566→
+   567→  if (!expressOrder) {
+   568→    return htmlResponse(`
+   569→      <h2 class="title">Code Not Found</h2>
+   570→      <p class="error-msg">Invalid or expired drop-off code. Please check and try again.</p>
+   571→      <a href="/kiosk-lite?action=dropoff-save" class="btn btn-primary">Try Again</a>
+   572→      <a href="/kiosk-lite" class="btn btn-back">Back to Home</a>
+   573→    `);
+   574→  }
+   575→
+   576→  if (!recipientPhone && !expressOrder.customerPhone) {
+   577→    return htmlResponse(`
+   578→      <h2 class="title">Phone Required</h2>
+   579→      <p class="error-msg">A phone number is required for drop-off notifications.</p>
+   580→      <a href="/kiosk-lite?action=dropoff-save" class="btn btn-primary">Try Again</a>
+   581→    `);
+   582→  }
+   583→
+   584→  const cleanPhone = (recipientPhone || expressOrder.customerPhone || '').replace(/[^0-9+]/g, '');
+   585→
+   586→  // Get device
+   587→  const device = await db.device.findFirst({
+   588→    where: { deviceId: expressOrder.deviceId },
+   589→  });
+   590→
+   591→  if (!device) {
+   592→    return htmlResponse(`
+   593→      <h2 class="title">Error</h2>
+   594→      <p class="error-msg">Locker device not found. Please contact support.</p>
+   595→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+   596→    `);
+   597→  }
+   598→
+   599→  // Get Bestwond credentials
+   600→  const credentials = await getCredentialsForDevice(device.id);
+   601→
+   602→  // Call Bestwond API to open box
+   603→  let boxOpened = false;
+   604→  let boxName = expressOrder.boxName;
+   605→
+   606→  try {
+   607→    const result = await expressSaveOrTakeWithCredentials(
+   608→      expressOrder.deviceId,
+   609→      expressOrder.boxSize as 'S' | 'M' | 'L' | 'XL',
+   610→      saveCode,
+   611→      'save',
+   612→      credentials
+   613→    );
+   614→    if (result.code === 0 && result.data) {
+   615→      boxOpened = true;
+   616→      boxName = result.data.box_name || boxName;
+   617→    }
+   618→  } catch (bestwondError) {
+   619→    console.error('Bestwond express save error:', bestwondError);
+   620→    // Fallback: try direct box open
+   621→    try {
+   622→      if (boxName) {
+   623→        const openResult = await openBoxWithCredentials(
+   624→          device.deviceId,
+   625→          parseInt(boxName),
+   626→          credentials
+   627→        );
+   628→        boxOpened = openResult.code === 0;
+   629→      }
+   630→    } catch (openError) {
+   631→      console.error('Direct box open error:', openError);
+   632→    }
+   633→  }
+   634→
+   635→  // Update ExpressOrder status to STORED
+   636→  await db.expressOrder.update({
+   637→    where: { id: expressOrder.id },
+   638→    data: {
+   639→      status: 'STORED',
+   640→      saveTime: new Date(),
+   641→      customerPhone: cleanPhone,
+   642→    },
+   643→  });
+   644→
+   645→  // Find and update main Order
+   646→  const order = await db.order.findFirst({
+   647→    where: { orderNumber: expressOrder.orderNo },
+   648→  });
+   649→
+   650→  if (order) {
+   651→    await db.order.update({
+   652→      where: { id: order.id },
+   653→      data: {
+   654→        status: 'STORED',
+   655→        dropOffAt: new Date(),
+   656→        customerPhone: cleanPhone,
+   657→        storageStartAt: new Date(),
+   658→      },
+   659→    });
+   660→
+   661→    // Mark box as OCCUPIED
+   662→    if (order.boxId) {
+   663→      await db.box.update({
+   664→        where: { id: order.boxId },
+   665→        data: { status: 'OCCUPIED', lastUsedAt: new Date() },
+   666→      });
+   667→    }
+   668→
+   669→    // Send pickup notification SMS
+   670→    try {
+   671→      const expiryDate = new Date();
+   672→      expiryDate.setDate(expiryDate.getDate() + 3);
+   673→      await sendPickupNotification(
+   674→        cleanPhone,
+   675→        expressOrder.customerName || 'Customer',
+   676→        expressOrder.pickCode,
+   677→        device.location || 'Pickup Locker',
+   678→        expiryDate.toLocaleDateString()
+   679→      );
+   680→    } catch (smsError) {
+   681→      console.error('Failed to send pickup SMS:', smsError);
+   682→    }
+   683→
+   684→    // Create activity log
+   685→    await db.activity.create({
+   686→      data: {
+   687→        userId: order.customerId,
+   688→        action: 'KIOSK_DROP_OFF',
+   689→        description: `Package stored via kiosk (save code). Box: ${boxName}, Code: ${saveCode}`,
+   690→        orderId: order.id,
+   691→      },
+   692→    });
+   693→  }
+   694→
+   695→  // Show success page with pickCode
+   696→  return htmlResponse(`
+   697→    <div class="success-icon">&#10003;</div>
+   698→    <h2 class="title">Locker Opened!</h2>
+   699→    <p class="subtitle">Place your package inside and close the door.</p>
+   700→    <div class="info-box">
+   701→      <p style="text-align:center; color:#999999;">Pickup Code</p>
+   702→      <div class="code-display">${esc(expressOrder.pickCode)}</div>
+   703→      <p style="text-align:center; font-size:14px; color:#999999;">Save this code to retrieve your package!</p>
+   704→    </div>
+   705→    <div class="info-box">
+   706→      <p><span class="label">Box:</span> <span class="value">${esc(boxName || 'N/A')}</span></p>
+   707→      <p><span class="label">Size:</span> <span class="value">${esc(expressOrder.boxSize)}</span></p>
+   708→    </div>
+   709→    <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+   710→  `);
+   711→}
+   712→
+   713→// ============================================
+   714→// DROP-OFF: Create payment for buy flow
+   715→// ============================================
+   716→async function handleBuyCreatePayment(formData: FormData): Promise<NextResponse> {
+   717→  const boxSize = formData.get('boxSize') as string;
+   718→  const phone = formData.get('phone') as string;
+   719→  const email = formData.get('email') as string;
+   720→
+   721→  if (!boxSize || !BOX_PRICES[boxSize]) {
+   722→    return htmlResponse(`
+   723→      <h2 class="title">Error</h2>
+   724→      <p class="error-msg">Invalid box size selected.</p>
+   725→      <a href="/kiosk-lite?action=dropoff-size" class="btn btn-primary">Try Again</a>
+   726→    `);
+   727→  }
+   728→
+   729→  if (!phone || phone.replace(/[^0-9]/g, '').length < 7) {
+   730→    return htmlResponse(`
+   731→      <h2 class="title">Error</h2>
+   732→      <p class="error-msg">A valid phone number is required.</p>
+   733→      <a href="/kiosk-lite?action=dropoff-phone&boxSize=${esc(boxSize)}" class="btn btn-primary">Try Again</a>
+   734→    `);
+   735→  }
+   736→
+   737→  const cleanPhone = phone.replace(/[^0-9+]/g, '');
+   738→  const amount = BOX_PRICES[boxSize];
+   739→  const saveCode = generateTrackingCode();
+   740→  const pickCode = generateTrackingCode();
+   741→
+   742→  // Find or create customer
+   743→  let customer = await db.user.findFirst({ where: { phone: cleanPhone } });
+   744→  if (!customer) {
+   745→    customer = await db.user.create({
+   746→      data: {
+   747→        phone: cleanPhone,
+   748→        email: email || `${cleanPhone}@pickup.local`,
+   749→        name: 'Customer',
+   750→        role: 'CUSTOMER',
+   751→      },
+   752→    });
+   753→  } else if (email && customer.email.includes('@pickup.local')) {
+   754→    customer = await db.user.update({
+   755→      where: { id: customer.id },
+   756→      data: { email },
+   757→    });
+   758→  }
+   759→
+   760→  // Try real DimePay first
+   761→  const config = await getDimepayConfig();
+   762→  const effectiveClientId = config.sandboxMode
+   763→    ? config.sandboxClientId
+   764→    : config.liveClientId;
+   765→  const effectiveSecretKey = config.sandboxMode
+   766→    ? config.sandboxSecretKey
+   767→    : config.liveSecretKey;
+   768→
+   769→  let paymentId = '';
+   770→  let qrCodeDataUrl = '';
+   771→  let isDemoMode = false; // Never allow demo mode - require real payment
+   772→  let displayAmount = amount;
+   773→
+   774→  if (effectiveClientId && effectiveSecretKey) {
+   775→    try {
+   776→      const sdkConfig: DimePaySDKConfig = {
+   777→        clientId: effectiveClientId,
+   778→        secretKey: effectiveSecretKey,
+   779→        sandboxMode: config.sandboxMode,
+   780→        passFeeToCustomer: config.passFeeToCustomer,
+   781→        passFeeToCourier: config.passFeeToCourier,
+   782→        feePercentage: config.feePercentage,
+   783→        fixedFee: config.fixedFee,
+   784→      };
+   785→
+   786→      const orderId = `DROPOFF-${Date.now()}`;
+   787→      const result = await createSDKPayment(
+   788→        {
+   789→          amount: Math.round(amount * 100),
+   790→          currency: 'JMD',
+   791→          orderId,
+   792→          description: `Drop-off Credit - ${boxSize} Box`,
+   793→          customerPhone: cleanPhone,
+   794→          customerEmail: email || undefined,
+   795→          redirectUrl: `https://pickupja.com/kiosk?payment=success`,
+   796→          webhookUrl: `https://pickupja.com/api/webhooks/dimepay`,
+   797→          passFeeToCustomer: config.passFeeToCustomer,
+   798→          metadata: {
+   799→            type: 'dropoff_credit',
+   800→            boxSize,
+   801→            saveCode,
+   802→            pickCode,
+   803→            customerId: customer.id,
+   804→            customerPhone: cleanPhone,
+   805→            customerEmail: email || undefined,
+   806→          },
+   807→        },
+   808→        sdkConfig
+   809→      );
+   810→
+   811→      if (result.success && result.data) {
+   812→        isDemoMode = false;
+   813→        paymentId = orderId;
+   814→        displayAmount = result.data.amount;
+   815→
+   816→        // Store payment session in DB
+   817→        await db.setting.upsert({
+   818→          where: { key: `sdk_payment_${paymentId}` },
+   819→          create: {
+   820→            key: `sdk_payment_${paymentId}`,
+   821→            value: JSON.stringify({
+   822→              amount: result.data.amount,
+   823→              originalAmount: result.data.originalAmount,
+   824→              feeAmount: result.data.feeAmount,
+   825→              currency: result.data.currency,
+   826→              description: `Drop-off Credit - ${boxSize} Box`,
+   827→              reference: orderId,
+   828→              sdkConfig: result.data.sdkConfig,
+   829→              metadata: {
+   830→                type: 'dropoff_credit',
+   831→                boxSize,
+   832→                saveCode,
+   833→                pickCode,
+   834→                customerId: customer.id,
+   835→                customerPhone: cleanPhone,
+   836→                customerEmail: email || undefined,
+   837→              },
+   838→              status: 'PENDING',
+   839→              createdAt: Date.now(),
+   840→            }),
+   841→            description: `SDK Payment: ${orderId}`,
+   842→          },
+   843→          update: {
+   844→            value: JSON.stringify({
+   845→              amount: result.data.amount,
+   846→              originalAmount: result.data.originalAmount,
+   847→              feeAmount: result.data.feeAmount,
+   848→              currency: result.data.currency,
+   849→              description: `Drop-off Credit - ${boxSize} Box`,
+   850→              reference: orderId,
+   851→              sdkConfig: result.data.sdkConfig,
+   852→              metadata: {
+   853→                type: 'dropoff_credit',
+   854→                boxSize,
+   855→                saveCode,
+   856→                pickCode,
+   857→                customerId: customer.id,
+   858→                customerPhone: cleanPhone,
+   859→                customerEmail: email || undefined,
+   860→              },
+   861→              status: 'PENDING',
+   862→              createdAt: Date.now(),
+   863→            }),
+   864→          },
+   865→        });
+   866→
+   867→        // Generate QR code from SDK payment URL
+   868→        const paymentUrl = `https://pickupja.com/pay/${orderId}`;
+   869→        qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
+   870→      }
+   871→    } catch (dimepayError) {
+   872→      console.error('DimePay SDK error:', dimepayError);
+   873→      // Do NOT fall back to demo mode - show error to user
+   874→      return htmlResponse(`
+   875→        <h2 class="title">Payment Unavailable</h2>
+   876→        <p class="subtitle">We're unable to process payments right now. Please try again later or contact support.</p>
+   877→        <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Go Back</a>
+   878→      `);
+   879→    }
+   880→  }
+   881→
+   882→  // If DimePay is not configured at all, show error instead of demo mode
+   883→  if (!effectiveClientId || !effectiveSecretKey) {
+   884→    console.error('DimePay not configured - cannot process payment');
+   885→    return htmlResponse(`
+   886→      <h2 class="title">Payment Unavailable</h2>
+   887→      <p class="subtitle">Payment gateway is not configured. Please contact support.</p>
+   888→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Go Back</a>
+   889→    `);
+   890→  }
+   891→
+   892→  // Show QR code page with AJAX polling (QR stays visible while checking payment)
+   893→  const qrImg = qrCodeDataUrl
+   894→    ? `<div class="qr-container"><img src="${qrCodeDataUrl}" alt="Payment QR Code" /></div>`
+   895→    : '<p style="text-align:center; color:#999;">QR code unavailable</p>';
+   896→
+   897→  return htmlResponse(
+   898→    `
+   899→    <h2 class="title">Scan to Pay</h2>
+   900→    <p class="subtitle">JMD $${displayAmount} for ${boxSize} Box</p>
+   901→    ${qrImg}
+   902→    <div class="info-box">
+   903→      <p style="text-align:center;">Scan the QR code with your phone to complete payment.</p>
+   904→      <p style="text-align:center; font-size:14px; color:#999;">Checking payment status...</p>
+   905→    </div>
+   906→    <div style="text-align:center;"><div class="spinner"></div></div>
+   907→    <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+   908→  `,
+   909→    `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
+   910→  );
+   911→}
+   912→
+   913→// ============================================
+   914→// DROP-OFF: Check payment status
+   915→// ============================================
+   916→async function handleCheckPayment(paymentId: string): Promise<NextResponse> {
+   917→  if (!paymentId) {
+   918→    return htmlResponse(`
+   919→      <h2 class="title">Error</h2>
+   920→      <p class="error-msg">Missing payment ID.</p>
+   921→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+   922→    `);
+   923→  }
+   924→
+   925→  // Check SDK payment
+   926→  const sdkSetting = await db.setting.findUnique({
+   927→    where: { key: `sdk_payment_${paymentId}` },
+   928→  });
+   929→
+   930→  if (sdkSetting) {
+   931→    const paymentData = JSON.parse(sdkSetting.value);
+   932→
+   933→    if (paymentData.status === 'COMPLETED') {
+   934→      // Send email if not already sent
+   935→      if (paymentData.metadata?.customerEmail && !paymentData.emailSent) {
+   936→        try {
+   937→          const emailEnabled = await isEmailEnabled();
+   938→          if (emailEnabled) {
+   939→            await sendEmail(
+   940→              paymentData.metadata.customerEmail,
+   941→              'Your Pickup Jamaica Drop-off Code',
+   942→              `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+   943→                <div style="background:#111111;padding:20px;text-align:center;">
+   944→                  <h1 style="color:#FFD439;margin:0;">PICK<span style="color:white;">UP</span></h1>
+   945→                  <p style="color:#999;margin:5px 0 0 0;">Smart Locker System</p>
+   946→                </div>
+   947→                <div style="padding:30px;background:#f9f9f9;">
+   948→                  <h2 style="color:#111;">Payment Confirmed!</h2>
+   949→                  <div style="background:#FFD439;padding:20px;text-align:center;border-radius:10px;margin:20px 0;">
+   950→                    <p style="margin:0;color:#666;font-size:14px;">Your Save Code</p>
+   951→                    <p style="font-size:36px;font-weight:bold;margin:10px 0;letter-spacing:5px;">${paymentData.metadata.saveCode}</p>
+   952→                  </div>
+   953→                </div>
+   954→              </div>`,
+   955→              `Your drop-off payment is confirmed. Save code: ${paymentData.metadata.saveCode}`
+   956→            );
+   957→            await db.setting
+   958→              .update({
+   959→                where: { key: `sdk_payment_${paymentId}` },
+   960→                data: { value: JSON.stringify({ ...paymentData, emailSent: true }) },
+   961→              })
+   962→              .catch(() => {});
+   963→          }
+   964→        } catch (emailError) {
+   965→          console.error('Failed to send email:', emailError);
+   966→        }
+   967→      }
+   968→
+   969→      // Show save code + DEPOSIT NOW button
+   970→      return htmlResponse(`
+   971→        <div class="success-icon">&#10003;</div>
+   972→        <h2 class="title">Payment Confirmed!</h2>
+   973→        <p class="subtitle">Your drop-off code is ready.</p>
+   974→        <div class="info-box">
+   975→          <p style="text-align:center; color:#999999;">Your Save Code</p>
+   976→          <div class="code-display">${esc(paymentData.metadata?.saveCode)}</div>
+   977→        </div>
+   978→        <form action="/api/kiosk-action" method="POST">
+   979→          <input type="hidden" name="flow" value="dropoff">
+   980→          <input type="hidden" name="step" value="open_after_payment">
+   981→          <input type="hidden" name="saveCode" value="${esc(paymentData.metadata?.saveCode)}">
+   982→          <input type="hidden" name="boxSize" value="${esc(paymentData.metadata?.boxSize)}">
+   983→          <input type="hidden" name="phone" value="${esc(paymentData.metadata?.customerPhone)}">
+   984→          <button type="submit" class="btn btn-success">DEPOSIT NOW</button>
+   985→        </form>
+   986→        <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+   987→      `);
+   988→    }
+   989→
+   990→    // Still pending – show waiting page with AJAX polling
+   991→    return htmlResponse(
+   992→      `
+   993→      <h2 class="title">Waiting for Payment</h2>
+   994→      <p class="subtitle">Please complete payment on your phone.</p>
+   995→      <div style="text-align:center;"><div class="spinner"></div></div>
+   996→      <div class="info-box">
+   997→        <p style="text-align:center;">Checking payment status...</p>
+   998→      </div>
+   999→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+  1000→    `,
+  1001→      `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 5000);</script>`
+  1002→    );
+  1003→  }
+  1004→
+  1005→  // Check demo payment
+  1006→  const demoSetting = await db.setting.findUnique({
+  1007→    where: { key: `demo_payment_${paymentId}` },
+  1008→  });
+  1009→
+  1010→  if (demoSetting) {
+  1011→    const demoData = JSON.parse(demoSetting.value);
+  1012→    const elapsed = Date.now() - demoData.createdAt;
+  1013→
+  1014→    // Auto-complete after 5 seconds in demo mode
+  1015→    if (elapsed > 5000) {
+  1016→      // Send SMS notification
+  1017→      try {
+  1018→        await sendSMS(
+  1019→          demoData.phone,
+  1020→          `Pickup Jamaica: Your drop-off payment of JMD $${demoData.amount} is confirmed. Your save code is ${demoData.saveCode}. Use this code at the locker to store your package.`
+  1021→        );
+  1022→      } catch (smsError) {
+  1023→        console.error('Failed to send SMS:', smsError);
+  1024→      }
+  1025→
+  1026→      // Send email if provided
+  1027→      if (demoData.email) {
+  1028→        try {
+  1029→          const emailEnabled = await isEmailEnabled();
+  1030→          if (emailEnabled) {
+  1031→            await sendEmail(
+  1032→              demoData.email,
+  1033→              'Your Pickup Jamaica Drop-off Code',
+  1034→              `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+  1035→                <div style="background:#111111;padding:20px;text-align:center;">
+  1036→                  <h1 style="color:#FFD439;margin:0;">PICK<span style="color:white;">UP</span></h1>
+  1037→                  <p style="color:#999;margin:5px 0 0 0;">Smart Locker System</p>
+  1038→                </div>
+  1039→                <div style="padding:30px;background:#f9f9f9;">
+  1040→                  <h2 style="color:#111;">Payment Confirmed!</h2>
+  1041→                  <div style="background:#FFD439;padding:20px;text-align:center;border-radius:10px;margin:20px 0;">
+  1042→                    <p style="margin:0;color:#666;font-size:14px;">Your Save Code</p>
+  1043→                    <p style="font-size:36px;font-weight:bold;margin:10px 0;letter-spacing:5px;">${demoData.saveCode}</p>
+  1044→                  </div>
+  1045→                </div>
+  1046→              </div>`,
+  1047→              `Your drop-off payment is confirmed. Save code: ${demoData.saveCode}`
+  1048→            );
+  1049→          }
+  1050→        } catch (emailError) {
+  1051→          console.error('Failed to send email:', emailError);
+  1052→        }
+  1053→      }
+  1054→
+  1055→      // Update demo payment status
+  1056→      await db.setting
+  1057→        .update({
+  1058→          where: { key: `demo_payment_${paymentId}` },
+  1059→          data: { value: JSON.stringify({ ...demoData, status: 'COMPLETED' }) },
+  1060→        })
+  1061→        .catch(() => {});
+  1062→
+  1063→      // Show save code + DEPOSIT NOW button
+  1064→      return htmlResponse(`
+  1065→        <div class="success-icon">&#10003;</div>
+  1066→        <h2 class="title">Payment Confirmed!</h2>
+  1067→        <p class="subtitle">[DEMO MODE] Your drop-off code is ready.</p>
+  1068→        <div class="info-box">
+  1069→          <p style="text-align:center; color:#999999;">Your Save Code</p>
+  1070→          <div class="code-display">${esc(demoData.saveCode)}</div>
+  1071→        </div>
+  1072→        <form action="/api/kiosk-action" method="POST">
+  1073→          <input type="hidden" name="flow" value="dropoff">
+  1074→          <input type="hidden" name="step" value="open_after_payment">
+  1075→          <input type="hidden" name="saveCode" value="${esc(demoData.saveCode)}">
+  1076→          <input type="hidden" name="boxSize" value="${esc(demoData.boxSize)}">
+  1077→          <input type="hidden" name="phone" value="${esc(demoData.phone)}">
+  1078→          <button type="submit" class="btn btn-success">DEPOSIT NOW</button>
+  1079→        </form>
+  1080→        <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+  1081→      `);
+  1082→    }
+  1083→
+  1084→    // Still pending – use AJAX polling instead of meta-refresh
+  1085→    return htmlResponse(
+  1086→      `
+  1087→      <h2 class="title">Waiting for Payment</h2>
+  1088→      <p class="subtitle">[DEMO MODE] Payment will auto-complete in a few seconds...</p>
+  1089→      <div style="text-align:center;"><div class="spinner"></div></div>
+  1090→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+  1091→    `,
+  1092→      `<script>startPaymentPolling('/api/kiosk/payment-status?paymentId=${encodeURIComponent(paymentId)}', 3000);</script>`
+  1093→    );
+  1094→  }
+  1095→
+  1096→  // Payment not found
+  1097→  return htmlResponse(`
+  1098→    <h2 class="title">Payment Not Found</h2>
+  1099→    <p class="error-msg">We could not find this payment session.</p>
+  1100→    <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1101→  `);
+  1102→}
+  1103→
+  1104→// ============================================
+  1105→// DROP-OFF: Open box after payment confirmed
+  1106→// ============================================
+  1107→async function handleOpenAfterPayment(formData: FormData): Promise<NextResponse> {
+  1108→  const saveCode = formData.get('saveCode') as string;
+  1109→  const boxSize = formData.get('boxSize') as string;
+  1110→  const phone = formData.get('phone') as string;
+  1111→
+  1112→  if (!saveCode) {
+  1113→    return htmlResponse(`
+  1114→      <h2 class="title">Error</h2>
+  1115→      <p class="error-msg">Missing save code.</p>
+  1116→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1117→    `);
+  1118→  }
+  1119→
+  1120→  // Find the ExpressOrder with this save code
+  1121→  let expressOrder = await db.expressOrder.findFirst({
+  1122→    where: { saveCode },
+  1123→  });
+  1124→
+  1125→  const cleanPhone = phone ? phone.replace(/[^0-9+]/g, '') : '';
+  1126→
+  1127→  // If no ExpressOrder exists yet (buy flow), allocate a locker from DB
+  1128→  if (!expressOrder) {
+  1129→    // ============================================
+  1130→    // ALLOCATE LOCKER FROM DATABASE (source of truth)
+  1131→    // ============================================
+  1132→    const allocation = await allocateLocker((boxSize || 'M') as 'S' | 'M' | 'L' | 'XL');
+  1133→
+  1134→    if (!allocation.success) {
+  1135→      const err = allocation as { success: false; error: string; statusCode: number };
+  1136→      return htmlResponse(`
+  1137→        <h2 class="title">No Lockers Available</h2>
+  1138→        <p class="error-msg">${esc(err.error)}</p>
+  1139→        <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1140→      `);
+  1141→    }
+  1142→
+  1143→    const alloc = allocation as typeof allocation & { success: true };
+  1144→    const boxName = alloc.bestwondBoxName || String(alloc.box.boxNumber).padStart(2, '0');
+  1145→    const bestwondOrderNo = alloc.orderNo;
+  1146→    const bestwondSaveCode = saveCode;
+  1147→    const bestwondPickCode = alloc.pickCode;
+  1148→
+  1149→    // Create ExpressOrder
+  1150→    expressOrder = await db.expressOrder.create({
+  1151→      data: {
+  1152→        orderNo: bestwondOrderNo,
+  1153→        deviceId: alloc.device.deviceId,
+  1154→        boxName,
+  1155→        boxSize: boxSize || 'M',
+  1156→        saveCode: bestwondSaveCode,
+  1157→        pickCode: bestwondPickCode,
+  1158→        status: 'CREATED',
+  1159→        customerPhone: cleanPhone,
+  1160→      },
+  1161→    });
+  1162→
+  1163→    // Find or create customer
+  1164→    let customer = await db.user.findFirst({ where: { phone: cleanPhone } });
+  1165→    if (!customer) {
+  1166→      customer = await db.user.create({
+  1167→        data: {
+  1168→          phone: cleanPhone,
+  1169→          email: `${cleanPhone}@pickup.local`,
+  1170→          name: 'Customer',
+  1171→          role: 'CUSTOMER',
+  1172→        },
+  1173→      });
+  1174→    }
+  1175→
+  1176→    // Create main Order
+  1177→    await db.order.create({
+  1178→      data: {
+  1179→        orderNumber: bestwondOrderNo,
+  1180→        trackingCode: bestwondPickCode,
+  1181→        customerId: customer.id,
+  1182→        customerName: customer.name || 'Customer',
+  1183→        customerPhone: cleanPhone,
+  1184→        deviceId: alloc.device.id,
+  1185→        boxId: alloc.box.id,
+  1186→        boxNumber: alloc.box.boxNumber,
+  1187→        packageSize: boxSize || 'M',
+  1188→        status: 'PENDING',
+  1189→        storageStartAt: new Date(),
+  1190→      },
+  1191→    });
+  1192→  }
+  1193→
+  1194→  // Get device for the express order
+  1195→  const device = await db.device.findFirst({
+  1196→    where: { deviceId: expressOrder.deviceId },
+  1197→  });
+  1198→
+  1199→  if (!device) {
+  1200→    return htmlResponse(`
+  1201→      <h2 class="title">Error</h2>
+  1202→      <p class="error-msg">Locker device not found.</p>
+  1203→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1204→    `);
+  1205→  }
+  1206→
+  1207→  // Try to open box via Bestwond (non-blocking)
+  1208→  let boxOpened = false;
+  1209→  let boxName = expressOrder.boxName;
+  1210→
+  1211→  try {
+  1212→    const credentials = await getCredentialsForDevice(device.id);
+  1213→    const result = await expressSaveOrTakeWithCredentials(
+  1214→      expressOrder.deviceId,
+  1215→      expressOrder.boxSize as 'S' | 'M' | 'L' | 'XL',
+  1216→      saveCode,
+  1217→      'save',
+  1218→      credentials
+  1219→    );
+  1220→    if (result.code === 0 && result.data) {
+  1221→      boxOpened = true;
+  1222→      boxName = result.data.box_name || boxName;
+  1223→    }
+  1224→  } catch (bestwondError) {
+  1225→    console.error('[Open After Payment] Bestwond express save error (non-fatal):', bestwondError);
+  1226→    // Try direct box open as fallback
+  1227→    try {
+  1228→      if (boxName) {
+  1229→        const credentials = await getCredentialsForDevice(device.id);
+  1230→        const openResult = await openBoxWithCredentials(
+  1231→          device.deviceId,
+  1232→          parseInt(boxName),
+  1233→          credentials
+  1234→        );
+  1235→        boxOpened = openResult.code === 0;
+  1236→      }
+  1237→    } catch (openError) {
+  1238→      console.error('[Open After Payment] Direct box open error (non-fatal):', openError);
+  1239→    }
+  1240→  }
+  1241→
+  1242→  // Update ExpressOrder status to STORED
+  1243→  await db.expressOrder.update({
+  1244→    where: { id: expressOrder.id },
+  1245→    data: {
+  1246→      status: 'STORED',
+  1247→      saveTime: new Date(),
+  1248→      customerPhone: cleanPhone || expressOrder.customerPhone,
+  1249→    },
+  1250→  });
+  1251→
+  1252→  // Update main Order
+  1253→  const order = await db.order.findFirst({
+  1254→    where: { orderNumber: expressOrder.orderNo },
+  1255→  });
+  1256→
+  1257→  if (order) {
+  1258→    await db.order.update({
+  1259→      where: { id: order.id },
+  1260→      data: {
+  1261→        status: 'STORED',
+  1262→        dropOffAt: new Date(),
+  1263→        customerPhone: cleanPhone || order.customerPhone,
+  1264→        storageStartAt: new Date(),
+  1265→      },
+  1266→    });
+  1267→
+  1268→    // Mark box as OCCUPIED
+  1269→    if (order.boxId) {
+  1270→      await db.box.update({
+  1271→        where: { id: order.boxId },
+  1272→        data: { status: 'OCCUPIED', lastUsedAt: new Date() },
+  1273→      });
+  1274→    }
+  1275→
+  1276→    // Send pickup notification SMS
+  1277→    try {
+  1278→      const expiryDate = new Date();
+  1279→      expiryDate.setDate(expiryDate.getDate() + 3);
+  1280→      await sendPickupNotification(
+  1281→        cleanPhone || order.customerPhone,
+  1282→        expressOrder.customerName || order.customerName || 'Customer',
+  1283→        expressOrder.pickCode,
+  1284→        device.location || 'Pickup Locker',
+  1285→        expiryDate.toLocaleDateString()
+  1286→      );
+  1287→    } catch (smsError) {
+  1288→      console.error('Failed to send pickup SMS:', smsError);
+  1289→    }
+  1290→
+  1291→    // Create activity log
+  1292→    await db.activity.create({
+  1293→      data: {
+  1294→        userId: order.customerId,
+  1295→        action: 'KIOSK_DROP_OFF_PAID',
+  1296→        description: `Package stored via kiosk (paid drop-off). Box: ${boxName}, Code: ${saveCode}`,
+  1297→        orderId: order.id,
+  1298→      },
+  1299→    });
+  1300→  }
+  1301→
+  1302→  // Show success with pickCode
+  1303→  return htmlResponse(`
+  1304→    <div class="success-icon">&#10003;</div>
+  1305→    <h2 class="title">Locker Opened!</h2>
+  1306→    <p class="subtitle">Place your package inside and close the door.</p>
+  1307→    <div class="info-box">
+  1308→      <p style="text-align:center; color:#999999;">Pickup Code</p>
+  1309→      <div class="code-display">${esc(expressOrder.pickCode)}</div>
+  1310→      <p style="text-align:center; font-size:14px; color:#999999;">Save this code to retrieve your package!</p>
+  1311→    </div>
+  1312→    <div class="info-box">
+  1313→      <p><span class="label">Box:</span> <span class="value">${esc(boxName || 'N/A')}</span></p>
+  1314→      <p><span class="label">Size:</span> <span class="value">${esc(expressOrder.boxSize)}</span></p>
+  1315→    </div>
+  1316→    <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+  1317→  `);
+  1318→}
+  1319→
+  1320→// ============================================
+  1321→// DROP-OFF: Courier auth (verify PIN)
+  1322→// ============================================
+  1323→
+  1324→// Hash PIN for verification — must match the hashing in /api/courier/pin and /api/courier/login
+  1325→function hashPin(pin: string, phone: string): string {
+  1326→  const secret = process.env.NEXTAUTH_SECRET
+  1327→  if (!secret) {
+  1328→    throw new Error("NEXTAUTH_SECRET environment variable is required")
+  1329→  }
+  1330→  return crypto
+  1331→    .createHmac('sha256', secret)
+  1332→    .update(`${phone}:${pin}`)
+  1333→    .digest('hex');
+  1334→}
+  1335→
+  1336→async function handleCourierAuth(formData: FormData): Promise<NextResponse> {
+  1337→  try {
+  1338→    const pin = formData.get('pin') as string;
+  1339→    const phone = formData.get('phone') as string;
+  1340→
+  1341→    if (!pin || !/^\d{4}$/.test(pin)) {
+  1342→      return htmlResponse(`
+  1343→      <h2 class="title">Invalid PIN</h2>
+  1344→      <p class="error-msg">Please enter a valid 4-digit courier PIN.</p>
+  1345→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1346→    `);
+  1347→  }
+  1348→
+  1349→  if (!phone) {
+  1350→    return htmlResponse(`
+  1351→      <h2 class="title">Phone Required</h2>
+  1352→      <p class="error-msg">Please enter your phone number.</p>
+  1353→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1354→    `);
+  1355→  }
+  1356→
+  1357→  // Clean phone number
+  1358→  const cleanPhone = phone.replace(/[^0-9+]/g, '');
+  1359→
+  1360→  // Find courier by phone (with flexible matching)
+  1361→  const courier = await db.courier.findFirst({
+  1362→    where: {
+  1363→      status: 'ACTIVE',
+  1364→      OR: [
+  1365→        { phone: cleanPhone },
+  1366→        { phone: cleanPhone.replace(/^1/, '') },
+  1367→        { phone: `1${cleanPhone}` },
+  1368→      ],
+  1369→    },
+  1370→  });
+  1371→
+  1372→  if (!courier) {
+  1373→    return htmlResponse(`
+  1374→      <h2 class="title">Authentication Failed</h2>
+  1375→      <p class="error-msg">No active courier account found with that phone number.</p>
+  1376→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1377→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+  1378→    `);
+  1379→  }
+  1380→
+  1381→  // Verify PIN using HMAC hash comparison (matching the /api/courier/login flow)
+  1382→  if (!courier.phone) {
+  1383→    return htmlResponse(`
+  1384→      <h2 class="title">Account Error</h2>
+  1385→      <p class="error-msg">Courier account has no phone number on file. Please contact admin.</p>
+  1386→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1387→    `);
+  1388→  }
+  1389→
+  1390→  // Check if courier has a PIN set
+  1391→  if (!courier.pin) {
+  1392→    // Check if there's a temp PIN for first-time setup
+  1393→    if (courier.tempPin && courier.tempPin === pin) {
+  1394→      // First-time login with temp PIN — redirect to PIN setup
+  1395→      // For kiosk, we'll let them through but prompt to set PIN later
+  1396→      // Update last login
+  1397→      await db.courier.update({
+  1398→        where: { id: courier.id },
+  1399→        data: { lastLoginAt: new Date() },
+  1400→      });
+  1401→
+  1402→      return htmlResponse(`
+  1403→        <h2 class="title">Set Your PIN</h2>
+  1404→        <p class="subtitle">You logged in with a temporary PIN. Please set your permanent PIN to continue.</p>
+  1405→        <form action="/api/kiosk-action" method="POST">
+  1406→          <input type="hidden" name="flow" value="dropoff">
+  1407→          <input type="hidden" name="step" value="courier_set_pin">
+  1408→          <input type="hidden" name="courierId" value="${esc(courier.id)}">
+  1409→          <div class="form-group">
+  1410→            <label>New 4-Digit PIN</label>
+  1411→            <input type="password" name="newPin" required placeholder="Enter new PIN" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+  1412→          </div>
+  1413→          <div class="form-group">
+  1414→            <label>Confirm PIN</label>
+  1415→            <input type="password" name="confirmPin" required placeholder="Confirm new PIN" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+  1416→          </div>
+  1417→          <button type="submit" class="btn btn-primary">SET PIN & CONTINUE</button>
+  1418→        </form>
+  1419→        <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+  1420→      `);
+  1421→    }
+  1422→
+  1423→    return htmlResponse(`
+  1424→      <h2 class="title">PIN Not Set</h2>
+  1425→      <p class="error-msg">Your courier PIN has not been set yet. Please contact admin to get your temporary PIN.</p>
+  1426→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1427→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+  1428→    `);
+  1429→  }
+  1430→
+  1431→  // Verify the hashed PIN
+  1432→  const hashedInput = hashPin(pin, courier.phone);
+  1433→  if (hashedInput !== courier.pin) {
+  1434→    return htmlResponse(`
+  1435→      <h2 class="title">Authentication Failed</h2>
+  1436→      <p class="error-msg">Incorrect PIN. Please try again.</p>
+  1437→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1438→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+  1439→    `);
+  1440→  }
+  1441→
+  1442→  // Update last login
+  1443→  await db.courier.update({
+  1444→    where: { id: courier.id },
+  1445→    data: { lastLoginAt: new Date() },
+  1446→  });
+  1447→
+  1448→  // Show courier drop-off page with box sizes and balance
+  1449→  const sizeLabels: Record<string, string> = { S: 'Small', M: 'Medium', L: 'Large', XL: 'X-Large' };
+  1450→  const boxButtons = Object.entries(BOX_PRICES)
+  1451→    .map(([size, price]) => {
+  1452→      const canAfford = courier.balance >= price;
+  1453→      return `
+  1454→        <form action="/api/kiosk-action" method="POST" style="display:inline-block;">
+  1455→          <input type="hidden" name="flow" value="dropoff">
+  1456→          <input type="hidden" name="step" value="courier_dropoff">
+  1457→          <input type="hidden" name="courierId" value="${esc(courier.id)}">
+  1458→          <input type="hidden" name="boxSize" value="${esc(size)}">
+  1459→          <button type="submit" class="box-btn box-${esc(size)}" ${canAfford ? '' : 'disabled'}
+  1460→            style="min-width:140px; text-align:center; line-height:1.3;">
+  1461→            ${esc(sizeLabels[size])}<br>
+  1462→            <span style="font-size:14px;">JMD $${price}</span>
+  1463→          </button>
+  1464→        </form>
+  1465→      `;
+  1466→    })
+  1467→    .join('');
+  1468→
+  1469→  return htmlResponse(`
+  1470→    <h2 class="title">Courier Drop-Off</h2>
+  1471→    <div class="info-box">
+  1472→      <p><span class="label">Courier:</span> <span class="value">${esc(courier.name)}</span></p>
+  1473→      <p><span class="label">Balance:</span> <span class="value" style="color:#FFD439;">JMD $${courier.balance.toFixed(2)}</span></p>
+  1474→    </div>
+  1475→    <p class="subtitle">Select box size for drop-off:</p>
+  1476→    <div class="box-sizes">
+  1477→      ${boxButtons}
+  1478→    </div>
+  1479→    <div class="legend">
+  1480→      <div class="legend-item"><div class="legend-color" style="background:#2196F3"></div> Small ($150)</div>
+  1481→      <div class="legend-item"><div class="legend-color" style="background:#4CAF50"></div> Medium ($200)</div>
+  1482→      <div class="legend-item"><div class="legend-color" style="background:#FF9800"></div> Large ($300)</div>
+  1483→      <div class="legend-item"><div class="legend-color" style="background:#9C27B0"></div> X-Large ($400)</div>
+  1484→    </div>
+  1485→    <a href="/kiosk-lite" class="btn btn-back" style="margin-top:20px; display:inline-block;">Cancel</a>
+  1486→  `);
+  1487→  } catch (error) {
+  1488→    console.error('[Courier Auth] Error:', error);
+  1489→    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+  1490→    return htmlResponse(`
+  1491→      <h2 class="title">Login Error</h2>
+  1492→      <p class="error-msg">Something went wrong during login. Please try again.</p>
+  1493→      <div class="info-box">
+  1494→        <p style="text-align:center; font-size:14px; color:#999;">${esc(errorMsg)}</p>
+  1495→      </div>
+  1496→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1497→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+  1498→    `);
+  1499→  }
+  1500→}
+  1501→
+  1502→// ============================================
+  1503→// DROP-OFF: Courier set PIN (after temp PIN login)
+  1504→// ============================================
+  1505→async function handleCourierSetPin(formData: FormData): Promise<NextResponse> {
+  1506→  const courierId = formData.get('courierId') as string;
+  1507→  const newPin = formData.get('newPin') as string;
+  1508→  const confirmPin = formData.get('confirmPin') as string;
+  1509→
+  1510→  if (!courierId || !newPin || !confirmPin) {
+  1511→    return htmlResponse(`
+  1512→      <h2 class="title">Error</h2>
+  1513→      <p class="error-msg">Missing required fields.</p>
+  1514→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1515→    `);
+  1516→  }
+  1517→
+  1518→  if (!/^\d{4}$/.test(newPin)) {
+  1519→    return htmlResponse(`
+  1520→      <h2 class="title">Invalid PIN</h2>
+  1521→      <p class="error-msg">PIN must be exactly 4 digits.</p>
+  1522→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1523→    `);
+  1524→  }
+  1525→
+  1526→  if (newPin !== confirmPin) {
+  1527→    return htmlResponse(`
+  1528→      <h2 class="title">PINs Don't Match</h2>
+  1529→      <p class="error-msg">The PINs you entered do not match. Please try again.</p>
+  1530→      <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1531→    `);
+  1532→  }
+  1533→
+  1534→  const courier = await db.courier.findUnique({ where: { id: courierId } });
+  1535→  if (!courier || !courier.phone) {
+  1536→    return htmlResponse(`
+  1537→      <h2 class="title">Error</h2>
+  1538→      <p class="error-msg">Courier account not found or has no phone number.</p>
+  1539→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1540→    `);
+  1541→  }
+  1542→
+  1543→  // Hash and save the new PIN
+  1544→  const hashedPin = hashPin(newPin, courier.phone);
+  1545→  await db.courier.update({
+  1546→    where: { id: courierId },
+  1547→    data: {
+  1548→      pin: hashedPin,
+  1549→      pinSetAt: new Date(),
+  1550→      tempPin: null,
+  1551→      lastLoginAt: new Date(),
+  1552→    },
+  1553→  });
+  1554→
+  1555→  // Show the courier drop-off page with box sizes and balance
+  1556→  const sizeLabels: Record<string, string> = { S: 'Small', M: 'Medium', L: 'Large', XL: 'X-Large' };
+  1557→  const boxButtons = Object.entries(BOX_PRICES)
+  1558→    .map(([size, price]) => {
+  1559→      const canAfford = courier.balance >= price;
+  1560→      return `
+  1561→        <form action="/api/kiosk-action" method="POST" style="display:inline-block;">
+  1562→          <input type="hidden" name="flow" value="dropoff">
+  1563→          <input type="hidden" name="step" value="courier_dropoff">
+  1564→          <input type="hidden" name="courierId" value="${esc(courier.id)}">
+  1565→          <input type="hidden" name="boxSize" value="${esc(size)}">
+  1566→          <button type="submit" class="box-btn box-${esc(size)}" ${canAfford ? '' : 'disabled'}
+  1567→            style="min-width:140px; text-align:center; line-height:1.3;">
+  1568→            ${esc(sizeLabels[size])}<br>
+  1569→            <span style="font-size:14px;">JMD $${price}</span>
+  1570→          </button>
+  1571→        </form>
+  1572→      `;
+  1573→    })
+  1574→    .join('');
+  1575→
+  1576→  return htmlResponse(`
+  1577→    <h2 class="title">PIN Set Successfully!</h2>
+  1578→    <p class="subtitle" style="color:#4CAF50;">Your permanent PIN is now active.</p>
+  1579→    <div class="info-box">
+  1580→      <p><span class="label">Courier:</span> <span class="value">${esc(courier.name)}</span></p>
+  1581→      <p><span class="label">Balance:</span> <span class="value" style="color:#FFD439;">JMD $${courier.balance.toFixed(2)}</span></p>
+  1582→    </div>
+  1583→    <p class="subtitle">Select box size for drop-off:</p>
+  1584→    <div class="box-sizes">
+  1585→      ${boxButtons}
+  1586→    </div>
+  1587→    <div class="legend">
+  1588→      <div class="legend-item"><div class="legend-color" style="background:#2196F3"></div> Small ($150)</div>
+  1589→      <div class="legend-item"><div class="legend-color" style="background:#4CAF50"></div> Medium ($200)</div>
+  1590→      <div class="legend-item"><div class="legend-color" style="background:#FF9800"></div> Large ($300)</div>
+  1591→      <div class="legend-item"><div class="legend-color" style="background:#9C27B0"></div> X-Large ($400)</div>
+  1592→    </div>
+  1593→    <a href="/kiosk-lite" class="btn btn-back" style="margin-top:20px; display:inline-block;">Cancel</a>
+  1594→  `);
+  1595→}
+  1596→
+  1597→// ============================================
+  1598→// DROP-OFF: Courier drop-off
+  1599→// ============================================
+  1600→async function handleCourierDropoff(formData: FormData): Promise<NextResponse> {
+  1601→  try {
+  1602→    const courierId = formData.get('courierId') as string;
+  1603→    const boxSize = formData.get('boxSize') as string;
+  1604→
+  1605→    if (!courierId || !boxSize) {
+  1606→      return htmlResponse(`
+  1607→        <h2 class="title">Error</h2>
+  1608→        <p class="error-msg">Missing courier or box size information.</p>
+  1609→        <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1610→      `);
+  1611→    }
+  1612→
+  1613→    const courier = await db.courier.findUnique({ where: { id: courierId } });
+  1614→    if (!courier || courier.status !== 'ACTIVE') {
+  1615→      return htmlResponse(`
+  1616→        <h2 class="title">Error</h2>
+  1617→        <p class="error-msg">Courier account not found or inactive.</p>
+  1618→        <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1619→      `);
+  1620→    }
+  1621→
+  1622→    const boxPrice = BOX_PRICES[boxSize] || 0;
+  1623→    if (courier.balance < boxPrice) {
+  1624→      return htmlResponse(`
+  1625→        <h2 class="title">Insufficient Balance</h2>
+  1626→        <p class="error-msg">Need JMD $${boxPrice}, but balance is JMD $${courier.balance.toFixed(2)}.</p>
+  1627→        <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Back to Login</a>
+  1628→        <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Home</a>
+  1629→      `);
+  1630→    }
+  1631→
+  1632→    // ============================================
+  1633→    // ALLOCATE LOCKER FROM DATABASE (source of truth)
+  1634→    // ============================================
+  1635→    const allocation = await allocateLocker(boxSize as 'S' | 'M' | 'L' | 'XL');
+  1636→
+  1637→    if (!allocation.success) {
+  1638→      const err = allocation as { success: false; error: string; statusCode: number };
+  1639→      return htmlResponse(`
+  1640→        <h2 class="title">No Lockers Available</h2>
+  1641→        <p class="error-msg">${esc(err.error)}</p>
+  1642→        <a href="/kiosk-lite?action=courier-login" class="btn btn-primary">Try Again</a>
+  1643→        <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Home</a>
+  1644→      `);
+  1645→    }
+  1646→
+  1647→    const alloc = allocation as typeof allocation & { success: true };
+  1648→
+  1649→    // Use Bestwond box name if available, otherwise use DB box number
+  1650→    const boxName = alloc.bestwondBoxName || String(alloc.box.boxNumber).padStart(2, '0');
+  1651→    const bestwondOrderNo = alloc.orderNo;
+  1652→    const bestwondSaveCode = alloc.saveCode;
+  1653→    const bestwondPickCode = alloc.pickCode;
+  1654→
+  1655→    // Find or create customer for courier
+  1656→    const courierPhone = courier.phone || `${courier.code}@courier.local`;
+  1657→    let customer = await db.user.findFirst({
+  1658→      where: courier.phone ? { phone: courier.phone } : { email: `${courier.code}@courier.local` },
+  1659→    });
+  1660→    if (!customer) {
+  1661→      customer = await db.user.create({
+  1662→        data: {
+  1663→          name: courier.name,
+  1664→          phone: courier.phone || '',
+  1665→          email: courier.email || `${courier.code}@courier.local`,
+  1666→          role: 'CUSTOMER',
+  1667→        },
+  1668→      });
+  1669→    }
+  1670→
+  1671→    // Create ExpressOrder
+  1672→    await db.expressOrder.create({
+  1673→      data: {
+  1674→        orderNo: bestwondOrderNo,
+  1675→        deviceId: alloc.device.deviceId,
+  1676→        boxName,
+  1677→        boxSize,
+  1678→        saveCode: bestwondSaveCode,
+  1679→        pickCode: bestwondPickCode,
+  1680→        status: 'CREATED',
+  1681→        customerName: courier.name,
+  1682→        customerPhone: courier.phone || '',
+  1683→        courierName: courier.name,
+  1684→      },
+  1685→    });
+  1686→
+  1687→    // Create main Order
+  1688→    const order = await db.order.create({
+  1689→      data: {
+  1690→        orderNumber: bestwondOrderNo,
+  1691→        trackingCode: bestwondPickCode,
+  1692→        customerId: customer.id,
+  1693→        customerName: courier.name,
+  1694→        customerPhone: courier.phone || '',
+  1695→        deviceId: alloc.device.id,
+  1696→        boxId: alloc.box.id,
+  1697→        boxNumber: alloc.box.boxNumber,
+  1698→        courierId: courier.id,
+  1699→        courierName: courier.name,
+  1700→        packageSize: boxSize,
+  1701→        status: 'PENDING',
+  1702→        storageStartAt: new Date(),
+  1703→      },
+  1704→    });
+  1705→
+  1706→    // Deduct courier balance
+  1707→    await db.courier.update({
+  1708→      where: { id: courier.id },
+  1709→      data: {
+  1710→        balance: { decrement: boxPrice },
+  1711→        totalDropOffs: { increment: 1 },
+  1712→        totalSpent: { increment: boxPrice },
+  1713→        lastActivityAt: new Date(),
+  1714→      },
+  1715→    });
+  1716→
+  1717→    // Create courier transaction
+  1718→    await db.courierTransaction.create({
+  1719→      data: {
+  1720→        courierId: courier.id,
+  1721→        type: 'DROP_OFF',
+  1722→        amount: -boxPrice,
+  1723→        balanceAfter: courier.balance - boxPrice,
+  1724→        orderId: order.id,
+  1725→        reference: bestwondOrderNo,
+  1726→        description: `Drop-off: ${boxSize} box, Order ${bestwondOrderNo}`,
+  1727→        paymentMethod: 'PREPAID',
+  1728→      },
+  1729→    });
+  1730→
+  1731→    // Try to open the box via Bestwond (non-blocking — already allocated from DB)
+  1732→    let boxOpened = false;
+  1733→    try {
+  1734→      const credentials = await getCredentialsForDevice(alloc.device.id);
+  1735→      const result = await expressSaveOrTakeWithCredentials(
+  1736→        alloc.device.deviceId,
+  1737→        boxSize as 'S' | 'M' | 'L' | 'XL',
+  1738→        bestwondSaveCode,
+  1739→        'save',
+  1740→        credentials
+  1741→      );
+  1742→      boxOpened = result.code === 0;
+  1743→    } catch (bestwondError) {
+  1744→      console.error('[Courier Drop-Off] Bestwond express save error (non-fatal):', bestwondError);
+  1745→      // Try direct open as fallback
+  1746→      try {
+  1747→        const credentials = await getCredentialsForDevice(alloc.device.id);
+  1748→        const openResult = await openBoxWithCredentials(
+  1749→          alloc.device.deviceId,
+  1750→          alloc.box.boxNumber,
+  1751→          credentials
+  1752→        );
+  1753→        boxOpened = openResult.code === 0;
+  1754→      } catch (openError) {
+  1755→        console.error('[Courier Drop-Off] Direct box open error (non-fatal):', openError);
+  1756→      }
+  1757→    }
+  1758→
+  1759→    // Send SMS if courier has phone
+  1760→    if (courier.phone) {
+  1761→      try {
+  1762→        await sendSMS(
+  1763→          courier.phone,
+  1764→          `Pickup Jamaica: Drop-off confirmed. Order ${bestwondOrderNo}. Pickup code for recipient: ${bestwondPickCode}. Box: ${boxName}.`
+  1765→        );
+  1766→      } catch (smsError) {
+  1767→        console.error('Failed to send courier SMS:', smsError);
+  1768→      }
+  1769→    }
+  1770→
+  1771→    // Create activity log
+  1772→    await db.activity.create({
+  1773→      data: {
+  1774→        userId: customer.id,
+  1775→        action: 'COURIER_DROP_OFF',
+  1776→        description: `Courier ${courier.name} dropped off package. Box: ${boxName}, Size: ${boxSize}, Order: ${bestwondOrderNo}${alloc.bestwondRegistered ? '' : ' (DB-only allocation)'}`,
+  1777→        orderId: order.id,
+  1778→      },
+  1779→    });
+  1780→
+  1781→    const newBalance = courier.balance - boxPrice;
+  1782→
+  1783→    // Show success page
+  1784→    return htmlResponse(`
+  1785→      <div class="success-icon">&#10003;</div>
+  1786→      <h2 class="title">Drop-Off Complete!</h2>
+  1787→      <p class="subtitle">Place your package inside and close the door.</p>
+  1788→      <div class="info-box">
+  1789→        <p style="text-align:center; color:#999999;">Pickup Code (give to recipient)</p>
+  1790→        <div class="code-display">${esc(bestwondPickCode)}</div>
+  1791→      </div>
+  1792→      <div class="info-box">
+  1793→        <p><span class="label">Order:</span> <span class="value">${esc(bestwondOrderNo)}</span></p>
+  1794→        <p><span class="label">Box:</span> <span class="value">${esc(boxName)}</span></p>
+  1795→        <p><span class="label">Size:</span> <span class="value">${esc(boxSize)}</span></p>
+  1796→        <p><span class="label">Cost:</span> <span class="value">JMD $${boxPrice}</span></p>
+  1797→        <p><span class="label">Remaining Balance:</span> <span class="value" style="color:#FFD439;">JMD $${newBalance.toFixed(2)}</span></p>
+  1798→      </div>
+  1799→      <a href="/kiosk-lite" class="btn btn-primary">DONE</a>
+  1800→    `);
+  1801→  } catch (error) {
+  1802→    console.error('[Courier Drop-Off] Error:', error);
+  1803→    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+  1804→    return htmlResponse(`
+  1805→      <h2 class="title">Drop-Off Error</h2>
+  1806→      <p class="error-msg">Something went wrong processing your drop-off. Please try again.</p>
+  1807→      <div class="info-box">
+  1808→        <p style="text-align:center; font-size:14px; color:#999;">${esc(errorMsg)}</p>
+  1809→      </div>
+  1810→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1811→      <a href="/kiosk-lite?action=courier-login" class="btn btn-back" style="margin-top:15px; display:inline-block;">Try Again</a>
+  1812→    `);
+  1813→  }
+  1814→}
+  1815→
+  1816→
+  1817→// ============================================
+  1818→// PICKUP: Lookup by pickCode
+  1819→// ============================================
+  1820→async function handlePickupLookup(formData: FormData): Promise<NextResponse> {
+  1821→  const pickCode = formData.get('pickCode') as string;
+  1822→
+  1823→  if (!pickCode || pickCode.length < 4) {
+  1824→    return htmlResponse(`
+  1825→      <h2 class="title">Invalid Code</h2>
+  1826→      <p class="error-msg">Please enter a valid pickup code.</p>
+  1827→      <a href="/kiosk-lite?action=pickup" class="btn btn-primary">Try Again</a>
+  1828→    `);
+  1829→  }
+  1830→
+  1831→  // Check ExpressOrder by pickCode where status=STORED
+  1832→  const expressOrder = await db.expressOrder.findFirst({
+  1833→    where: { pickCode, status: 'STORED' },
+  1834→  });
+  1835→
+  1836→  // Also check Order table by trackingCode
+  1837→  const order = await db.order.findUnique({
+  1838→    where: { trackingCode: pickCode },
+  1839→    include: { device: true, box: true },
+  1840→  });
+  1841→
+  1842→  if (!expressOrder && !order) {
+  1843→    return htmlResponse(`
+  1844→      <h2 class="title">Not Found</h2>
+  1845→      <p class="error-msg">No package found with this code.</p>
+  1846→      <a href="/kiosk-lite?action=pickup" class="btn btn-primary">Try Again</a>
+  1847→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Back to Home</a>
+  1848→    `);
+  1849→  }
+  1850→
+  1851→  // Check if already picked up
+  1852→  if (expressOrder?.status === 'PICKED_UP' || order?.status === 'PICKED_UP') {
+  1853→    return htmlResponse(`
+  1854→      <h2 class="title">Already Picked Up</h2>
+  1855→      <p class="error-msg">This package has already been collected.</p>
+  1856→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1857→    `);
+  1858→  }
+  1859→
+  1860→  // Calculate storage fee
+  1861→  const storageStart =
+  1862→    order?.storageStartAt || order?.dropOffAt || order?.createdAt || expressOrder?.createdAt;
+  1863→  let storageFee = 0;
+  1864→  let storageDays = 0;
+  1865→
+  1866→  if (storageStart) {
+  1867→    const calc = getStorageCalculation(new Date(storageStart));
+  1868→    storageFee = calc.storageFee;
+  1869→    storageDays = calc.totalDays;
+  1870→  }
+  1871→
+  1872→  // If fee > 0, check for saved card before showing payment page
+  1873→  if (storageFee > 0) {
+  1874→    // Auto-create/find user account from phone number
+  1875→    const customerPhone = expressOrder?.customerPhone || order?.customerPhone || '';
+  1876→    let customerId = order?.customerId || '';
+  1877→
+  1878→    if (customerPhone && !customerId) {
+  1879→      // Find or create user account
+  1880→      let customer = await db.user.findFirst({ where: { phone: customerPhone } });
+  1881→      if (!customer) {
+  1882→        customer = await db.user.create({
+  1883→          data: {
+  1884→            phone: customerPhone,
+  1885→            email: `${customerPhone}@pickup.local`,
+  1886→            name: expressOrder?.customerName || order?.customerName || 'Customer',
+  1887→            role: 'CUSTOMER',
+  1888→          },
+  1889→        });
+  1890→      }
+  1891→      customerId = customer.id;
+  1892→    }
+  1893→
+  1894→    // Check if this customer has a saved card
+  1895→    const savedCard = customerId
+  1896→      ? await db.savedPaymentMethod.findFirst({
+  1897→          where: { userId: customerId, isActive: true },
+  1898→          orderBy: [{ isDefault: 'desc' }, { lastUsedAt: 'desc' }],
+  1899→        })
+  1900→      : null;
+  1901→
+  1902→    if (savedCard) {
+  1903→      // Customer has a saved card — redirect to one-tap confirm screen
+  1904→      const orderId = order?.id || '';
+  1905→      const boxName = expressOrder?.boxName || (order?.boxNumber?.toString().padStart(2, '0') || '');
+  1906→      return NextResponse.redirect(
+  1907→        new URL(
+  1908→          `/kiosk-lite?action=confirm-charge&amount=${storageFee}&brand=${encodeURIComponent(savedCard.brand || '')}&last4=${savedCard.last4 || '****'}&cardToken=${encodeURIComponent(savedCard.cardToken)}&orderId=${encodeURIComponent(orderId)}&boxName=${encodeURIComponent(boxName)}`,
+  1909→          'https://pickupja.com'
+  1910→        ),
+  1911→        303
+  1912→      );
+  1913→    }
+  1914→
+  1915→    // No saved card — show QR payment page
+  1916→    return htmlResponse(`
+  1917→      <h2 class="title">Storage Fee Required</h2>
+  1918→      <div class="info-box">
+  1919→        <p><span class="label">Days Stored:</span> <span class="value">${storageDays}</span></p>
+  1920→        <p><span class="label">Storage Fee:</span> <span class="value" style="color:#FFD439;">JMD $${storageFee}</span></p>
+  1921→      </div>
+  1922→      <p class="subtitle">Pay the storage fee to retrieve your package.</p>
+  1923→      <form action="/api/kiosk-action" method="POST">
+  1924→        <input type="hidden" name="flow" value="pickup">
+  1925→        <input type="hidden" name="step" value="pay_storage_fee">
+  1926→        <input type="hidden" name="pickCode" value="${esc(pickCode)}">
+  1927→        <input type="hidden" name="storageFee" value="${storageFee}">
+  1928→        <input type="hidden" name="expressOrderId" value="${esc(expressOrder?.id || '')}">
+  1929→        <input type="hidden" name="orderId" value="${esc(order?.id || '')}">
+  1930→        <button type="submit" class="btn btn-primary">PAY STORAGE FEE (JMD $${storageFee})</button>
+  1931→      </form>
+  1932→      <a href="/kiosk-lite" class="btn btn-back" style="margin-top:15px; display:inline-block;">Cancel</a>
+  1933→    `);
+  1934→  }
+  1935→
+  1936→  // No fee – open locker directly
+  1937→  return await openLockerForPickup(pickCode, expressOrder, order);
+  1938→}
+  1939→
+  1940→// ============================================
+  1941→// PICKUP: Pay storage fee
+  1942→// ============================================
+  1943→async function handlePayStorageFee(formData: FormData): Promise<NextResponse> {
+  1944→  const pickCode = formData.get('pickCode') as string;
+  1945→  const storageFee = parseFloat(formData.get('storageFee') as string);
+  1946→
+  1947→  if (!pickCode || !storageFee || storageFee <= 0) {
+  1948→    return htmlResponse(`
+  1949→      <h2 class="title">Error</h2>
+  1950→      <p class="error-msg">Invalid payment information.</p>
+  1951→      <a href="/kiosk-lite" class="btn btn-primary">Back to Home</a>
+  1952→    `);
+  1953→  }
+  1954→
+  1955→  // Get phone from order
+  1956→  const expressOrder = await db.expressOrder.findFirst({ where: { pickCode } });
+  1957→  const order = await db.order.findUnique({ where: { trackingCode: pickCode } });
+  1958→  const phone = expressOrder?.customerPhone || order?.customerPhone || '';
+  1959→
+  1960→  // Create demo payment for storage fee
+  1961→  const paymentId = `SF-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+  1962→  const paymentUrl = `https://pickupja.com/pay/${paymentId}`;
+  1963→  const qrCodeDataUrl = await generateQRCodeDataUrl(paymentUrl);
+  1964→
+  1965→  // Store in DB
+  1966→  await db.setting.upsert({
+  1967→    where: { key: `demo_payment_${paymentId}` },
+  1968→    create: {
+  1969→      key: `demo_payment_${paymentId}`,
+  1970→      value: JSON.stringify({
+  1971→        saveCode: '',
+  1972→        pickCode,
+  1973→        boxSize: '',
+  1974→        phone,
+  1975→        amount: storageFee,
+  1976→        createdAt: Date.now(),
+  1977→        status: 'PENDING',
+  1978→        type: 'storage_fee',
+  1979→      }),
+  1980→      description: `Storage Fee Payment: ${paymentId}`,
+  1981→    },
+  1982→    update: {
+  1983→      value: JSON.stringify({
+  1984→        saveCode: '',
+  1985→        pickCode,
+  1986→        boxSize: '',
+  1987→        phone,
+  1988→        amount: storageFee,
+  1989→        createdAt: Date.now(),
+  1990→        status: 'PENDING',
+  1991→        type: 'storage_fee',
+  1992→      }),
+  1993→    },
+  1994→  });
+  1995→
+  1996→  const pollUrl = `/api/kiosk-action?flow=pickup&step=check_storage_payment&paymentId=${encodeURIComponent(paymentId)}`;
+  1997→  const qrImg = qrCodeDataUrl
+  1998→    ? `<div class="qr-container"><img src="${qrCodeDataUrl}" alt="Payment QR Code" /></div>`
+  1999→    : '<p style="text-align:center; color:#999;">QR code unavailable</p>';
+  2000→
+
+[showing lines 1-2000 of 2509; use offset=2001 with limit to continue reading]

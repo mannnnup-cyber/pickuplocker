@@ -7,6 +7,8 @@
   "/api/account/route": "/api/account",
   "/api/activity/route": "/api/activity",
   "/api/admin/sync-schema/route": "/api/admin/sync-schema",
+  "/api/app-version/download/route": "/api/app-version/download",
+  "/api/app-version/route": "/api/app-version",
   "/api/auth/login/route": "/api/auth/login",
   "/api/auth/logout/route": "/api/auth/logout",
   "/api/auth/session/route": "/api/auth/session",
