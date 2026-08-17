@@ -13,20 +13,34 @@
  *   npx tsx scripts/bestwond-live-diagnostic.ts
  *
  * Environment (REQUIRED — no hardcoded defaults):
- *   BESTWOND_APP_ID       — Bestwond API app ID
- *   BESTWOND_APP_SECRET   — Bestwond API app secret
- *   BESTWOND_DEVICE_ID    — Bestwond device number (e.g., 2100018247)
- *   BESTWOND_BASE_URL     — (default: https://api.bestwond.com)
- *   BESTWOND_TEST_BOX     — Box number to test (must be EMPTY, e.g., 1)
+ *   BESTWOND_APP_ID           — Bestwond API app ID
+ *   BESTWOND_APP_SECRET       — Bestwond API app secret
+ *   BESTWOND_DEVICE_ID        — Bestwond device number (e.g., 2100018247)
+ *   BESTWOND_TEST_BOX         — Box number to test (must be EMPTY, e.g., 1)
+ *   BESTWOND_TEST_LOCK_ADDRESS — Actual lock address for the test box (e.g., "0101")
+ *   BESTWOND_BASE_URL         — (default: https://api.bestwond.com)
+ *   BESTWOND_DIAGNOSTIC_ID    — (optional) correlation ID for callback matching
+ *
+ * Lock address resolution:
+ *   The lock address is NOT derived from the box number. It must be provided
+ *   via BESTWOND_TEST_LOCK_ADDRESS and cross-verified against the Bestwond
+ *   box-list API. If the values disagree, the diagnostic STOPS.
+ *
+ * Callback persistence:
+ *   Callbacks are captured via Vercel logs with a unique diagnostic
+ *   correlation ID. In-memory storage is NOT used (unreliable on serverless).
+ *   The /api/diagnostics/bestwond-callback endpoint logs each callback with
+ *   the diagnostic ID so it can be found in Vercel log search.
  *
  * Logging rules:
  *   ✅ May show: device number, box number, lock address, response codes,
- *      status fields, task IDs, timing
- *   ❌ Never show: app secret, signatures, customer data, credentials
+ *      status fields, task IDs, timing, diagnostic correlation ID
+ *   ❌ Never show: app ID, app secret, signatures, customer data, credentials
  */
 
 import crypto from 'crypto';
 import { createHash } from 'crypto';
+import { createInterface } from 'readline';
 
 // ============================================
 // Configuration — environment only, no defaults for secrets
@@ -37,6 +51,11 @@ const APP_SECRET = process.env.BESTWOND_APP_SECRET || '';
 const DEVICE_NUMBER = process.env.BESTWOND_DEVICE_ID || '';
 const BASE_URL = process.env.BESTWOND_BASE_URL || 'https://api.bestwond.com';
 const TEST_BOX = parseInt(process.env.BESTWOND_TEST_BOX || '0', 10);
+const PROVIDED_LOCK_ADDRESS = process.env.BESTWOND_TEST_LOCK_ADDRESS || '';
+
+// Diagnostic correlation ID — used to match callbacks in Vercel logs
+const DIAGNOSTIC_ID = process.env.BESTWOND_DIAGNOSTIC_ID ||
+  `diag-${Date.now()}-${crypto.randomUUID().substring(0, 8)}`;
 
 if (!APP_ID || !APP_SECRET || !DEVICE_NUMBER || !TEST_BOX) {
   console.error('ERROR: Set BESTWOND_APP_ID, BESTWOND_APP_SECRET, BESTWOND_DEVICE_ID, and BESTWOND_TEST_BOX environment variables.');
@@ -44,9 +63,18 @@ if (!APP_ID || !APP_SECRET || !DEVICE_NUMBER || !TEST_BOX) {
   process.exit(1);
 }
 
-// Default lock address format: "01" + box number in lowercase HEX (2 chars)
-const BOX_HEX = TEST_BOX.toString(16).toLowerCase().padStart(2, '0');
-const DEFAULT_LOCK_ADDRESS = `01${BOX_HEX}`;
+if (!PROVIDED_LOCK_ADDRESS) {
+  console.error('ERROR: Set BESTWOND_TEST_LOCK_ADDRESS to the actual lock address for the test box.');
+  console.error('Do NOT derive the lock address from the box number.');
+  console.error('Obtain it from an authoritative source:');
+  console.error('  1. The Box.lockAddress database value in Pickup Ja');
+  console.error('  2. The Bestwond box-list API (/api/iot/device/box/list/)');
+  console.error('  3. An existing known-working configuration');
+  process.exit(1);
+}
+
+// Resolved lock address — set after cross-verification
+let LOCK_ADDRESS = '';
 
 // ============================================
 // Bestwond API helpers (standalone — no production imports)
@@ -89,7 +117,7 @@ async function bestwondPost(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'PickupLocker-Diagnostic/1.0',
+        'User-Agent': 'PickupLocker-Diagnostic/2.0',
         'Accept': 'application/json',
       },
       body: JSON.stringify(params),
@@ -128,6 +156,7 @@ function sanitize(obj: unknown): unknown {
   const REDACT_KEYS = new Set([
     'sign', 'signature', 'app_secret', 'appSecret', 'secret',
     'password', 'token', 'access_token', 'accessToken',
+    'app_id', 'appId', // Do not expose even partial App ID
   ]);
 
   const result: Record<string, unknown> = {};
@@ -161,6 +190,138 @@ function logResult(label: string, data: unknown) {
 }
 
 // ============================================
+// Lock address resolution
+// ============================================
+
+async function resolveLockAddress(): Promise<{
+  resolved: string;
+  source: string;
+  apiLockAddress?: string;
+  discrepancy?: boolean;
+}> {
+  section('LOCK ADDRESS RESOLUTION');
+
+  console.log(`\n  Provided lock address: ${PROVIDED_LOCK_ADDRESS}`);
+  console.log(`  Source: BESTWOND_TEST_LOCK_ADDRESS environment variable`);
+
+  // Query Bestwond box-list API to cross-verify
+  console.log('\n  Querying Bestwond box-list API for cross-verification...');
+
+  const boxListParams = {
+    app_id: APP_ID,
+    timestamps: getTimestamp(),
+    device_number: DEVICE_NUMBER,
+  };
+  const boxListResult = await bestwondPost('/api/iot/device/box/list/', boxListParams);
+  const boxListBody = boxListResult.body as Record<string, unknown> | null;
+  const boxListCode = boxListBody?.code;
+  const boxListData = (boxListBody?.data || {}) as Record<string, unknown>;
+  const boxes = Array.isArray(boxListData) ? boxListData :
+    Array.isArray((boxListData as Record<string, unknown>)?.list) ?
+    (boxListData as Record<string, unknown>).list : [];
+
+  let apiLockAddress: string | undefined;
+  let apiBoxFound = false;
+
+  if (boxListCode === 0 && boxes.length > 0) {
+    console.log(`  Box-list API returned ${boxes.length} box(es).`);
+
+    // Search for our test box by box_name (formatted as 2-digit string)
+    const targetBoxName = String(TEST_BOX).padStart(2, '0');
+    for (const box of boxes) {
+      const b = box as Record<string, unknown>;
+      // Match by box_name or box_number
+      const boxName = String(b.box_name || '');
+      const boxNumber = b.box_number ? parseInt(String(b.box_number), 10) : 0;
+      if (boxName === targetBoxName || boxNumber === TEST_BOX) {
+        apiLockAddress = String(b.lock_address || '');
+        apiBoxFound = true;
+        console.log(`  Found box #${TEST_BOX} in box-list:`);
+        console.log(`    box_name:      ${b.box_name}`);
+        console.log(`    box_number:    ${b.box_number}`);
+        console.log(`    lock_address:  ${b.lock_address}`);
+        console.log(`    box_size:      ${b.box_size}`);
+        break;
+      }
+    }
+
+    if (!apiBoxFound) {
+      console.log(`  ⚠️  Box #${TEST_BOX} NOT found in Bestwond box-list API response.`);
+      console.log('  Available boxes:');
+      for (const box of boxes) {
+        const b = box as Record<string, unknown>;
+        console.log(`    box_name=${b.box_name}, box_number=${b.box_number}, lock_address=${b.lock_address}`);
+      }
+    }
+  } else {
+    console.log(`  ⚠️  Box-list API call failed (code=${boxListCode}). Cannot cross-verify.`);
+  }
+
+  // Cross-verify provided lock address vs API lock address
+  if (apiBoxFound && apiLockAddress) {
+    if (apiLockAddress === PROVIDED_LOCK_ADDRESS) {
+      console.log('\n  ✅ PROVIDED lock address MATCHES Bestwond box-list API value.');
+      return { resolved: PROVIDED_LOCK_ADDRESS, source: 'BESTWOND_TEST_LOCK_ADDRESS (verified against Bestwond box-list API)', apiLockAddress, discrepancy: false };
+    } else {
+      console.log('\n  ❌ DISCREPANCY: PROVIDED lock address does NOT match Bestwond box-list API!');
+      console.log(`     Provided:  ${PROVIDED_LOCK_ADDRESS}`);
+      console.log(`     API value: ${apiLockAddress}`);
+      console.log('\n  STOPPING. Resolve the discrepancy before running any OPEN command.');
+      console.log('  Possible causes:');
+      console.log('    - Wrong BESTWOND_TEST_LOCK_ADDRESS env var');
+      console.log('    - Box number maps to a different lock address than expected');
+      console.log('    - Device configuration changed on Bestwond side');
+      return { resolved: '', source: 'DISCREPANCY', apiLockAddress, discrepancy: true };
+    }
+  }
+
+  // API call failed or box not found — use provided value but warn
+  if (!apiBoxFound) {
+    console.log('\n  ⚠️  Could not cross-verify lock address against Bestwond API.');
+    console.log('  Using BESTWOND_TEST_LOCK_ADDRESS as-is. Verify manually before opening.');
+    return { resolved: PROVIDED_LOCK_ADDRESS, source: 'BESTWOND_TEST_LOCK_ADDRESS (could not verify against API — box not found in list)', discrepancy: false };
+  }
+
+  // Fallback (should not reach here)
+  return { resolved: PROVIDED_LOCK_ADDRESS, source: 'BESTWOND_TEST_LOCK_ADDRESS', discrepancy: false };
+}
+
+// ============================================
+// Explicit confirmation before OPEN
+// ============================================
+
+async function confirmOpen(): Promise<boolean> {
+  console.log('\n┌─────────────────────────────────────────────────────────────────┐');
+  console.log('│  ⚠️  PHYSICAL DOOR OPEN — EXPLICIT CONFIRMATION REQUIRED        │');
+  console.log('├─────────────────────────────────────────────────────────────────┤');
+  console.log(`│  Device:       ${String(DEVICE_NUMBER).padEnd(48)}│`);
+  console.log(`│  Box:          ${String(TEST_BOX).padEnd(48)}│`);
+  console.log(`│  Lock address: ${String(LOCK_ADDRESS).padEnd(48)}│`);
+  console.log('├─────────────────────────────────────────────────────────────────┤');
+  console.log('│  This will physically open the door.                            │');
+  console.log('│  Do NOT proceed if the box contains a customer package.         │');
+  console.log('│                                                                 │');
+  console.log('│  Type OPEN to continue, anything else to abort.                 │');
+  console.log('└─────────────────────────────────────────────────────────────────┘');
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question('> ', (answer) => {
+      rl.close();
+      if (answer.trim() === 'OPEN') {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+  });
+}
+
+// ============================================
 // Main diagnostic
 // ============================================
 
@@ -171,12 +332,45 @@ async function main() {
   console.log('╚════════════════════════════════════════════════════════════════════╝');
 
   console.log('\nTest Configuration:');
-  console.log(`  Device Number: ${DEVICE_NUMBER}`);
-  console.log(`  Test Box:      ${TEST_BOX}`);
-  console.log(`  Lock Address:  ${DEFAULT_LOCK_ADDRESS} (default HEX format)`);
-  console.log(`  Base URL:      ${BASE_URL}`);
-  console.log(`  App ID:        ${APP_ID.substring(0, 8)}...[REDACTED]`);
-  console.log(`  Timestamp:     ${getTimestamp()}`);
+  console.log(`  Device Number:    ${DEVICE_NUMBER}`);
+  console.log(`  Test Box:         ${TEST_BOX}`);
+  console.log(`  Lock Address:     (resolving — see below)`);
+  console.log(`  Base URL:         ${BASE_URL}`);
+  console.log(`  Diagnostic ID:    ${DIAGNOSTIC_ID}`);
+  console.log(`  Timestamp:        ${getTimestamp()}`);
+
+  // ========================================
+  // LOCK ADDRESS RESOLUTION
+  // ========================================
+  const lockResolution = await resolveLockAddress();
+
+  if (lockResolution.discrepancy) {
+    console.log('\n❌ ABORTED: Lock address discrepancy detected.');
+    console.log('   Resolve the discrepancy and re-run with the correct BESTWOND_TEST_LOCK_ADDRESS.');
+    process.exit(1);
+  }
+
+  if (!lockResolution.resolved) {
+    console.log('\n❌ ABORTED: Could not resolve lock address.');
+    process.exit(1);
+  }
+
+  LOCK_ADDRESS = lockResolution.resolved;
+
+  console.log('\n─── Lock Address Resolution Result ───');
+  console.log(`  Device number:    ${DEVICE_NUMBER}`);
+  console.log(`  Box number:       ${TEST_BOX}`);
+  console.log(`  Actual lock addr: ${LOCK_ADDRESS}`);
+  console.log(`  Source:           ${lockResolution.source}`);
+  if (lockResolution.apiLockAddress) {
+    console.log(`  API lock addr:    ${lockResolution.apiLockAddress}`);
+  }
+
+  // Do NOT automatically open unless the actual lock address has been resolved
+  if (!LOCK_ADDRESS) {
+    console.log('\n❌ ABORTED: Actual lock address not resolved. Cannot proceed.');
+    process.exit(1);
+  }
 
   // ========================================
   // TEST 1 — Device connectivity
@@ -218,13 +412,13 @@ async function main() {
   section('TEST 2 — Box Status while CLOSED (/api/iot/device/box/status/)');
 
   console.log('\n⚠️  Ensure the test box is PHYSICALLY CLOSED before proceeding.');
-  console.log(`   Test box: #${TEST_BOX} (lock_address: ${DEFAULT_LOCK_ADDRESS})`);
+  console.log(`   Test box: #${TEST_BOX} (lock_address: ${LOCK_ADDRESS})`);
 
   const t2Params = {
     app_id: APP_ID,
     timestamps: getTimestamp(),
     device_number: DEVICE_NUMBER,
-    lock_address: DEFAULT_LOCK_ADDRESS,
+    lock_address: LOCK_ADDRESS,
   };
   const t2 = await bestwondPost('/api/iot/device/box/status/', t2Params);
   results.test2_boxStatusClosed = logResult('Raw sanitized response (door CLOSED)', {
@@ -245,19 +439,29 @@ async function main() {
   console.log(`  All data keys:     ${Object.keys(t2Data).join(', ')}`);
 
   // ========================================
-  // TEST 3 — Open the test box
+  // TEST 3 — Open the test box (REQUIRES EXPLICIT CONFIRMATION)
   // ========================================
   section('TEST 3 — Open the Test Box (/api/iot/open/box/)');
 
   console.log('\n⚠️  About to send OPEN command to the physical locker.');
-  console.log(`   Device: ${DEVICE_NUMBER}, Box: ${TEST_BOX}, Lock: ${DEFAULT_LOCK_ADDRESS}`);
+  console.log(`   Device: ${DEVICE_NUMBER}, Box: ${TEST_BOX}, Lock: ${LOCK_ADDRESS}`);
   console.log('   This will physically open the door. Do NOT proceed if box is occupied.');
+
+  // Require explicit confirmation
+  const confirmed = await confirmOpen();
+  if (!confirmed) {
+    console.log('\n❌ ABORTED: Confirmation denied. Exiting without opening the box.');
+    console.log('   All previous diagnostic results are still valid.');
+    process.exit(0);
+  }
+
+  console.log('\n✅ Confirmation received. Sending OPEN command...');
 
   const t3Params = {
     app_id: APP_ID,
     timestamps: getTimestamp(),
     device_number: DEVICE_NUMBER,
-    lock_address: DEFAULT_LOCK_ADDRESS,
+    lock_address: LOCK_ADDRESS,
     use_type: 'S',
   };
   const t3 = await bestwondPost('/api/iot/open/box/', t3Params);
@@ -293,13 +497,13 @@ async function main() {
   // ========================================
   // TEST 4 — Box status while physically OPEN
   // ========================================
-  section('TEST 4 — Box Status while physically OPEN (/api/iot/device/box/status/)');
+  section('TEST 4 — Box Status while physically open (/api/iot/device/box/status/)');
 
   const t4Params = {
     app_id: APP_ID,
     timestamps: getTimestamp(),
     device_number: DEVICE_NUMBER,
-    lock_address: DEFAULT_LOCK_ADDRESS,
+    lock_address: LOCK_ADDRESS,
   };
   const t4 = await bestwondPost('/api/iot/device/box/status/', t4Params);
   results.test4_boxStatusOpen = logResult('Raw sanitized response (door OPEN)', {
@@ -346,6 +550,17 @@ async function main() {
   // ========================================
   section('TEST 5 — Bestwond Callback Behavior');
 
+  console.log(`\nDiagnostic Correlation ID: ${DIAGNOSTIC_ID}`);
+  console.log('\nCallback persistence method: Vercel logs');
+  console.log('  - The /api/diagnostics/bestwond-callback endpoint logs each callback');
+  console.log('    with the diagnostic correlation ID to Vercel serverless logs.');
+  console.log('  - In-memory storage is NOT used (unreliable on serverless — instances');
+  console.log('    restart, POST and GET hit different instances).');
+  console.log('  - To retrieve captured callbacks: search Vercel logs for the');
+  console.log(`    correlation ID: ${DIAGNOSTIC_ID}`);
+  console.log('  - The callback endpoint does NOT update orders, boxes, or payments.');
+  console.log('  - It only records sanitized callback data.');
+
   // Check if callback address is configured
   console.log('\nChecking current callback address configuration...');
 
@@ -354,11 +569,6 @@ async function main() {
     timestamps: getTimestamp(),
     device_number: DEVICE_NUMBER,
   };
-
-  // Try to get current callback config
-  // The Bestwond API endpoint for callback is:
-  // /api/iot/device/set/box/callback/address/ (POST)
-  // We first query what's configured
 
   const t5 = await bestwondPost('/api/iot/device/set/box/callback/address/', t5Params);
   results.test5_callbackConfig = logResult('Callback address query result', {
@@ -379,8 +589,8 @@ async function main() {
   console.log('    device_id, lock_address, lock_status, msg_style');
   console.log('  - lock_status=0 is believed to mean OPEN');
   console.log('  - lock_status=1 is believed to mean CLOSED');
-  console.log('  - A protected diagnostic callback endpoint should be created');
-  console.log('    at /api/diagnostics/bestwond-callback to capture these');
+  console.log(`  - Diagnostic callback endpoint: /api/diagnostics/bestwond-callback`);
+  console.log(`  - Search Vercel logs for: ${DIAGNOSTIC_ID}`);
 
   console.log('\n⚠️  Do NOT replace an existing callback URL blindly.');
   console.log('   If a callback URL is already configured, changing it could');
@@ -512,7 +722,7 @@ async function main() {
   console.log('   - Whether the first open command after reconnection succeeds');
   console.log('');
   console.log('7. After reconnection, test opening the box:');
-  console.log(`   Call /api/iot/open/box/ with device=${DEVICE_NUMBER} box=${TEST_BOX}`);
+  console.log(`   Call /api/iot/open/box/ with device=${DEVICE_NUMBER} box=${TEST_BOX} lock=${LOCK_ADDRESS}`);
   console.log('   Verify the physical door opens.');
 
   // Run a quick online check to confirm current state
@@ -558,6 +768,8 @@ async function main() {
   console.log(`  data.lock_status:  ${t4Data.lock_status}`);
 
   console.log('\n─── E. Callback ───');
+  console.log(`  Persistence method: Vercel logs`);
+  console.log(`  Diagnostic ID:      ${DIAGNOSTIC_ID}`);
   console.log('  See Test 5 output above for callback configuration.');
 
   console.log('\n─── F. Box Log ───');
@@ -578,7 +790,10 @@ async function main() {
 
   console.log('\n─── H. Interpretation ───');
   console.log('');
-  console.log(`  Does /device/box/status/ synchronously return physical door state?`);
+  console.log(`  Lock address source: ${lockResolution.source}`);
+  console.log(`  Lock address resolved: ${LOCK_ADDRESS}`);
+
+  console.log(`\n  Does /device/box/status/ synchronously return physical door state?`);
   console.log(`    → ${statusChanged ? 'YES (response differs between closed/open)' : 'INCONCLUSIVE (response identical — may be async only)'}`);
 
   const hasDoorOpen = t4Data.door_open !== undefined;
@@ -607,7 +822,7 @@ async function main() {
   console.log(`\n  Can box log verify the open operation? ${canLogVerify ? 'PARTIALLY (log exists, task_id correlation ' + (results.taskIdCorrelation ? 'confirmed)' : 'unconfirmed)') : 'INCONCLUSIVE (no log entries with task_id)'}`);
 
   console.log('\n  Does Bestwond send physical door state through callback?');
-  console.log('    → INCONCLUSIVE (requires callback endpoint to capture)');
+  console.log(`    → INCONCLUSIVE (requires callback endpoint + Vercel log search for ${DIAGNOSTIC_ID})`);
 
   console.log('\n  Does the locker automatically recover after Wi-Fi reconnects?');
   console.log('    → INCONCLUSIVE (requires manual Test 8)');
@@ -644,6 +859,8 @@ async function main() {
   console.log('     (/api/diagnostics/bestwond-callback or /api/webhooks/bestwond)');
   console.log('     to capture asynchronous door status notifications.');
   console.log('     This is the MOST RELIABLE way to confirm physical door state.');
+  console.log('     Callback persistence: use Vercel logs with correlation ID');
+  console.log('     (in-memory storage is unreliable on serverless).');
 
   console.log('');
   console.log('  4. For stale IN_PROGRESS reconciliation:');
@@ -657,7 +874,18 @@ async function main() {
   const outputPath = path.join(process.cwd(), 'download', 'bestwond-diagnostic-results.json');
   try {
     await fs.promises.mkdir(path.join(process.cwd(), 'download'), { recursive: true });
-    await fs.promises.writeFile(outputPath, JSON.stringify(sanitize(results), null, 2));
+    const reportData = {
+      ...results,
+      lockAddressResolution: {
+        resolved: LOCK_ADDRESS,
+        source: lockResolution.source,
+        apiLockAddress: lockResolution.apiLockAddress,
+        discrepancy: lockResolution.discrepancy,
+      },
+      diagnosticId: DIAGNOSTIC_ID,
+      callbackPersistence: 'Vercel logs (correlation ID: ' + DIAGNOSTIC_ID + ')',
+    };
+    await fs.promises.writeFile(outputPath, JSON.stringify(sanitize(reportData), null, 2));
     console.log(`\n\nFull results saved to: ${outputPath}`);
   } catch (e) {
     console.log('\n\nCould not save results file:', e instanceof Error ? e.message : String(e));
