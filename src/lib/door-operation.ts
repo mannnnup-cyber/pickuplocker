@@ -221,9 +221,35 @@ async function acquireOperationLock(
        error.message.includes('idempotencyKey'));
 
     if (!isUniqueViolation) {
-      // Non-unique DB error — proceed without lock (degraded safety)
-      console.error('[DoorOp] Lock acquisition failed (non-unique error):', error);
-      return { owned: true, recordId: '', operationId };
+      // FAIL CLOSED: Database error that is NOT a unique constraint violation.
+      // This could mean the DB is down, connection timeout, schema error, etc.
+      // NO DATABASE LOCK = NO HARDWARE COMMAND.
+      console.error('[DoorOp] Lock acquisition FAILED (non-unique DB error) — refusing to send hardware command:', error);
+      return {
+        owned: false,
+        recordId: '',
+        operationId,
+        existingResult: {
+          success: false,
+          confirmed: false,
+          retryable: true, // DB might recover
+          operationId,
+          deviceId: options.deviceId,
+          boxId: options.boxId,
+          boxNumber: options.boxNumber,
+          lockAddress: options.lockAddress,
+          attempts: 0,
+          errorType: 'IDEMPOTENCY_LOCK_FAILED',
+          message: 'Unable to safely acquire door-operation lock — database error. No hardware command sent.',
+          startedAt: startedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          apiCalls: 0,
+          businessStateUpdated: false,
+          status: 'FAILED',
+          owned: false,
+        },
+      };
     }
 
     // Fetch the existing record to decide what to do
@@ -233,9 +259,35 @@ async function acquireOperationLock(
       });
 
       if (!existing) {
-        // Race: record was deleted between insert and find — proceed
-        console.warn('[DoorOp] Lock: UNIQUE violation but record not found — proceeding');
-        return { owned: true, recordId: '', operationId };
+        // FAIL CLOSED: UNIQUE violation means something exists, but we can't find it.
+        // This is an unresolvable state — we CANNOT safely send a hardware command
+        // because another operation may be in progress but we can't verify its state.
+        console.error('[DoorOp] Lock: UNIQUE violation on idempotencyKey but record not found — UNRESOLVABLE. Refusing hardware command.');
+        return {
+          owned: false,
+          recordId: '',
+          operationId,
+          existingResult: {
+            success: false,
+            confirmed: false,
+            retryable: false, // Don't auto-retry — needs manual investigation
+            operationId,
+            deviceId: options.deviceId,
+            boxId: options.boxId,
+            boxNumber: options.boxNumber,
+            lockAddress: options.lockAddress,
+            attempts: 0,
+            errorType: 'IDEMPOTENCY_LOCK_FAILED',
+            message: 'UNIQUE constraint violation but existing record not found — requires reconciliation. No hardware command sent.',
+            startedAt: startedAt.toISOString(),
+            completedAt: new Date().toISOString(),
+            durationMs: 0,
+            apiCalls: 0,
+            businessStateUpdated: false,
+            status: 'UNKNOWN',
+            owned: false,
+          },
+        };
       }
 
       switch (existing.status as DoorOperationStatus) {
@@ -376,9 +428,35 @@ async function acquireOperationLock(
           };
       }
     } catch (fetchError) {
-      console.error('[DoorOp] Failed to fetch existing lock record:', fetchError);
-      // Proceed without lock — degraded safety but don't block the operation
-      return { owned: true, recordId: '', operationId };
+      // FAIL CLOSED: Cannot fetch existing record after UNIQUE violation.
+      // Another operation probably exists but we can't determine its state.
+      // NO DATABASE LOCK = NO HARDWARE COMMAND.
+      console.error('[DoorOp] Failed to fetch existing lock record after UNIQUE violation — refusing hardware command:', fetchError);
+      return {
+        owned: false,
+        recordId: '',
+        operationId,
+        existingResult: {
+          success: false,
+          confirmed: false,
+          retryable: true, // DB might recover on retry
+          operationId,
+          deviceId: options.deviceId,
+          boxId: options.boxId,
+          boxNumber: options.boxNumber,
+          lockAddress: options.lockAddress,
+          attempts: 0,
+          errorType: 'IDEMPOTENCY_LOCK_FAILED',
+          message: 'Unable to resolve existing lock record — database fetch failed. No hardware command sent.',
+          startedAt: startedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          apiCalls: 0,
+          businessStateUpdated: false,
+          status: 'FAILED',
+          owned: false,
+        },
+      };
     }
   }
 }
@@ -670,10 +748,50 @@ export async function executeDoorOperation(
     return fallbackResult;
   }
 
-  // 3. We OWN the operation — proceed with hardware command
+  // 3. SAFETY ASSERTION: Before any hardware command, verify lock is valid
+  // NO DATABASE LOCK = NO HARDWARE COMMAND — this is the fail-closed invariant.
+  if (!lock.owned || !lock.recordId) {
+    const lockFailureResult: DoorOperationResult = {
+      success: false,
+      confirmed: false,
+      retryable: lock.owned && !lock.recordId ? false : true, // retryable if DB might recover
+      operationId: lock.operationId,
+      deviceId: options.deviceId,
+      boxId: options.boxId,
+      boxNumber: options.boxNumber,
+      lockAddress: options.lockAddress,
+      attempts: 0,
+      errorType: 'IDEMPOTENCY_LOCK_FAILED',
+      message: !lock.owned
+        ? 'Door operation lock not acquired — no hardware command sent'
+        : 'Door operation lock acquired but record not persisted — no hardware command sent',
+      startedAt,
+      completedAt: new Date().toISOString(),
+      durationMs: Date.now() - startTime,
+      apiCalls: 0,
+      businessStateUpdated: false,
+      status: 'FAILED',
+      owned: false,
+    };
+    logDoorOperation({
+      operationId: lock.operationId,
+      action: options.action,
+      orderId: options.orderId,
+      deviceId: options.deviceId,
+      result: 'failure',
+      errorType: 'IDEMPOTENCY_LOCK_FAILED',
+      message: `ABORTED: owned=${lock.owned}, recordId=${lock.recordId ? 'present' : 'EMPTY'} — no hardware command`,
+      durationMs: Date.now() - startTime,
+      apiCalls: 0,
+      businessStateUpdated: false,
+    });
+    return lockFailureResult;
+  }
+
+  // 4. We OWN the operation with a persisted record — proceed with hardware command
   const operationId = lock.operationId;
 
-  // 4. Get credentials
+  // 5. Get credentials
   let credentials: BestwondCredentials;
   try {
     credentials = await getCredentialsForDevice(options.deviceId);
@@ -705,7 +823,7 @@ export async function executeDoorOperation(
     return result;
   }
 
-  // 5. Resolve lock address (local first)
+  // 6. Resolve lock address (local first)
   let totalApiCalls = 0;
   const lockInfo = await resolveLockAddress(
     options.deviceNumber,
@@ -715,7 +833,7 @@ export async function executeDoorOperation(
   );
   if (lockInfo.source === 'api') totalApiCalls++;
 
-  // 6. Execute with retry
+  // 7. Execute with retry
   let lastResult: { success: boolean; confirmed: boolean; errorType?: BestwondErrorType; message: string; providerCode?: number; apiCalls: number } | null = null;
   let attempts = 0;
 
@@ -953,7 +1071,7 @@ export async function executeDoorOperation(
     }
   }
 
-  // 7. Build final result
+  // 8. Build final result
   const finalResult = buildResult({
     success: lastResult?.success ?? false,
     confirmed: lastResult?.confirmed ?? false,
@@ -971,7 +1089,7 @@ export async function executeDoorOperation(
     : finalResult.success && !finalResult.confirmed ? 'UNKNOWN'
     : 'FAILED';
 
-  // 8. Log and finalize record
+  // 9. Log and finalize record
   logDoorOperation({
     operationId,
     action: options.action,

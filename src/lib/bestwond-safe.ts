@@ -35,6 +35,7 @@ export type BestwondErrorType =
   | 'BOX_NOT_FOUND'        // Box not found on device
   | 'NETWORK_ERROR'         // Generic network failure (abort, connection reset)
   | 'VERCEL_TIMEOUT'        // Vercel function terminated before completion
+  | 'IDEMPOTENCY_LOCK_FAILED' // Database lock could not be acquired — NO hardware command sent
   | 'UNKNOWN';              // Catch-all
 
 /** Whether this error type is transient and worth retrying */

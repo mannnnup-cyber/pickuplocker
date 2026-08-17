@@ -1,8 +1,13 @@
 import { createHash } from 'crypto';
 
 const baseUrl = 'https://mlkd.bestwond.com';
-const appId = 'bw_86b83996147111f';
-const appSecret = '86b83aa4147111f18bd500163e198b20';
+const appId = process.env.BESTWOND_APP_ID || '';
+const appSecret = process.env.BESTWOND_APP_SECRET || '';
+
+if (!appId || !appSecret) {
+  console.error('ERROR: Set BESTWOND_APP_ID and BESTWOND_APP_SECRET environment variables.');
+  process.exit(1);
+}
 
 function getTimestamp(): number {
   return Date.now();
@@ -30,11 +35,16 @@ const params: Record<string, string | number> = {
   user_mobile: '8761234567',
   user_email: 'test@pickup.com',
   courier_account: 'AndreBrown',
-  courier_password: 'Andre2776@',
+  courier_password: process.env.TEST_COURIER_PASSWORD || '',
 };
 
+if (!params.courier_password) {
+  console.error('ERROR: Set TEST_COURIER_PASSWORD environment variable.');
+  process.exit(1);
+}
+
 console.log('Order:', orderNo);
-console.log('Courier: AndreBrown / Andre2776@\n');
+console.log('Courier:', params.courier_account, '/ [REDACTED]\n');
 
 const signature = createSign(params, appSecret);
 const url = `${baseUrl}/api/third/sync/kd/order/?sign=${signature}`;

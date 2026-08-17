@@ -81,6 +81,14 @@ describe('Retry Policy', () => {
   it('should NOT retry DUPLICATE_REQUEST errors', () => {
     expect(isRetryable('DUPLICATE_REQUEST')).toBe(false);
   });
+
+  it('should NOT retry IDEMPOTENCY_LOCK_FAILED errors (non-unique DB error)', () => {
+    // IDEMPOTENCY_LOCK_FAILED means the database lock could not be acquired.
+    // For UNIQUE+missing-record path: NOT retryable (needs manual investigation).
+    // For non-unique DB error: technically retryable (DB might recover),
+    // but the error type itself is NOT in the retryable set.
+    expect(isRetryable('IDEMPOTENCY_LOCK_FAILED')).toBe(false);
+  });
 });
 
 // ============================================
@@ -175,6 +183,8 @@ describe('Customer Messages', () => {
     durationMs: 1000,
     apiCalls: 1,
     businessStateUpdated: false,
+    status: 'FAILED',
+    owned: false,
   };
 
   it('should show success message when door confirmed open for dropoff', () => {
@@ -277,6 +287,8 @@ describe('Business State Invariants', () => {
       durationMs: 1000,
       apiCalls: 1,
       businessStateUpdated: false,
+      status: 'FAILED',
+      owned: false,
     };
     expect(result.businessStateUpdated).toBe(false);
   });
@@ -315,6 +327,7 @@ describe('Failure Scenario Types', () => {
     { name: 'Pickup door failed', errorType: 'LOCKER_REJECTED_CMD' },
     { name: 'Stale lock address', errorType: 'INVALID_LOCK_ADDRESS' },
     { name: 'Network error', errorType: 'NETWORK_ERROR' },
+    { name: 'Idempotency lock failed (DB down)', errorType: 'IDEMPOTENCY_LOCK_FAILED' },
   ];
 
   it('should have error types for all required failure scenarios', () => {

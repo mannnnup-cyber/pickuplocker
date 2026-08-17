@@ -1,6 +1,6 @@
 // Bestwond Locker API Integration
 // Documentation: https://bestwond.apifox.cn/
-// Access password: VdR72BxK
+// NOTE: API credentials must be configured via environment variables, never hardcoded.
 
 import crypto from 'crypto';
 

@@ -1,9 +1,14 @@
 // Test DimePay JWT generation and verify the payload
 import crypto from 'crypto';
 
-// Live credentials from your database
-const clientId = 'ck_rdq-r7tqOqdZ-MoY4cdkBbC2-CFj2';
-const secretKey = 'sk_zPS5d7zPpXxcTEAecP5TUO3ZJHbOW'; // Full key
+// Credentials from environment variables (never hardcode live keys)
+const clientId = process.env.DIMEPAY_CLIENT_KEY || '';
+const secretKey = process.env.DIMEPAY_API_KEY || '';
+
+if (!clientId || !secretKey) {
+  console.error('ERROR: Set DIMEPAY_CLIENT_KEY and DIMEPAY_API_KEY environment variables.');
+  process.exit(1);
+}
 
 console.log('=== DimePay JWT Test ===\n');
 console.log('Client ID:', clientId);

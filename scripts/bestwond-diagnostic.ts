@@ -6,22 +6,28 @@
  * Usage:
  *   npx tsx scripts/bestwond-diagnostic.ts
  *
- * Environment:
- *   BESTWOND_APP_ID      (default: bw_86b83996147111f)
- *   BESTWOND_APP_SECRET  (default: 86b83aa4147111f18bd500163e198b20)
- *   BESTWOND_DEVICE_ID   (default: 2100018247)
+ * Environment (REQUIRED — no hardcoded defaults):
+ *   BESTWOND_APP_ID
+ *   BESTWOND_APP_SECRET
+ *   BESTWOND_DEVICE_ID
  *   BESTWOND_BASE_URL    (default: https://api.bestwond.com)
  */
 
 import crypto from 'crypto';
 
 // ============================================================
-// CONFIGURATION — pull from env or use hardcoded defaults
+// CONFIGURATION — pull from env (REQUIRED, no hardcoded defaults)
 // ============================================================
-const APP_ID = process.env.BESTWOND_APP_ID || 'bw_86b83996147111f';
-const APP_SECRET = process.env.BESTWOND_APP_SECRET || '86b83aa4147111f18bd500163e198b20';
-const DEVICE_ID = process.env.BESTWOND_DEVICE_ID || '2100018247';
+const APP_ID = process.env.BESTWOND_APP_ID;
+const APP_SECRET = process.env.BESTWOND_APP_SECRET;
+const DEVICE_ID = process.env.BESTWOND_DEVICE_ID;
 const BASE_URL = process.env.BESTWOND_BASE_URL || 'https://api.bestwond.com';
+
+if (!APP_ID || !APP_SECRET || !DEVICE_ID) {
+  console.error('ERROR: BESTWOND_APP_ID, BESTWOND_APP_SECRET, and BESTWOND_DEVICE_ID environment variables are required.');
+  console.error('Set them before running this script. Never hardcode API credentials.');
+  process.exit(1);
+}
 
 // ============================================================
 // HELPERS

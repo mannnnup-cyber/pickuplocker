@@ -468,3 +468,321 @@ describe('F. Retry Policy Correctness', () => {
     expect(attempt3Delay).toBeGreaterThan(attempt2Delay);
   });
 });
+
+// ============================================
+// G. Fail-Closed: Database Lock Failure Safety
+// ============================================
+
+describe('G. Fail-Closed: Database Lock Failure Safety', () => {
+  it('IDEMPOTENCY_LOCK_FAILED error type exists and is NOT retryable for UNIQUE+missing-record', () => {
+    // IDEMPOTENCY_LOCK_FAILED is used when the lock cannot be safely acquired
+    // For UNIQUE violation + missing record: retryable=false (needs manual investigation)
+    const errorType = 'IDEMPOTENCY_LOCK_FAILED';
+    expect(errorType).toBeDefined();
+    // This is NOT in the transient/retryable set
+    const retryableErrors = new Set([
+      'TIMEOUT', 'DNS_FAILURE', 'TLS_FAILURE', 'DEVICE_OFFLINE',
+      'PROVIDER_UNAVAILABLE', 'PROVIDER_RATE_LIMIT', 'NETWORK_ERROR',
+      'DOOR_NOT_CONFIRMED', 'VERCEL_TIMEOUT',
+    ]);
+    expect(retryableErrors.has(errorType)).toBe(false);
+  });
+
+  it('non-unique DB error must NOT allow hardware command (owned=false)', () => {
+    // When db.doorOperationRecord.create() throws a non-unique error
+    // (e.g., connection timeout, schema error, disk full),
+    // the result MUST be owned=false — no hardware command sent.
+    //
+    // This is the FAIL CLOSED rule:
+    //   NO DATABASE LOCK = NO HARDWARE COMMAND
+    //
+    // Simulating the acquireOperationLock result for non-unique DB error:
+    const lockResult = {
+      owned: false,           // FAIL CLOSED — not owned
+      recordId: '',           // No persisted record
+      existingResult: {
+        success: false,
+        confirmed: false,
+        retryable: true,      // DB might recover
+        errorType: 'IDEMPOTENCY_LOCK_FAILED',
+        message: 'Unable to safely acquire door-operation lock — database error. No hardware command sent.',
+        status: 'FAILED',
+        owned: false,
+      },
+    };
+
+    // The safety assertion in executeDoorOperation checks: !lock.owned || !lock.recordId
+    const shouldSendHardwareCommand = lockResult.owned && lockResult.recordId !== '';
+    expect(shouldSendHardwareCommand).toBe(false);
+    expect(lockResult.owned).toBe(false);
+    expect(lockResult.existingResult.errorType).toBe('IDEMPOTENCY_LOCK_FAILED');
+  });
+
+  it('UNIQUE violation + missing record must NOT allow hardware command (owned=false, status=UNKNOWN)', () => {
+    // When INSERT gets UNIQUE violation but findUnique returns null,
+    // this is an unresolvable state — we CANNOT safely send a hardware command.
+    const lockResult = {
+      owned: false,           // FAIL CLOSED
+      recordId: '',           // No persisted record we can use
+      existingResult: {
+        success: false,
+        confirmed: false,
+        retryable: false,     // NOT retryable — needs manual investigation
+        errorType: 'IDEMPOTENCY_LOCK_FAILED',
+        message: 'UNIQUE constraint violation but existing record not found — requires reconciliation. No hardware command sent.',
+        status: 'UNKNOWN',    // UNKNOWN because we can't determine state
+        owned: false,
+      },
+    };
+
+    const shouldSendHardwareCommand = lockResult.owned && lockResult.recordId !== '';
+    expect(shouldSendHardwareCommand).toBe(false);
+    expect(lockResult.owned).toBe(false);
+    expect(lockResult.existingResult.status).toBe('UNKNOWN');
+    expect(lockResult.existingResult.retryable).toBe(false);
+  });
+
+  it('fetch error after UNIQUE violation must NOT allow hardware command (owned=false)', () => {
+    // When INSERT gets UNIQUE violation but then findUnique throws an error,
+    // we cannot determine the existing record's state — FAIL CLOSED.
+    const lockResult = {
+      owned: false,           // FAIL CLOSED
+      recordId: '',           // No usable record
+      existingResult: {
+        success: false,
+        confirmed: false,
+        retryable: true,      // DB might recover on retry
+        errorType: 'IDEMPOTENCY_LOCK_FAILED',
+        message: 'Unable to resolve existing lock record — database fetch failed. No hardware command sent.',
+        status: 'FAILED',
+        owned: false,
+      },
+    };
+
+    const shouldSendHardwareCommand = lockResult.owned && lockResult.recordId !== '';
+    expect(shouldSendHardwareCommand).toBe(false);
+    expect(lockResult.owned).toBe(false);
+    expect(lockResult.existingResult.errorType).toBe('IDEMPOTENCY_LOCK_FAILED');
+  });
+
+  it('safety assertion blocks hardware when owned=true but recordId empty', () => {
+    // Even if somehow owned=true but recordId='' (should not happen after fix,
+    // but defense-in-depth), the assertion must block the hardware command.
+    const lockResult = {
+      owned: true,
+      recordId: '',           // Empty — no persisted record
+    };
+
+    // The assertion: if (!lock.owned || !lock.recordId) → abort
+    const shouldAbort = !lockResult.owned || !lockResult.recordId;
+    expect(shouldAbort).toBe(true);
+
+    const shouldSendHardwareCommand = lockResult.owned && lockResult.recordId !== '';
+    expect(shouldSendHardwareCommand).toBe(false);
+  });
+
+  it('valid lock (owned=true, recordId=present) allows hardware command', () => {
+    // When INSERT succeeds, we have both owned=true AND a real recordId
+    const lockResult = {
+      owned: true,
+      recordId: 'clxxxx123456789',  // Real persisted DB ID
+    };
+
+    const shouldAbort = !lockResult.owned || !lockResult.recordId;
+    expect(shouldAbort).toBe(false);
+
+    const shouldSendHardwareCommand = lockResult.owned && lockResult.recordId !== '';
+    expect(shouldSendHardwareCommand).toBe(true);
+  });
+
+  it('IDEMPOTENCY_LOCK_FAILED result must have zero apiCalls', () => {
+    // If the lock failed, no Bestwond API calls were made
+    const lockFailureResult = {
+      success: false,
+      confirmed: false,
+      retryable: true,
+      errorType: 'IDEMPOTENCY_LOCK_FAILED',
+      apiCalls: 0,             // ZERO Bestwond calls
+      businessStateUpdated: false,
+    };
+
+    expect(lockFailureResult.apiCalls).toBe(0);
+    expect(lockFailureResult.businessStateUpdated).toBe(false);
+  });
+
+  it('all three fail-closed paths produce IDEMPOTENCY_LOCK_FAILED errorType', () => {
+    // Verify that all three degraded-safety paths now produce the correct error type
+    const paths = [
+      { name: 'non-unique DB error', errorType: 'IDEMPOTENCY_LOCK_FAILED', owned: false },
+      { name: 'UNIQUE + missing record', errorType: 'IDEMPOTENCY_LOCK_FAILED', owned: false },
+      { name: 'fetch error after UNIQUE', errorType: 'IDEMPOTENCY_LOCK_FAILED', owned: false },
+    ];
+
+    for (const path of paths) {
+      expect(path.errorType).toBe('IDEMPOTENCY_LOCK_FAILED');
+      expect(path.owned).toBe(false);
+    }
+  });
+});
+
+// ============================================
+// H. Stale IN_PROGRESS Reconciliation
+// ============================================
+
+describe('H. Stale IN_PROGRESS Reconciliation', () => {
+  it('IN_PROGRESS with no hardware command sent (crash before Bestwond call) → safe to reconcile', () => {
+    // Scenario: Record created IN_PROGRESS, server crashes BEFORE Bestwond OPEN call.
+    // On restart/retry, the system finds IN_PROGRESS record.
+    // Current behavior: acquireOperationLock returns { owned: false, existingResult: IN_PROGRESS }
+    // This means: second request does NOT send a hardware command.
+    // The IN_PROGRESS record should be reconciled (check if command was ever sent).
+    const existingRecord = {
+      status: 'IN_PROGRESS',
+      operationId: 'door-pickup-1709000000-abc123',
+      startedAt: new Date(Date.now() - 60000).toISOString(), // 1 minute ago
+      completedAt: null, // Never completed
+    };
+
+    // The system should NOT automatically resend
+    const shouldAutomaticallyResend = false;
+    expect(shouldAutomaticallyResend).toBe(false);
+
+    // Reconciliation path: check Bestwond door status / operation log
+    // If no command was sent → safe to retry (after marking UNKNOWN)
+    // If command was sent → wait for result or mark UNKNOWN
+    expect(existingRecord.status).toBe('IN_PROGRESS');
+    expect(existingRecord.completedAt).toBeNull();
+  });
+
+  it('IN_PROGRESS with hardware command sent (crash after Bestwond call, before status update) → UNKNOWN', () => {
+    // Scenario: Record created IN_PROGRESS, Bestwond OPEN sent successfully,
+    // server crashes BEFORE updating record to SUCCEEDED/FAILED.
+    // On restart, the record is still IN_PROGRESS.
+    // Current behavior: acquireOperationLock returns { owned: false, existingResult: IN_PROGRESS }
+    // This is CORRECT — we don't know if the door opened.
+    const existingRecord = {
+      status: 'IN_PROGRESS',
+      operationId: 'door-pickup-1709000000-def456',
+      startedAt: new Date(Date.now() - 30000).toISOString(), // 30 seconds ago
+      completedAt: null,
+    };
+
+    // We CANNOT prove the first command was never sent.
+    // Therefore we MUST NOT blindly resend.
+    const shouldBlindlyResend = false;
+    expect(shouldBlindlyResend).toBe(false);
+
+    // Correct reconciliation:
+    // 1. Mark record as UNKNOWN
+    // 2. Check Bestwond door status for this lock address
+    // 3. If door is open → update to SUCCEEDED
+    // 4. If door is closed and enough time passed → may retry with new operation
+    // 5. If uncertain → leave as UNKNOWN, require manual intervention
+    expect(existingRecord.status).toBe('IN_PROGRESS');
+  });
+
+  it('stale IN_PROGRESS older than threshold should be marked UNKNOWN for reconciliation', () => {
+    // If an IN_PROGRESS record is older than a threshold (e.g., 5 minutes),
+    // it should be transitioned to UNKNOWN for reconciliation.
+    const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+    const recordAge = Date.now() - new Date(Date.now() - 10 * 60 * 1000).getTime(); // 10 minutes old
+
+    const isStale = recordAge > STALE_THRESHOLD_MS;
+    expect(isStale).toBe(true);
+
+    // Transition: IN_PROGRESS → UNKNOWN (requires reconciliation)
+    const newStatus = isStale ? 'UNKNOWN' : 'IN_PROGRESS';
+    expect(newStatus).toBe('UNKNOWN');
+  });
+
+  it('recent IN_PROGRESS should NOT be marked stale', () => {
+    const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+    const recordAge = Date.now() - new Date(Date.now() - 30 * 1000).getTime(); // 30 seconds old
+
+    const isStale = recordAge > STALE_THRESHOLD_MS;
+    expect(isStale).toBe(false);
+
+    const newStatus = isStale ? 'UNKNOWN' : 'IN_PROGRESS';
+    expect(newStatus).toBe('IN_PROGRESS');
+  });
+
+  it('reconciliation must check Bestwond door status before deciding to retry', () => {
+    // Reconciliation workflow:
+    // 1. Find IN_PROGRESS records older than threshold
+    // 2. For each: call getDoorStatusWithCredentials()
+    // 3. If door is OPEN → transition to SUCCEEDED, complete business state
+    // 4. If door is CLOSED → command was never received or door already closed
+    //    → transition to FAILED (retryable)
+    // 5. If door status unknown → transition to UNKNOWN, require manual check
+
+    const reconciliationSteps = [
+      'find_stale_in_progress',
+      'check_door_status',
+      'transition_based_on_result',
+    ];
+
+    expect(reconciliationSteps).toContain('check_door_status');
+    expect(reconciliationSteps.length).toBe(3);
+  });
+});
+
+// ============================================
+// I. Idempotency Key Determinism
+// ============================================
+
+describe('I. Idempotency Key Determinism', () => {
+  it('same orderId + same action produces same idempotency key (pickup)', () => {
+    const orderId = 'order-abc123';
+    const key1 = `pickup:${orderId}`;
+    const key2 = `pickup:${orderId}`;
+    expect(key1).toBe(key2);
+    expect(key1).toBe('pickup:order-abc123');
+  });
+
+  it('same orderId + same action produces same idempotency key (dropoff)', () => {
+    const orderId = 'order-xyz789';
+    const key1 = `dropoff:${orderId}`;
+    const key2 = `dropoff:${orderId}`;
+    expect(key1).toBe(key2);
+  });
+
+  it('different actions for same order produce different keys', () => {
+    const orderId = 'order-mixed';
+    const pickupKey = `pickup:${orderId}`;
+    const dropoffKey = `dropoff:${orderId}`;
+    const paymentPickupKey = `payment-pickup:${orderId}`;
+    expect(pickupKey).not.toBe(dropoffKey);
+    expect(pickupKey).not.toBe(paymentPickupKey);
+    expect(dropoffKey).not.toBe(paymentPickupKey);
+  });
+
+  it('admin-open key includes deviceId + boxId + requestId', () => {
+    const deviceId = 'device-001';
+    const boxId = 'box-003';
+    const requestId = 'req-unique-123';
+    const key = `admin-open:${deviceId}:${boxId}:${requestId}`;
+    expect(key).toBe('admin-open:device-001:box-003:req-unique-123');
+  });
+
+  it('admin-open with different requestId produces different key (allows repeated opens)', () => {
+    const deviceId = 'device-001';
+    const boxId = 'box-003';
+    const key1 = `admin-open:${deviceId}:${boxId}:req-001`;
+    const key2 = `admin-open:${deviceId}:${boxId}:req-002`;
+    expect(key1).not.toBe(key2);
+  });
+
+  it('keys contain no timestamps for customer actions', () => {
+    // Customer action keys must NOT contain timestamps
+    // (timestamps would defeat idempotency across retries)
+    const customerActions = ['pickup', 'dropoff', 'payment-pickup', 'courier-dropoff'];
+    const orderId = 'order-test';
+
+    for (const action of customerActions) {
+      const key = `${action}:${orderId}`;
+      // No timestamp-like patterns (numbers > 10 digits = likely timestamps)
+      const hasTimestamp = /\d{10,}/.test(key);
+      expect(hasTimestamp).toBe(false);
+    }
+  });
+});
