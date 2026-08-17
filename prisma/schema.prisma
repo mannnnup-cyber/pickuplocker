@@ -721,16 +721,24 @@ model GracePeriodExtension {
 }
 
 // Door Operation Record — tracks every physical door operation with idempotency
+// State machine: PENDING → IN_PROGRESS → SUCCEEDED | FAILED | UNKNOWN
+// The UNIQUE constraint on idempotencyKey is used as an atomic lock:
+// INSERT first (IN_PROGRESS), then execute hardware command, then UPDATE to terminal state.
+// This prevents concurrent requests from both passing a findUnique() check
+// and sending duplicate physical commands.
 model DoorOperationRecord {
   id              String   @id @default(cuid())
   
   // Idempotency — prevents duplicate door operations
-  idempotencyKey  String   @unique  // e.g., "pickup:order123:456789" or "dropoff:order456:123456"
+  idempotencyKey  String   @unique  // e.g., "pickup:order123" or "dropoff:order456" or "admin-open:device1:box3:req789"
   
   // Operation details
   operationId     String   @unique  // Unique operation ID for tracking
   action          String   // "dropoff", "pickup", "admin-open"
   orderId         String?
+  
+  // State machine
+  status          String   @default("PENDING")  // PENDING | IN_PROGRESS | SUCCEEDED | FAILED | UNKNOWN
   
   // Device and box
   deviceId        String
@@ -738,18 +746,18 @@ model DoorOperationRecord {
   boxNumber       Int?
   lockAddress     String?
   
-  // Result
-  success         Boolean
-  confirmed       Boolean  // Whether door opening was physically confirmed
-  retryable       Boolean  // Whether this failure is transient
+  // Result (populated after operation completes)
+  success         Boolean  @default(false)
+  confirmed       Boolean  @default(false)  // Whether door opening was physically confirmed
+  retryable       Boolean  @default(false)  // Whether this failure is transient
   errorType       String?  // Structured error type from bestwond-safe
   
   // Timing
   startedAt       DateTime
-  completedAt     DateTime
-  durationMs      Int
-  apiCalls        Int      // Number of Bestwond API calls made
-  attempts        Int      // Number of attempts including retries
+  completedAt     DateTime?
+  durationMs      Int      @default(0)
+  apiCalls        Int      @default(0)  // Number of Bestwond API calls made
+  attempts        Int      @default(0)  // Number of attempts including retries
   
   // Business state
   businessStateUpdated Boolean @default(false)  // Whether order/box/payment was updated
@@ -757,13 +765,17 @@ model DoorOperationRecord {
   // Provider details (privacy-safe)
   providerCode    Int?
   message         String?
+  resultJson      String?  // Full result metadata for UNKNOWN state reconciliation
   
   // Timestamps
   createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt  // Last heartbeat / state transition
   
   @@index([orderId])
   @@index([deviceId, createdAt])
   @@index([action, createdAt])
   @@index([success, confirmed])
+  @@index([status])
+  @@index([status, createdAt])
   @@map("door_operation_records")
 }

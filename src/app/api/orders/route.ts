@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { generateOrderNumber, generateTrackingCode, calculateStorageFee } from '@/lib/storage';
-import { openBoxWithCredentials, getBoxListWithCredentials, getCredentialsForDevice, type BestwondCredentials } from '@/lib/bestwond';
+import { getBoxListWithCredentials, getCredentialsForDevice, type BestwondCredentials } from '@/lib/bestwond';
+import { executeDoorOperation, type DoorOperationResult } from '@/lib/door-operation';
 import { sendPickupNotification } from '@/lib/textbee';
 
 // GET /api/orders - List orders with filters
@@ -388,13 +389,20 @@ export async function PUT(request: NextRequest) {
         }, { status: 400 });
       }
 
-      // Get device-specific credentials
-      const credentials = await getCredentialsForDevice(order.device.id);
+      // Use DoorOperationService for all physical door operations
+      const requestId = `orders-open-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      const doorResult = await executeDoorOperation({
+        orderId: order.id,
+        orderNo: order.orderNumber,
+        deviceId: order.device.id,
+        deviceNumber: order.device.deviceId,
+        boxId: order.box?.id,
+        boxNumber: order.boxNumber,
+        action: 'admin-open',
+        requestId,
+      });
       
-      const result = await openBoxWithCredentials(order.device.deviceId, order.boxNumber, credentials);
-      
-      // Bestwond returns code 0 for success (not 200)
-      if (result.code === 0) {
+      if (doorResult.success && doorResult.confirmed) {
         await db.activity.create({
           data: {
             userId: staffId,
@@ -411,7 +419,7 @@ export async function PUT(request: NextRequest) {
       } else {
         return NextResponse.json({ 
           success: false, 
-          error: result.msg || 'Failed to open box',
+          error: doorResult.message || 'Failed to open box',
         }, { status: 400 });
       }
     }

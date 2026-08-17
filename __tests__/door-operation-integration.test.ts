@@ -404,16 +404,16 @@ describe('E. Business State Invariant Enforcement', () => {
     // 2. Check result.success && result.confirmed
     // 3. Only then update order/box/payment status
     //
-    // The migrated routes are:
-    // - /api/kiosk/use-code (already safe)
-    // - /api/kiosk-action (all 5 handlers migrated)
-    // - /api/pickup (migrated)
-    // - /api/payments/manual (migrated)
-    // - /api/kiosk/payment (migrated)
-    // - /api/cron/auto-charge (migrated)
-    // - /api/lockers (no business state — safe passthrough)
-    // - /api/orders (no business state — admin open)
-    // - /api/diagnostics (no business state — diagnostic only)
+    // ALL routes now go through executeDoorOperation():
+    // - /api/kiosk/use-code
+    // - /api/kiosk-action (all 5 handlers)
+    // - /api/pickup
+    // - /api/payments/manual
+    // - /api/kiosk/payment
+    // - /api/cron/auto-charge
+    // - /api/lockers (migrated to executeDoorOperation)
+    // - /api/orders (migrated to executeDoorOperation)
+    // - /api/diagnostics (migrated to executeDoorOperation)
     expect(true).toBe(true); // Contract: all routes follow safe pattern
   });
 });

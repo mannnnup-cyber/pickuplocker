@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
   getDeviceStatusWithCredentials,
-  openBoxWithCredentials,
   getCredentialsForDevice,
 } from '@/lib/bestwond';
+import { executeDoorOperation, type DoorOperationResult } from '@/lib/door-operation';
 import { sendSMS, getDeviceStatus as getTextBeeDeviceStatus } from '@/lib/textbee';
 import { isEmailEnabled, sendEmail } from '@/lib/email';
 import { getDimepayConfig } from '@/lib/settings';
@@ -460,16 +460,17 @@ async function openBoxDoor(deviceId: string, boxNumber: number) {
       }, { status: 404 });
     }
 
-    const credentials = await getCredentialsForDevice(device.id);
-
-    if (!credentials.appId || !credentials.appSecret) {
-      return NextResponse.json({
-        success: false,
-        error: 'Bestwond credentials not configured for this device',
-      }, { status: 400 });
-    }
-
-    const result = await openBoxWithCredentials(device.deviceId, boxNumber, credentials);
+    // Use DoorOperationService for all physical door operations
+    const requestId = `diag-open-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+    const doorResult = await executeDoorOperation({
+      orderId: `admin-diag-${device.id}`,
+      orderNo: `DIAGNOSTIC-OPEN`,
+      deviceId: device.id,
+      deviceNumber: device.deviceId,
+      boxNumber,
+      action: 'admin-open',
+      requestId,
+    });
 
     // Log the action
     await db.activity.create({
@@ -480,11 +481,11 @@ async function openBoxDoor(deviceId: string, boxNumber: number) {
     });
 
     return NextResponse.json({
-      success: result.code === 0,
-      message: result.code === 0
+      success: doorResult.success && doorResult.confirmed,
+      message: doorResult.success && doorResult.confirmed
         ? `Box #${boxNumber} opened successfully`
-        : `Failed to open box #${boxNumber}: ${result.msg || 'Unknown error'}`,
-      details: result,
+        : `Failed to open box #${boxNumber}: ${doorResult.message}`,
+      details: doorResult,
     });
   } catch (error) {
     return NextResponse.json({
@@ -504,15 +505,6 @@ async function openAllBoxes() {
       }, { status: 404 });
     }
 
-    const credentials = await getCredentialsForDevice(device.id);
-
-    if (!credentials.appId || !credentials.appSecret) {
-      return NextResponse.json({
-        success: false,
-        error: 'Bestwond credentials not configured',
-      }, { status: 400 });
-    }
-
     const boxes = await db.box.findMany({
       where: { deviceId: device.id },
       orderBy: { boxNumber: 'asc' },
@@ -522,8 +514,19 @@ async function openAllBoxes() {
 
     for (const box of boxes) {
       try {
-        const result = await openBoxWithCredentials(device.deviceId, box.boxNumber, credentials);
-        results.push({ boxNumber: box.boxNumber, success: result.code === 0 });
+        // Use DoorOperationService for each box
+        const requestId = `diag-all-${box.boxNumber}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+        const doorResult = await executeDoorOperation({
+          orderId: `admin-diag-all-${device.id}`,
+          orderNo: `DIAGNOSTIC-OPEN-ALL`,
+          deviceId: device.id,
+          deviceNumber: device.deviceId,
+          boxId: box.id,
+          boxNumber: box.boxNumber,
+          action: 'admin-open',
+          requestId,
+        });
+        results.push({ boxNumber: box.boxNumber, success: doorResult.success && doorResult.confirmed });
       } catch (err) {
         results.push({ boxNumber: box.boxNumber, success: false, error: err instanceof Error ? err.message : 'Failed' });
       }

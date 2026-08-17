@@ -10,9 +10,16 @@
  * 2. Fallback runs on ANY non-success result, not just thrown exceptions.
  * 3. Lock address is read from the local DB first; only fetched from
  *    Bestwond as a one-time fallback.
- * 4. Idempotency key prevents duplicate operations.
+ * 4. Idempotency key prevents duplicate operations via ATOMIC INSERT:
+ *    - INSERT DoorOperationRecord with status=IN_PROGRESS FIRST
+ *    - If UNIQUE violation → fetch existing, return cached or in-progress
+ *    - Only the INSERT owner may send the physical Bestwond command
+ *    - After command completes → UPDATE record to SUCCEEDED/FAILED/UNKNOWN
  * 5. Every operation is logged with privacy-safe diagnostics.
  * 6. Retry policy is based on error type (transient only).
+ * 7. Deterministic idempotency keys: pickup:{orderId}, dropoff:{orderId},
+ *    payment-pickup:{orderId}, courier-dropoff:{orderId},
+ *    admin-open:{deviceId}:{boxId}:{requestId}
  */
 
 import { db } from '@/lib/db';
@@ -40,7 +47,10 @@ import {
 // Types
 // ============================================
 
-export type DoorAction = 'dropoff' | 'pickup' | 'admin-open';
+export type DoorAction = 'dropoff' | 'pickup' | 'payment-pickup' | 'courier-dropoff' | 'admin-open';
+
+/** State machine for DoorOperationRecord */
+export type DoorOperationStatus = 'PENDING' | 'IN_PROGRESS' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN';
 
 export interface DoorOperationResult {
   success: boolean;
@@ -62,6 +72,10 @@ export interface DoorOperationResult {
   apiCalls: number;
   /** Whether business state (order/box/payment) was updated */
   businessStateUpdated: boolean;
+  /** Status from the state machine */
+  status: DoorOperationStatus;
+  /** Whether this request owned the operation (sent the hardware command) */
+  owned: boolean;
 }
 
 export interface DoorOperationOptions {
@@ -75,8 +89,14 @@ export interface DoorOperationOptions {
   lockAddress?: string; // Pre-known lock address
   action: DoorAction;
   actionCode?: string; // save_code or pick_code for express API
-  /** Idempotency key to prevent duplicate operations */
-  idempotencyKey: string;
+  /** Idempotency key to prevent duplicate operations.
+   *  If not provided, one is derived deterministically from action + orderId.
+   *  For admin-open, you MUST provide an explicit requestId so that
+   *  intentionally reopening the same box is allowed.
+   */
+  idempotencyKey?: string;
+  /** For admin-open: explicit request ID to allow repeated opens */
+  requestId?: string;
   /** Maximum retry attempts for transient errors */
   maxRetries?: number;
   /** Whether to use express API (save/take) vs direct open */
@@ -93,74 +113,300 @@ const DOOR_CHECK_DELAY_MS = 1500;
 const DOOR_CHECK_MAX_WAIT_MS = 5000;
 
 // ============================================
-// Idempotency check
+// Deterministic idempotency key generation
 // ============================================
 
 /**
- * Check if this exact operation was already processed.
- * Returns the previous result if found, null otherwise.
+ * Generate a deterministic idempotency key.
+ *
+ * For customer actions (pickup, dropoff, payment-pickup, courier-dropoff):
+ *   The key is based on action + orderId — no timestamp.
+ *   This means retries for the SAME operation reuse the same key.
+ *
+ * For admin-open:
+ *   The key includes an explicit requestId so that an admin CAN
+ *   intentionally open the same box multiple times (different requests).
  */
-async function checkIdempotency(
+export function deriveIdempotencyKey(options: DoorOperationOptions): string {
+  // If caller provided an explicit key, use it
+  if (options.idempotencyKey) return options.idempotencyKey;
+
+  switch (options.action) {
+    case 'pickup':
+      return `pickup:${options.orderId}`;
+    case 'dropoff':
+      return `dropoff:${options.orderId}`;
+    case 'payment-pickup':
+      return `payment-pickup:${options.orderId}`;
+    case 'courier-dropoff':
+      return `courier-dropoff:${options.orderId}`;
+    case 'admin-open': {
+      // Admin opens MUST have an explicit requestId to allow
+      // intentional repeated opens of the same box
+      const reqId = options.requestId || `admin-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      return `admin-open:${options.deviceId}:${options.boxId || options.boxNumber || 'unknown'}:${reqId}`;
+    }
+    default:
+      return `${options.action}:${options.orderId}`;
+  }
+}
+
+// ============================================
+// Atomic idempotency lock (INSERT-first)
+// ============================================
+
+/**
+ * Attempt to atomically claim ownership of a door operation.
+ *
+ * This uses the UNIQUE constraint on idempotencyKey as the lock mechanism.
+ * We INSERT a record with status=IN_PROGRESS FIRST, before any hardware call.
+ *
+ * - If INSERT succeeds → this request OWNS the operation, proceed to hardware
+ * - If UNIQUE violation → another request already claimed it:
+ *   - SUCCEEDED → return cached success
+ *   - IN_PROGRESS → return "already in progress" (do NOT send hardware command)
+ *   - FAILED + retryable → attempt retry ownership
+ *   - UNKNOWN → do NOT resend, return needs-reconciliation
+ */
+async function acquireOperationLock(
   idempotencyKey: string,
-): Promise<DoorOperationResult | null> {
+  options: DoorOperationOptions,
+): Promise<{
+  owned: boolean;
+  recordId: string;
+  operationId: string;
+  existingResult?: DoorOperationResult;
+}> {
+  const operationId = `door-${options.action}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+  const startedAt = new Date();
+
   try {
-    const existing = await db.doorOperationRecord.findUnique({
-      where: { idempotencyKey },
+    // ATOMIC INSERT — this is the lock acquisition
+    const record = await db.doorOperationRecord.create({
+      data: {
+        idempotencyKey,
+        operationId,
+        action: options.action,
+        orderId: options.orderId || null,
+        status: 'IN_PROGRESS',
+        deviceId: options.deviceId,
+        boxId: options.boxId ?? null,
+        boxNumber: options.boxNumber ?? null,
+        lockAddress: options.lockAddress ?? null,
+        startedAt,
+        completedAt: null, // Not completed yet
+      },
     });
 
-    if (existing) {
-      return {
-        success: existing.success,
-        confirmed: existing.confirmed,
-        retryable: existing.retryable,
-        operationId: existing.operationId,
-        deviceId: existing.deviceId,
-        boxId: existing.boxId,
-        boxNumber: existing.boxNumber,
-        lockAddress: existing.lockAddress,
-        attempts: existing.attempts,
-        errorType: existing.errorType as BestwondErrorType | undefined,
-        message: existing.message || 'Previous operation result',
-        providerCode: existing.providerCode ?? undefined,
-        startedAt: existing.startedAt.toISOString(),
-        completedAt: existing.completedAt.toISOString(),
-        durationMs: existing.durationMs,
-        apiCalls: existing.apiCalls,
-        businessStateUpdated: existing.businessStateUpdated,
-      };
-    }
-  } catch (error) {
-    // DB error during idempotency check — proceed with operation
-    console.error('[DoorOp] Idempotency check failed:', error);
-  }
+    // INSERT succeeded → we own this operation
+    logDoorOperation({
+      operationId,
+      action: options.action,
+      orderId: options.orderId,
+      deviceId: options.deviceId,
+      result: 'success',
+      message: 'Lock acquired — this request owns the operation',
+      durationMs: 0,
+      apiCalls: 0,
+      businessStateUpdated: false,
+    });
 
-  return null;
+    return { owned: true, recordId: record.id, operationId };
+  } catch (error: unknown) {
+    // UNIQUE constraint violation → another request already owns this
+    const isUniqueViolation =
+      error instanceof Error &&
+      (error.message.includes('Unique constraint') ||
+       error.message.includes('unique') ||
+       error.message.includes('idempotencyKey'));
+
+    if (!isUniqueViolation) {
+      // Non-unique DB error — proceed without lock (degraded safety)
+      console.error('[DoorOp] Lock acquisition failed (non-unique error):', error);
+      return { owned: true, recordId: '', operationId };
+    }
+
+    // Fetch the existing record to decide what to do
+    try {
+      const existing = await db.doorOperationRecord.findUnique({
+        where: { idempotencyKey },
+      });
+
+      if (!existing) {
+        // Race: record was deleted between insert and find — proceed
+        console.warn('[DoorOp] Lock: UNIQUE violation but record not found — proceeding');
+        return { owned: true, recordId: '', operationId };
+      }
+
+      switch (existing.status as DoorOperationStatus) {
+        case 'SUCCEEDED':
+          // Return cached success — do NOT send hardware command
+          return {
+            owned: false,
+            recordId: existing.id,
+            operationId: existing.operationId,
+            existingResult: recordToResult(existing),
+          };
+
+        case 'IN_PROGRESS':
+          // Another request is currently opening the door
+          // Do NOT send another hardware command
+          return {
+            owned: false,
+            recordId: existing.id,
+            operationId: existing.operationId,
+            existingResult: {
+              ...recordToResult(existing),
+              success: false,
+              confirmed: false,
+              retryable: false,
+              message: 'Operation already in progress — another request is opening this door',
+              status: 'IN_PROGRESS',
+              owned: false,
+            },
+          };
+
+        case 'UNKNOWN':
+          // Previous command was sent but result unknown (crash, timeout, etc.)
+          // Do NOT blindly resend — requires manual reconciliation
+          return {
+            owned: false,
+            recordId: existing.id,
+            operationId: existing.operationId,
+            existingResult: {
+              ...recordToResult(existing),
+              success: false,
+              confirmed: false,
+              retryable: false,
+              errorType: 'DOOR_NOT_CONFIRMED',
+              message: 'Previous operation result unknown — requires reconciliation before retry',
+              status: 'UNKNOWN',
+              owned: false,
+            },
+          };
+
+        case 'FAILED': {
+          // Check if retry is allowed
+          const isRetryableError = existing.errorType && isRetryable(existing.errorType as BestwondErrorType);
+          if (isRetryableError) {
+            // Delete the old failed record and try to acquire lock again
+            // This is safe because only ONE concurrent request will succeed
+            // at deleting + re-inserting
+            try {
+              await db.doorOperationRecord.delete({ where: { id: existing.id } });
+              // Re-attempt the insert
+              const retryRecord = await db.doorOperationRecord.create({
+                data: {
+                  idempotencyKey,
+                  operationId,
+                  action: options.action,
+                  orderId: options.orderId || null,
+                  status: 'IN_PROGRESS',
+                  deviceId: options.deviceId,
+                  boxId: options.boxId ?? null,
+                  boxNumber: options.boxNumber ?? null,
+                  lockAddress: options.lockAddress ?? null,
+                  startedAt,
+                  completedAt: null,
+                },
+              });
+              return { owned: true, recordId: retryRecord.id, operationId };
+            } catch (retryError) {
+              // Another concurrent request won the retry race
+              console.warn('[DoorOp] Retry lock lost to another request');
+              return {
+                owned: false,
+                recordId: existing.id,
+                operationId: existing.operationId,
+                existingResult: {
+                  ...recordToResult(existing),
+                  message: 'Another request is already retrying this operation',
+                  owned: false,
+                },
+              };
+            }
+          }
+          // Non-retryable failure — return cached failure
+          return {
+            owned: false,
+            recordId: existing.id,
+            operationId: existing.operationId,
+            existingResult: {
+              ...recordToResult(existing),
+              owned: false,
+            },
+          };
+        }
+
+        case 'PENDING':
+          // Stale pending record — claim it
+          try {
+            await db.doorOperationRecord.update({
+              where: { id: existing.id },
+              data: { status: 'IN_PROGRESS', operationId, startedAt },
+            });
+            return { owned: true, recordId: existing.id, operationId };
+          } catch {
+            return {
+              owned: false,
+              recordId: existing.id,
+              operationId: existing.operationId,
+              existingResult: {
+                ...recordToResult(existing),
+                message: 'Could not claim pending operation',
+                owned: false,
+              },
+            };
+          };
+
+        default:
+          // Unknown status — treat as needing reconciliation
+          return {
+            owned: false,
+            recordId: existing.id,
+            operationId: existing.operationId,
+            existingResult: {
+              ...recordToResult(existing),
+              success: false,
+              confirmed: false,
+              retryable: false,
+              message: `Operation in unexpected state: ${existing.status}`,
+              owned: false,
+            },
+          };
+      }
+    } catch (fetchError) {
+      console.error('[DoorOp] Failed to fetch existing lock record:', fetchError);
+      // Proceed without lock — degraded safety but don't block the operation
+      return { owned: true, recordId: '', operationId };
+    }
+  }
 }
 
 /**
- * Record the operation result for idempotency.
+ * Update the operation record with the final result.
  */
-async function recordOperation(
+async function finalizeOperationRecord(
+  recordId: string,
   result: DoorOperationResult,
   idempotencyKey: string,
-  options: DoorOperationOptions,
 ): Promise<void> {
+  if (!recordId) return; // No record to update
+
+  const status: DoorOperationStatus =
+    result.success && result.confirmed ? 'SUCCEEDED'
+    : result.success && !result.confirmed ? 'UNKNOWN'  // API success but door unconfirmed
+    : 'FAILED';
+
   try {
-    await db.doorOperationRecord.create({
+    await db.doorOperationRecord.update({
+      where: { id: recordId },
       data: {
-        idempotencyKey,
-        operationId: result.operationId,
-        action: options.action,
-        orderId: options.orderId,
-        deviceId: result.deviceId,
-        boxId: result.boxId ?? null,
-        boxNumber: result.boxNumber ?? null,
-        lockAddress: result.lockAddress ?? null,
+        status,
         success: result.success,
         confirmed: result.confirmed,
         retryable: result.retryable,
         errorType: result.errorType ?? null,
-        startedAt: new Date(result.startedAt),
         completedAt: new Date(result.completedAt),
         durationMs: result.durationMs,
         apiCalls: result.apiCalls,
@@ -168,29 +414,65 @@ async function recordOperation(
         businessStateUpdated: result.businessStateUpdated,
         providerCode: result.providerCode ?? null,
         message: result.message,
+        resultJson: JSON.stringify({
+          operationId: result.operationId,
+          errorType: result.errorType,
+          providerCode: result.providerCode,
+        }),
       },
     });
-  } catch (error: unknown) {
-    // Unique constraint violation = concurrent request already recorded
-    if (error instanceof Error &&
-        (error.message.includes('Unique constraint') ||
-         error.message.includes('unique') ||
-         error.message.includes('idempotencyKey'))) {
-      logDoorOperation({
-        operationId: result.operationId,
-        action: options.action,
-        orderId: options.orderId,
-        deviceId: result.deviceId,
-        result: 'success',
-        message: 'Idempotency: concurrent request already recorded this operation',
-        durationMs: 0,
-        apiCalls: 0,
-        businessStateUpdated: false,
-      });
-      return;
-    }
-    console.error('[DoorOp] Failed to record operation:', error);
+  } catch (error) {
+    console.error('[DoorOp] Failed to finalize operation record:', error);
   }
+}
+
+/**
+ * Convert a DoorOperationRecord to a DoorOperationResult.
+ */
+function recordToResult(record: {
+  id: string;
+  operationId: string;
+  action: string;
+  orderId: string | null;
+  deviceId: string;
+  boxId: string | null;
+  boxNumber: number | null;
+  lockAddress: string | null;
+  success: boolean;
+  confirmed: boolean;
+  retryable: boolean;
+  errorType: string | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  durationMs: number;
+  apiCalls: number;
+  attempts: number;
+  businessStateUpdated: boolean;
+  providerCode: number | null;
+  message: string | null;
+  status: string;
+}): DoorOperationResult {
+  return {
+    success: record.success,
+    confirmed: record.confirmed,
+    retryable: record.retryable,
+    operationId: record.operationId,
+    deviceId: record.deviceId,
+    boxId: record.boxId,
+    boxNumber: record.boxNumber,
+    lockAddress: record.lockAddress,
+    attempts: record.attempts,
+    errorType: record.errorType as BestwondErrorType | undefined,
+    message: record.message || 'Previous operation result',
+    providerCode: record.providerCode ?? undefined,
+    startedAt: record.startedAt.toISOString(),
+    completedAt: record.completedAt?.toISOString() || record.startedAt.toISOString(),
+    durationMs: record.durationMs,
+    apiCalls: record.apiCalls,
+    businessStateUpdated: record.businessStateUpdated,
+    status: record.status as DoorOperationStatus,
+    owned: false,
+  };
 }
 
 // ============================================
@@ -227,8 +509,6 @@ async function resolveLockAddress(
     const startTime = Date.now();
     const response = await getBoxListWithCredentials(deviceNumber, credentials);
 
-    // getBoxListWithCredentials returns a BestwondResponse, not a raw Response
-    // so we check it directly
     if (response.code === 0 && response.data) {
       const boxes = response.data as Array<{
         box_name: string;
@@ -296,7 +576,6 @@ async function verifyDoorOpened(
     if (doorResult.code === 0 && doorResult.data) {
       const data = doorResult.data as { status?: string; door_open?: boolean };
 
-      // Check multiple possible indicators of door being open
       if (data.door_open === true) {
         return { confirmed: true, doorStatus: 'open' };
       }
@@ -307,11 +586,9 @@ async function verifyDoorOpened(
         return { confirmed: false, doorStatus: 'closed' };
       }
 
-      // Status is ambiguous — not confirmed
       return { confirmed: false, doorStatus: data.status || 'unknown' };
     }
 
-    // API error checking door status — inconclusive
     return { confirmed: false, doorStatus: 'check_failed' };
   } catch (error) {
     console.error('[DoorOp] Door status check failed:', error);
@@ -328,13 +605,14 @@ async function verifyDoorOpened(
  *
  * This is the ONLY function that should be called to open a locker door.
  * It handles:
- * - Idempotency (duplicate protection)
+ * - Atomic idempotency lock (INSERT-first via UNIQUE constraint)
+ * - Deterministic idempotency keys (same operation = same key)
  * - Lock address resolution (local first, API fallback)
  * - Retry with backoff for transient errors
  * - Fallback on ANY non-success (not just thrown exceptions)
  * - Physical door verification when possible
  * - Privacy-safe diagnostic logging
- * - Recording the operation for audit
+ * - State machine: PENDING → IN_PROGRESS → SUCCEEDED/FAILED/UNKNOWN
  *
  * IMPORTANT: This function does NOT update business state (order/box/payment).
  * The caller must check `result.success && result.confirmed` before
@@ -346,26 +624,56 @@ export async function executeDoorOperation(
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const operationId = `door-${options.action}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
 
-  // 1. Idempotency check
-  const existing = await checkIdempotency(options.idempotencyKey);
-  if (existing) {
-    logDoorOperation({
-      operationId,
-      action: options.action,
-      orderId: options.orderId,
+  // 1. Derive deterministic idempotency key
+  const idempotencyKey = deriveIdempotencyKey(options);
+
+  // 2. ATOMIC LOCK: Attempt to claim ownership via INSERT
+  const lock = await acquireOperationLock(idempotencyKey, options);
+
+  if (!lock.owned) {
+    // We do NOT own this operation — return existing result
+    if (lock.existingResult) {
+      logDoorOperation({
+        operationId: lock.operationId,
+        action: options.action,
+        orderId: options.orderId,
+        deviceId: options.deviceId,
+        result: lock.existingResult.success ? 'success' : 'failure',
+        message: `Lock not acquired — returning existing: ${lock.existingResult.message}`,
+        durationMs: Date.now() - startTime,
+        apiCalls: 0,
+        businessStateUpdated: lock.existingResult.businessStateUpdated,
+      });
+      return lock.existingResult;
+    }
+
+    // Edge case: no existing result but not owned — shouldn't happen
+    const fallbackResult: DoorOperationResult = {
+      success: false,
+      confirmed: false,
+      retryable: false,
+      operationId: lock.operationId,
       deviceId: options.deviceId,
-      result: existing.success ? 'success' : 'failure',
-      message: 'Duplicate operation — returning cached result',
+      boxId: options.boxId,
+      boxNumber: options.boxNumber,
+      attempts: 0,
+      message: 'Could not acquire operation lock',
+      startedAt,
+      completedAt: new Date().toISOString(),
       durationMs: Date.now() - startTime,
       apiCalls: 0,
-      businessStateUpdated: existing.businessStateUpdated,
-    });
-    return existing;
+      businessStateUpdated: false,
+      status: 'FAILED',
+      owned: false,
+    };
+    return fallbackResult;
   }
 
-  // 2. Get credentials
+  // 3. We OWN the operation — proceed with hardware command
+  const operationId = lock.operationId;
+
+  // 4. Get credentials
   let credentials: BestwondCredentials;
   try {
     credentials = await getCredentialsForDevice(options.deviceId);
@@ -378,8 +686,8 @@ export async function executeDoorOperation(
       message: 'Failed to get Bestwond credentials for device',
       attempts: 0,
       apiCalls: 0,
-    }, options, startTime, startedAt);
-    await recordOperation(result, options.idempotencyKey, options);
+    }, options, startTime, startedAt, operationId);
+    await finalizeOperationRecord(lock.recordId, result, idempotencyKey);
     return result;
   }
 
@@ -392,12 +700,12 @@ export async function executeDoorOperation(
       message: 'Bestwond API credentials not configured for this device',
       attempts: 0,
       apiCalls: 0,
-    }, options, startTime, startedAt);
-    await recordOperation(result, options.idempotencyKey, options);
+    }, options, startTime, startedAt, operationId);
+    await finalizeOperationRecord(lock.recordId, result, idempotencyKey);
     return result;
   }
 
-  // 3. Resolve lock address (local first)
+  // 5. Resolve lock address (local first)
   let totalApiCalls = 0;
   const lockInfo = await resolveLockAddress(
     options.deviceNumber,
@@ -407,7 +715,7 @@ export async function executeDoorOperation(
   );
   if (lockInfo.source === 'api') totalApiCalls++;
 
-  // 4. Execute with retry
+  // 6. Execute with retry
   let lastResult: { success: boolean; confirmed: boolean; errorType?: BestwondErrorType; message: string; providerCode?: number; apiCalls: number } | null = null;
   let attempts = 0;
 
@@ -445,14 +753,11 @@ export async function executeDoorOperation(
           options.deviceNumber,
           options.boxSize ?? 'M',
           options.actionCode,
-          options.action === 'dropoff' ? 'save' : 'take',
+          options.action === 'dropoff' || options.action === 'courier-dropoff' ? 'save' : 'take',
           credentials,
         );
         totalApiCalls++;
 
-        // Express API returns BestwondResponse (not raw Response)
-        // We need to check it directly since parseBestwondResponse
-        // requires a raw Response object
         if (expressResult.code === 0 && expressResult.data) {
           const data = expressResult.data as unknown as Record<string, unknown>;
 
@@ -472,7 +777,6 @@ export async function executeDoorOperation(
               apiCalls: 1,
             };
 
-            // Non-retryable errors — stop immediately
             if (!isRetryable(errorType)) break;
             continue;
           }
@@ -494,14 +798,11 @@ export async function executeDoorOperation(
             apiCalls: 2,
           };
 
-          // If confirmed, we're done
           if (doorVerify.confirmed) break;
-
-          // If not confirmed but API said success, still break (don't retry success)
           break;
         }
 
-        // Express API returned non-zero code — this is a failure
+        // Express API returned non-zero code — failure
         const errorType = classifyExpressError(expressResult.code, expressResult.msg || '');
         lastResult = {
           success: false,
@@ -512,7 +813,7 @@ export async function executeDoorOperation(
           apiCalls: 1,
         };
 
-        // Try fallback (direct open) for any non-success, not just exceptions
+        // Try fallback (direct open) for any non-success
         if (options.boxNumber) {
           logDoorOperation({
             operationId,
@@ -555,7 +856,6 @@ export async function executeDoorOperation(
               break;
             }
 
-            // Fallback also failed
             const fbErrorType = classifyExpressError(fallbackResult.code, fallbackResult.msg || '');
             lastResult = {
               success: false,
@@ -576,7 +876,6 @@ export async function executeDoorOperation(
           }
         }
 
-        // Non-retryable — stop
         if (lastResult.errorType && !isRetryable(lastResult.errorType)) break;
         continue;
       }
@@ -650,12 +949,11 @@ export async function executeDoorOperation(
         apiCalls: totalApiCalls,
       };
 
-      // Non-retryable network errors — stop
       if (!isRetryable(errResult.errorType)) break;
     }
   }
 
-  // 5. Build final result
+  // 7. Build final result
   const finalResult = buildResult({
     success: lastResult?.success ?? false,
     confirmed: lastResult?.confirmed ?? false,
@@ -665,9 +963,15 @@ export async function executeDoorOperation(
     providerCode: lastResult?.providerCode,
     attempts,
     apiCalls: totalApiCalls,
-  }, options, startTime, startedAt, lockInfo.lockAddress);
+  }, options, startTime, startedAt, operationId, lockInfo.lockAddress);
 
-  // 6. Log and record
+  finalResult.owned = true;
+  finalResult.status =
+    finalResult.success && finalResult.confirmed ? 'SUCCEEDED'
+    : finalResult.success && !finalResult.confirmed ? 'UNKNOWN'
+    : 'FAILED';
+
+  // 8. Log and finalize record
   logDoorOperation({
     operationId,
     action: options.action,
@@ -681,11 +985,11 @@ export async function executeDoorOperation(
     providerCode: finalResult.providerCode,
     durationMs: finalResult.durationMs,
     apiCalls: totalApiCalls,
-    businessStateUpdated: false, // We never update business state here
+    businessStateUpdated: false,
     message: finalResult.message,
   });
 
-  await recordOperation(finalResult, options.idempotencyKey, options);
+  await finalizeOperationRecord(lock.recordId, finalResult, idempotencyKey);
 
   return finalResult;
 }
@@ -708,13 +1012,14 @@ function buildResult(
   options: DoorOperationOptions,
   startTime: number,
   startedAt: string,
+  operationId?: string,
   lockAddress?: string,
 ): DoorOperationResult {
   return {
     success: partial.success,
     confirmed: partial.confirmed,
     retryable: partial.retryable ?? false,
-    operationId: `door-${options.action}-${Date.now()}`,
+    operationId: operationId || `door-${options.action}-${Date.now()}`,
     deviceId: options.deviceId,
     boxId: options.boxId,
     boxNumber: options.boxNumber,
@@ -727,7 +1032,9 @@ function buildResult(
     completedAt: new Date().toISOString(),
     durationMs: Date.now() - startTime,
     apiCalls: partial.apiCalls,
-    businessStateUpdated: false, // Caller must update business state
+    businessStateUpdated: false,
+    status: partial.success && partial.confirmed ? 'SUCCEEDED' : partial.success ? 'UNKNOWN' : 'FAILED',
+    owned: true,
   };
 }
 
@@ -890,8 +1197,8 @@ export function getCustomerMessage(result: DoorOperationResult, action: DoorActi
 } {
   if (result.success && result.confirmed) {
     return {
-      title: action === 'dropoff' ? 'Locker Opened' : 'Locker Opened',
-      message: action === 'dropoff'
+      title: action === 'dropoff' || action === 'courier-dropoff' ? 'Locker Opened' : 'Locker Opened',
+      message: action === 'dropoff' || action === 'courier-dropoff'
         ? 'Please place your package inside and close the door.'
         : 'Please collect your package and close the door.',
       showRetry: false,
@@ -905,6 +1212,28 @@ export function getCustomerMessage(result: DoorOperationResult, action: DoorActi
       title: 'Opening Locker…',
       message: 'The locker command was sent but we could not confirm the door opened. Please check if the door is open.',
       showRetry: true,
+      showCancel: true,
+      showStaffAssist: true,
+    };
+  }
+
+  // Operation already in progress
+  if (result.status === 'IN_PROGRESS') {
+    return {
+      title: 'Locker Opening…',
+      message: 'Another request is already opening this locker. Please wait a moment.',
+      showRetry: false,
+      showCancel: true,
+      showStaffAssist: false,
+    };
+  }
+
+  // Unknown state — needs reconciliation
+  if (result.status === 'UNKNOWN') {
+    return {
+      title: 'Locker Status Unknown',
+      message: 'A previous command was sent but the result is unknown. Please check the locker or contact staff.',
+      showRetry: false,
       showCancel: true,
       showStaffAssist: true,
     };

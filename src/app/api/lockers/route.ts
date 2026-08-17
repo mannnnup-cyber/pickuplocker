@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { 
-  openBoxAndVerify, 
-  openBoxWithCredentials, 
   getBoxListWithCredentials, 
   getDeviceStatusWithCredentials, 
   getDoorStatusWithCredentials, 
@@ -10,7 +8,6 @@ import {
   debugDeviceAndBox,
   setWebhookWithCredentials,
   setSaveOrderWithCredentials,
-  expressSaveOrTakeWithCredentials,
   getStorableBoxDoorsWithCredentials,
   getBoxUsedInfoWithCredentials,
   getBoxSaveOrderInfoWithCredentials,
@@ -18,6 +15,7 @@ import {
   type BestwondCredentials,
   type WebhookSettings,
 } from '@/lib/bestwond';
+import { executeDoorOperation, type DoorOperationResult } from '@/lib/door-operation';
 import { db } from '@/lib/db';
 
 // Get device ID (cuid) from Bestwond device number
@@ -67,14 +65,8 @@ export async function POST(request: NextRequest) {
         }, { status: 400 });
       }
 
-      // Get device-specific credentials
+      // Get device-specific credentials (for validation only — DoorOperationService handles the actual call)
       const credentials = await getCredentials(deviceId);
-      
-      console.log('Credentials check:', { 
-        hasAppId: !!credentials.appId, 
-        hasAppSecret: !!credentials.appSecret,
-        appIdLength: credentials.appId?.length 
-      });
       
       if (!credentials.appId || !credentials.appSecret) {
         return NextResponse.json({
@@ -83,22 +75,29 @@ export async function POST(request: NextRequest) {
         }, { status: 401 });
       }
       
-      // Use the new openBoxAndVerify function which checks device status first
-      const result = await openBoxAndVerify(deviceId, Number(boxNo), credentials);
+      // Use DoorOperationService for all physical door operations
+      const requestId = `lockers-open-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      const doorResult = await executeDoorOperation({
+        orderId: `admin-locker-${deviceId}`,
+        orderNo: `ADMIN-LOCKER-OPEN`,
+        deviceId: deviceId,
+        deviceNumber: deviceId,
+        boxNumber: Number(boxNo),
+        action: 'admin-open',
+        requestId,
+      });
       
-      console.log('Open box result:', result);
+      console.log('Open box result:', doorResult);
       
-      if (result.success) {
+      if (doorResult.success && doorResult.confirmed) {
         return NextResponse.json({
           success: true,
-          message: result.message,
-          doorStatus: result.doorStatus,
-          data: result.apiResponse?.data,
+          message: doorResult.message,
         });
       } else {
         return NextResponse.json({
           success: false,
-          error: result.message,
+          error: doorResult.message,
         }, { status: 400 });
       }
     }
@@ -274,7 +273,7 @@ export async function POST(request: NextRequest) {
     // ============================================
 
     if (action === 'set-webhook') {
-      const { save_notify_url, take_notify_url } = body;
+      const { save_notify_url, take_notify_url, app_id, app_secret } = body;
       
       const credentials = await getCredentials(deviceId || '');
       
@@ -369,99 +368,39 @@ export async function POST(request: NextRequest) {
         }, { status: 401 });
       }
       
-      // First check if device is online
-      const deviceStatus = await getDeviceStatusWithCredentials(deviceId, credentials);
-      if (deviceStatus.code !== 0) {
-        return NextResponse.json({
-          success: false,
-          error: `Cannot reach device: ${deviceStatus.msg || 'Device offline'}`,
-        }, { status: 400 });
-      }
+      // Use DoorOperationService for express save/take
+      const requestId = `lockers-express-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      const doorResult = await executeDoorOperation({
+        orderId: `admin-express-${deviceId}`,
+        orderNo: `ADMIN-EXPRESS-SAVE-TAKE`,
+        deviceId: deviceId,
+        deviceNumber: deviceId,
+        boxSize: box_size as 'S' | 'M' | 'L' | 'XL',
+        action: action_type === 'save' ? 'courier-dropoff' : 'pickup',
+        actionCode: action_code,
+        useExpressApi: true,
+        requestId,
+      });
       
-      const isOnline = deviceStatus.data?.status === 'on' || deviceStatus.data?.online === true;
-      if (!isOnline) {
-        return NextResponse.json({
-          success: false,
-          error: `Device ${deviceId} is OFFLINE. Please check power and network connection.`,
-        }, { status: 400 });
-      }
+      console.log('[Express Save/Take] DoorOperation result:', doorResult);
       
-      // Send the express save/take command
-      const result = await expressSaveOrTakeWithCredentials(
-        deviceId,
-        box_size as 'S' | 'M' | 'L' | 'XL',
-        action_code,
-        action_type as 'save' | 'take',
-        credentials
-      );
-      
-      console.log('[Express Save/Take] API Response:', JSON.stringify(result, null, 2));
-      
-      if (result.code === 0 && result.data) {
-        const orderData = result.data;
-        
-        // Check if the device reported success
-        const deviceStatus = (orderData as { status?: string; msg?: string }).status;
-        const deviceMsg = (orderData as { status?: string; msg?: string }).msg;
-        
-        if (deviceStatus === 'fail') {
-          return NextResponse.json({
-            success: false,
-            error: deviceMsg || 'Device rejected the command',
-            order: orderData,
-          }, { status: 400 });
-        }
-        
-        // Wait a moment for the door to open
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        // Verify door status if we have a box name
-        let doorVerified = false;
-        let doorStatus = 'unknown';
-        
-        if (orderData.box_name) {
-          try {
-            // Get box list to find lock_address
-            const boxList = await getBoxListWithCredentials(deviceId, credentials);
-            if (boxList.code === 0 && boxList.data) {
-              const box = boxList.data.find((b: { box_name: string }) => b.box_name === orderData.box_name);
-              if (box?.lock_address) {
-                const doorResult = await getDoorStatusWithCredentials(deviceId, box.lock_address, credentials);
-                if (doorResult.code === 0 && doorResult.data) {
-                  doorStatus = (doorResult.data as { status?: string }).status || 'unknown';
-                  doorVerified = true;
-                  console.log('[Express Save/Take] Door status:', doorStatus);
-                }
-              }
-            }
-          } catch (doorError) {
-            console.error('[Express Save/Take] Failed to verify door:', doorError);
-          }
-        }
-        
-        // Return response with verification info
+      if (doorResult.success && doorResult.confirmed) {
         return NextResponse.json({
           success: true,
-          order: orderData,
-          doorStatus,
-          doorVerified,
-          message: `Box ${orderData.box_name || ''} command sent. Door status: ${doorStatus}`,
-          warning: doorVerified && doorStatus !== 'open' 
-            ? 'WARNING: Door may not have opened. Please verify physically.' 
-            : undefined,
+          message: doorResult.message,
+          doorVerified: true,
+        });
+      } else if (doorResult.success && !doorResult.confirmed) {
+        return NextResponse.json({
+          success: true,
+          message: doorResult.message,
+          doorVerified: false,
+          warning: 'WARNING: Door may not have opened. Please verify physically.',
         });
       } else {
-        // Check for specific errors
-        const resultData = result.data as { status?: string; msg?: string } | undefined;
-        if (resultData?.status === 'fail') {
-          return NextResponse.json({
-            success: false,
-            error: resultData.msg || result.msg || 'Device rejected the command',
-          }, { status: 400 });
-        }
         return NextResponse.json({
           success: false,
-          error: result.msg || 'Failed to open box',
+          error: doorResult.message,
         }, { status: 400 });
       }
     }
