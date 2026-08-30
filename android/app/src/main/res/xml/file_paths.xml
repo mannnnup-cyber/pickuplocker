@@ -2,4 +2,9 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <external-path name="my_images" path="." />
     <cache-path name="my_cache_images" path="." />
+    <!-- Allow FileProvider to serve downloaded APK files from the app's
+         cache directory. Used by UpdateChecker to fire the system
+         PackageInstaller via a content:// URI. -->
+    <cache-path name="apk_updates" path="updates/" />
+    <files-path name="apk_updates_files" path="updates/" />
 </paths>
