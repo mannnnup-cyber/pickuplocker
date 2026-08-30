@@ -69,6 +69,11 @@ public class MainActivity extends BridgeActivity {
     // When true, any NetworkCallback recovery should trigger a reload.
     private boolean isShowingErrorPage = false;
 
+    // In-app self-update checker — polls /api/app-version periodically
+    // and installs new APKs via the system PackageInstaller.
+    private UpdateChecker updateChecker;
+    private static final String UPDATE_BASE_URL = "https://pickuplocker.vercel.app";
+
     // WebView health monitoring — detects frozen/white screens at the native level
     private static final int HEALTH_CHECK_INTERVAL_MS = 60000;   // 1 minute
     private static final int HEALTH_RELOAD_THRESHOLD = 2;        // After 2 failed checks, force reload (2 min total)
@@ -111,6 +116,36 @@ public class MainActivity extends BridgeActivity {
 
         // Start WebView health monitoring
         startHealthMonitoring();
+
+        // Start in-app self-update checker
+        updateChecker = new UpdateChecker(this, UPDATE_BASE_URL, new UpdateChecker.Callback() {
+            @Override
+            public void onUpdateAvailable(String newVersion, String changelog, boolean forceUpdate) {
+                Log.i(TAG, "Update available: v" + newVersion + " (forceUpdate=" + forceUpdate + ")");
+                if (forceUpdate) {
+                    Log.w(TAG, "Force update requested — UI should be blocked until install completes");
+                    // TODO: show a full-screen "Updating..." overlay that blocks interaction.
+                    // For now, we just log. The system PackageInstaller dialog will appear
+                    // on top regardless.
+                }
+            }
+
+            @Override
+            public void onUpdateInstallStarted(String apkPath) {
+                Log.i(TAG, "Update install started: " + apkPath);
+            }
+
+            @Override
+            public void onUpdateToDate() {
+                Log.i(TAG, "App is up to date");
+            }
+
+            @Override
+            public void onUpdateError(String message) {
+                Log.w(TAG, "Update check error: " + message);
+            }
+        });
+        updateChecker.start();
     }
 
     @Override
@@ -140,6 +175,10 @@ public class MainActivity extends BridgeActivity {
         unregisterConnectivityMonitoring();
         // Stop health monitoring
         stopHealthMonitoring();
+        // Stop update checker
+        if (updateChecker != null) {
+            updateChecker.stop();
+        }
         // Remove any pending reconnect runnables
         mainHandler.removeCallbacksAndMessages(null);
     }

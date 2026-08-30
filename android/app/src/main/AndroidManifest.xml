@@ -62,4 +62,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Auto-start on boot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- In-app self-update: allows the app to install downloaded APKs.
+         Required for the UpdateChecker to fire the system PackageInstaller. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>
