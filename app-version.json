@@ -1,9 +1,9 @@
 {
-  "version": "3.3",
-  "versionCode": 7,
+  "version": "3.4",
+  "versionCode": 8,
   "apkUrl": "https://pickuplocker.vercel.app/api/app-version/download",
-  "checksum": "sha256:8f5d217220ce8f0a76ffd5c4f06004dedd6aa5040840e21d63e78479ec54f6fb",
-  "changelog": "v3.3: In-app update system - check, download and install updates directly from the kiosk app. New permissions for APK install and storage access.",
+  "checksum": "sha256:37693a585291e574f04f6fffcccc83f0d583449dc56fa5656210a173cbcbf2aa",
+  "changelog": "v3.4: DNS error recovery (pre-flight DNS check, Chrome error title detection, infinite retry with exponential backoff) + in-app self-update (UpdateChecker polls /api/app-version hourly, downloads APK, verifies SHA-256, fires PackageInstaller). Fixes white-screen ERR_NAME_NOT_RESOLVED issue.",
   "minVersion": "3.0",
   "forceUpdate": false
 }

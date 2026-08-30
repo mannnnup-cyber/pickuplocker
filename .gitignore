@@ -8,3 +8,8 @@ node_modules/
 download/
 tool-results/
 worklog.md
+
+# Android build artifacts
+android/.gradle/
+android/local.properties
+*.apk

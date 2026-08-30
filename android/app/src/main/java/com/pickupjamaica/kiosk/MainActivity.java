@@ -157,7 +157,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onResume() {
+    public void onResume() {
         super.onResume();
         // Re-apply immersive mode when returning to the activity
         hideSystemUI();
@@ -169,7 +169,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onDestroy() {
+    public void onDestroy() {
         super.onDestroy();
         // Clean up network callback
         unregisterConnectivityMonitoring();
@@ -250,7 +250,9 @@ public class MainActivity extends BridgeActivity {
         // Disable WebView debugging in release builds
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
             // Only enable debugging for debuggable (non-release) builds
-            if (BuildConfig.DEBUG) {
+            android.content.pm.ApplicationInfo appInfo = getApplicationInfo();
+            if (appInfo != null
+                && (appInfo.flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
                 WebView.setWebContentsDebuggingEnabled(true);
             }
             // Release builds default to false, but be explicit
@@ -284,7 +286,7 @@ public class MainActivity extends BridgeActivity {
      */
     private void loadKioskUrlWithDnsCheck() {
         Thread dnsThread = new Thread(() -> {
-            boolean resolved = false;
+            final java.util.concurrent.atomic.AtomicBoolean resolved = new java.util.concurrent.atomic.AtomicBoolean(false);
             try {
                 // Resolve with a timeout. java.net.InetAddress doesn't natively
                 // support per-call timeouts, so we race it against a watchdog.
@@ -293,7 +295,7 @@ public class MainActivity extends BridgeActivity {
                     try {
                         java.net.InetAddress[] addrs = java.net.InetAddress.getAllByName(KIOSK_HOST);
                         if (addrs.length > 0) {
-                            resolved = true;
+                            resolved.set(true);
                         }
                     } catch (java.net.UnknownHostException e) {
                         Log.w(TAG, "DNS pre-flight: cannot resolve " + KIOSK_HOST + " — " + e.getMessage());
@@ -314,7 +316,7 @@ public class MainActivity extends BridgeActivity {
                 Log.w(TAG, "DNS pre-flight: exception — " + e.getMessage());
             }
 
-            final boolean finalResolved = resolved;
+            final boolean finalResolved = resolved.get();
             mainHandler.post(() -> {
                 if (finalResolved) {
                     Log.i(TAG, "DNS pre-flight OK — loading " + KIOSK_URL);
@@ -410,9 +412,8 @@ public class MainActivity extends BridgeActivity {
          * the Activity is still alive. Without this handler, the WebView shows blank.
          */
         @Override
-        public boolean onRenderProcessGone(WebView view, int detail) {
-            Log.e(TAG, "WebView renderer process GONE! Detail: " + detail
-                + " (0=crash, 1=OOM killed). Rebuilding WebView immediately.");
+        public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+            Log.e(TAG, "WebView renderer process GONE! Rebuilding WebView immediately.");
 
             if (webView != null) {
                 try {

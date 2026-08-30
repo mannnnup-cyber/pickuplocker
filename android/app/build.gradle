@@ -7,8 +7,8 @@ android {
         applicationId "com.pickupjamaica.kiosk"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 8
+        versionName "3.4"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -27,6 +27,16 @@ android {
 repositories {
     flatDir{
         dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+configurations.all {
+    resolutionStrategy {
+        // Force a single Kotlin version to avoid duplicate class errors
+        // between kotlin-stdlib (1.8.22) and kotlin-stdlib-jdk7/jdk8 (1.6.21).
+        force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
     }
 }
 
