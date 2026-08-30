@@ -12,4 +12,7 @@ worklog.md
 # Android build artifacts
 android/.gradle/
 android/local.properties
+# Ignore APKs everywhere EXCEPT public/downloads/ (which Vercel serves
+# as a static asset for the in-app self-update system).
 *.apk
+!public/downloads/*.apk

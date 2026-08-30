@@ -1,8 +1,8 @@
 {
   "version": "3.4",
   "versionCode": 8,
-  "apkUrl": "https://pickuplocker.vercel.app/api/app-version/download",
-  "checksum": "sha256:37693a585291e574f04f6fffcccc83f0d583449dc56fa5656210a173cbcbf2aa",
+  "apkUrl": "https://pickuplocker.vercel.app/downloads/PickupJamaica-kiosk-v3.4.apk",
+  "checksum": "sha256:8fbad5af2471510f4641e3030793003b1ef4d0b8c13a1a5b853ccdf1e51ea195",
   "changelog": "v3.4: DNS error recovery (pre-flight DNS check, Chrome error title detection, infinite retry with exponential backoff) + in-app self-update (UpdateChecker polls /api/app-version hourly, downloads APK, verifies SHA-256, fires PackageInstaller). Fixes white-screen ERR_NAME_NOT_RESOLVED issue.",
   "minVersion": "3.0",
   "forceUpdate": false
