@@ -48,16 +48,26 @@ public class MainActivity extends BridgeActivity {
 
     private static final String TAG = "PickupKiosk";
     private static final String KIOSK_URL = "https://pickuplocker.vercel.app/kiosk-lite";
+    private static final String KIOSK_HOST = "pickuplocker.vercel.app";
     private static final String OFFLINE_URL = "file:///android_asset/offline.html";
-    private static final int RECONNECT_DELAY_MS = 5000;     // 5 seconds
-    private static final int MAX_RECONNECT_ATTEMPTS = 60;    // 5 minutes total
-    private static final int CONNECTIVITY_CHECK_MS = 3000;   // 3 seconds after network callback
+
+    // Reconnect timing — exponential backoff, capped at 60s, retries forever
+    // (kiosk should never give up)
+    private static final int RECONNECT_DELAY_INITIAL_MS = 5000;   // 5 seconds
+    private static final int RECONNECT_DELAY_MAX_MS = 60000;      // 60 seconds (cap)
+    private static final int CONNECTIVITY_CHECK_MS = 3000;        // 3 seconds after network callback
+    private static final int DNS_RESOLVE_TIMEOUT_MS = 5000;       // 5 seconds for DNS pre-flight
 
     private WebView webView;
     private Handler mainHandler = new Handler(Looper.getMainLooper());
     private ConnectivityManager.NetworkCallback networkCallback;
     private boolean isShowingOfflinePage = false;
-    private int reconnectAttempts = 0;
+    private int reconnectAttempts = 0;  // Used for exponential backoff (no cap — retries forever)
+
+    // Flag: the WebView is currently showing something other than KIOSK_URL or OFFLINE_URL
+    // (e.g. Chrome's ERR_NAME_NOT_RESOLVED error page, about:blank, etc.).
+    // When true, any NetworkCallback recovery should trigger a reload.
+    private boolean isShowingErrorPage = false;
 
     // WebView health monitoring — detects frozen/white screens at the native level
     private static final int HEALTH_CHECK_INTERVAL_MS = 60000;   // 1 minute
@@ -210,8 +220,77 @@ public class MainActivity extends BridgeActivity {
         // Custom WebViewClient for error handling and navigation control
         webView.setWebViewClient(new KioskWebViewClient());
 
-        // Custom WebChromeClient for console logging
+        // Custom WebChromeClient for console logging + Chrome error page detection
         webView.setWebChromeClient(new KioskWebChromeClient());
+
+        // Pre-flight DNS check before the first loadUrl.
+        // If DNS fails, show the branded offline page immediately instead of
+        // letting Chrome render its ERR_NAME_NOT_RESOLVED page (which the
+        // WebViewClient.onReceivedError callback doesn't always fire for).
+        loadKioskUrlWithDnsCheck();
+    }
+
+    // ============================================
+    // DNS PRE-FLIGHT CHECK
+    // ============================================
+
+    /**
+     * Resolves KIOSK_HOST on a background thread. If resolution succeeds,
+     * loads KIOSK_URL on the main thread. If it fails (or times out),
+     * shows the branded offline page immediately and schedules a retry.
+     *
+     * This prevents the WebView from rendering Chrome's raw error page
+     * when DNS is broken — a state the existing onReceivedError handler
+     * does not reliably catch.
+     */
+    private void loadKioskUrlWithDnsCheck() {
+        Thread dnsThread = new Thread(() -> {
+            boolean resolved = false;
+            try {
+                // Resolve with a timeout. java.net.InetAddress doesn't natively
+                // support per-call timeouts, so we race it against a watchdog.
+                final java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean(false);
+                Thread resolver = new Thread(() -> {
+                    try {
+                        java.net.InetAddress[] addrs = java.net.InetAddress.getAllByName(KIOSK_HOST);
+                        if (addrs.length > 0) {
+                            resolved = true;
+                        }
+                    } catch (java.net.UnknownHostException e) {
+                        Log.w(TAG, "DNS pre-flight: cannot resolve " + KIOSK_HOST + " — " + e.getMessage());
+                    } catch (Exception e) {
+                        Log.w(TAG, "DNS pre-flight: unexpected error — " + e.getMessage());
+                    } finally {
+                        done.set(true);
+                    }
+                });
+                resolver.setDaemon(true);
+                resolver.start();
+                resolver.join(DNS_RESOLVE_TIMEOUT_MS);
+                if (!done.get()) {
+                    resolver.interrupt();
+                    Log.w(TAG, "DNS pre-flight: timed out after " + DNS_RESOLVE_TIMEOUT_MS + "ms");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "DNS pre-flight: exception — " + e.getMessage());
+            }
+
+            final boolean finalResolved = resolved;
+            mainHandler.post(() -> {
+                if (finalResolved) {
+                    Log.i(TAG, "DNS pre-flight OK — loading " + KIOSK_URL);
+                    if (webView != null) {
+                        isShowingErrorPage = false;
+                        webView.loadUrl(KIOSK_URL);
+                    }
+                } else {
+                    Log.w(TAG, "DNS pre-flight FAILED — showing offline page");
+                    showOfflinePage();
+                }
+            });
+        });
+        dnsThread.setDaemon(true);
+        dnsThread.start();
     }
 
     // ============================================
@@ -227,11 +306,16 @@ public class MainActivity extends BridgeActivity {
             if (OFFLINE_URL.equals(url)) {
                 isShowingOfflinePage = true;
                 Log.w(TAG, "Showing offline page — server unreachable");
-            } else {
+            } else if (KIOSK_URL.equals(url) || url.startsWith("https://pickuplocker.vercel.app")) {
                 isShowingOfflinePage = false;
+                isShowingErrorPage = false;
                 reconnectAttempts = 0;
                 healthCheckFailCount = 0; // Reset health on successful page load
                 Log.i(TAG, "Page loaded successfully: " + url);
+            } else {
+                // Some other URL — likely Chrome's error page or about:blank
+                isShowingErrorPage = true;
+                Log.w(TAG, "Page loaded non-kiosk URL (likely error page): " + url);
             }
         }
 
@@ -241,6 +325,12 @@ public class MainActivity extends BridgeActivity {
             if (request.isForMainFrame()) {
                 Log.e(TAG, "Main frame error: " + error.getDescription()
                     + " (code: " + error.getErrorCode() + ")");
+
+                // Mark that we're in an error state so NetworkCallback
+                // recovery can trigger a reload even if we never managed
+                // to call showOfflinePage() (e.g. when Chrome renders its
+                // own error page before our callback fires).
+                isShowingErrorPage = true;
 
                 // Don't show offline page if we're already on it
                 if (!isShowingOfflinePage) {
@@ -253,6 +343,7 @@ public class MainActivity extends BridgeActivity {
         @Override
         public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
             Log.e(TAG, "Legacy WebView error: " + description + " (code: " + errorCode + ")");
+            isShowingErrorPage = true;
             if (!isShowingOfflinePage) {
                 showOfflinePage();
             }
@@ -336,6 +427,51 @@ public class MainActivity extends BridgeActivity {
             }
             return true;
         }
+
+        /**
+         * Detects Chrome's built-in error pages by their page title.
+         *
+         * When the WebView fails to load a URL with ERR_NAME_NOT_RESOLVED or
+         * similar DNS/network errors, the WebViewClient.onReceivedError
+         * callback does NOT reliably fire on all Android versions. Instead,
+         * Chrome's internal error page is rendered with a known page title.
+         *
+         * By checking the title here, we catch the error state that
+         * onReceivedError misses, and trigger the branded offline page +
+         * retry loop.
+         */
+        @Override
+        public void onReceivedTitle(WebView view, String title) {
+            super.onReceivedTitle(view, title);
+
+            if (title == null) return;
+
+            String lower = title.toLowerCase();
+            if (lower.contains("webpage not available")
+                || lower.contains("not available")
+                || lower.contains("err_")
+                || lower.contains("can't connect")
+                || lower.contains("site can't be reached")
+                || lower.contains("unable to connect")) {
+
+                Log.w(TAG, "Chrome error page detected by title: \"" + title + "\"");
+
+                // Mark as error state so NetworkCallback recovery will reload
+                isShowingErrorPage = true;
+
+                // Don't show offline page if we're already on it
+                if (!isShowingOfflinePage && webView != null) {
+                    // Only react to the main frame's title, not subresources
+                    String currentUrl = webView.getUrl();
+                    if (currentUrl == null
+                        || (!currentUrl.equals(OFFLINE_URL)
+                            && !currentUrl.equals("about:blank"))) {
+                        Log.i(TAG, "Showing offline page due to Chrome error title");
+                        showOfflinePage();
+                    }
+                }
+            }
+        }
     }
 
     // ============================================
@@ -361,19 +497,21 @@ public class MainActivity extends BridgeActivity {
     // ============================================
 
     private void scheduleReconnect() {
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            Log.e(TAG, "Max reconnect attempts reached — giving up until network callback fires");
-            return;
-        }
-
+        // No cap — kiosk should retry forever with exponential backoff.
+        // 5s → 10s → 20s → 40s → 60s → 60s → 60s ...
         reconnectAttempts++;
-        Log.i(TAG, "Reconnect attempt " + reconnectAttempts + "/" + MAX_RECONNECT_ATTEMPTS);
+        int delayMs = Math.min(
+            RECONNECT_DELAY_INITIAL_MS * (1 << Math.min(reconnectAttempts - 1, 10)),
+            RECONNECT_DELAY_MAX_MS
+        );
+        Log.i(TAG, "Reconnect attempt " + reconnectAttempts
+            + " (delay " + delayMs + "ms, exponential backoff)");
 
         mainHandler.postDelayed(() -> {
-            if (isShowingOfflinePage) {
+            if (isShowingOfflinePage || isShowingErrorPage) {
                 checkAndReload();
             }
-        }, RECONNECT_DELAY_MS);
+        }, delayMs);
     }
 
     private void checkAndReload() {
@@ -383,13 +521,11 @@ public class MainActivity extends BridgeActivity {
             return;
         }
 
-        // Network is available — try to reload the kiosk page
-        Log.i(TAG, "Network detected — attempting to reload kiosk page");
-        if (webView != null) {
-            mainHandler.post(() -> {
-                webView.loadUrl(KIOSK_URL);
-            });
-        }
+        // Network is available — re-run DNS pre-flight, then reload kiosk.
+        // DNS pre-flight catches the case where Wi-Fi shows "connected"
+        // but DNS is still broken (captive portal, misconfigured router, etc).
+        Log.i(TAG, "Network detected — re-running DNS check before reload");
+        loadKioskUrlWithDnsCheck();
     }
 
     // ============================================
@@ -414,16 +550,15 @@ public class MainActivity extends BridgeActivity {
             public void onAvailable(Network network) {
                 Log.i(TAG, "Network became available: " + network);
 
-                // If we're on the offline page, wait a moment for the
-                // network to stabilize, then reload the kiosk page
-                if (isShowingOfflinePage) {
+                // If we're on the offline page OR showing Chrome's error
+                // page, wait a moment for the network to stabilize, then
+                // re-run DNS pre-flight and reload the kiosk page.
+                if (isShowingOfflinePage || isShowingErrorPage) {
                     mainHandler.postDelayed(() -> {
-                        if (isShowingOfflinePage) {
-                            Log.i(TAG, "Network restored while on offline page — reloading kiosk");
+                        if (isShowingOfflinePage || isShowingErrorPage) {
+                            Log.i(TAG, "Network restored while on error page — reloading kiosk");
                             reconnectAttempts = 0; // Reset counter
-                            if (webView != null) {
-                                mainHandler.post(() -> webView.loadUrl(KIOSK_URL));
-                            }
+                            loadKioskUrlWithDnsCheck();
                         }
                     }, CONNECTIVITY_CHECK_MS);
                 }
@@ -434,8 +569,8 @@ public class MainActivity extends BridgeActivity {
                 Log.w(TAG, "Network lost: " + network);
                 // We don't immediately show the offline page here because
                 // the WebView might still have a cached version working.
-                // The WebViewClient.onReceivedError will handle it if the
-                // page actually fails to load.
+                // The WebViewClient.onReceivedError / WebChromeClient.onReceivedTitle
+                // will handle it if the page actually fails to load.
             }
 
             @Override
@@ -443,12 +578,12 @@ public class MainActivity extends BridgeActivity {
                 boolean hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                     && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
 
-                if (hasInternet && isShowingOfflinePage) {
+                if (hasInternet && (isShowingOfflinePage || isShowingErrorPage)) {
                     Log.i(TAG, "Validated internet available — reloading kiosk");
                     mainHandler.postDelayed(() -> {
-                        if (isShowingOfflinePage && webView != null) {
+                        if ((isShowingOfflinePage || isShowingErrorPage) && webView != null) {
                             reconnectAttempts = 0;
-                            mainHandler.post(() -> webView.loadUrl(KIOSK_URL));
+                            loadKioskUrlWithDnsCheck();
                         }
                     }, CONNECTIVITY_CHECK_MS);
                 }
@@ -774,10 +909,12 @@ public class MainActivity extends BridgeActivity {
      */
     private void reloadKiosk() {
         isShowingOfflinePage = false;
+        isShowingErrorPage = false;
         reconnectAttempts = 0;
         if (webView != null) {
             webView.clearCache(true);
-            webView.loadUrl(KIOSK_URL);
+            // Use DNS pre-flight so we never render Chrome's error page.
+            loadKioskUrlWithDnsCheck();
         }
     }
 }
