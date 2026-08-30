@@ -76,6 +76,10 @@ if (!PROVIDED_LOCK_ADDRESS) {
 // Resolved lock address — set after cross-verification
 let LOCK_ADDRESS = '';
 
+// Hoisted: Test 6 (pre-OPEN snapshot) needs to reference taskId without
+// breaking scope. taskId is assigned in Test 3 (OPEN) below.
+let taskId: string | undefined = undefined;
+
 // ============================================
 // Bestwond API helpers (standalone — no production imports)
 // ============================================
@@ -438,112 +442,19 @@ async function main() {
   console.log(`  data.task_id:      ${t2Data.task_id}`);
   console.log(`  All data keys:     ${Object.keys(t2Data).join(', ')}`);
 
-  // ========================================
-  // TEST 3 — Open the test box (REQUIRES EXPLICIT CONFIRMATION)
-  // ========================================
-  section('TEST 3 — Open the Test Box (/api/iot/open/box/)');
-
-  console.log('\n⚠️  About to send OPEN command to the physical locker.');
-  console.log(`   Device: ${DEVICE_NUMBER}, Box: ${TEST_BOX}, Lock: ${LOCK_ADDRESS}`);
-  console.log('   This will physically open the door. Do NOT proceed if box is occupied.');
-
-  // Require explicit confirmation
-  const confirmed = await confirmOpen();
-  if (!confirmed) {
-    console.log('\n❌ ABORTED: Confirmation denied. Exiting without opening the box.');
-    console.log('   All previous diagnostic results are still valid.');
-    process.exit(0);
-  }
-
-  console.log('\n✅ Confirmation received. Sending OPEN command...');
-
-  const t3Params = {
-    app_id: APP_ID,
-    timestamps: getTimestamp(),
-    device_number: DEVICE_NUMBER,
-    lock_address: LOCK_ADDRESS,
-    use_type: 'S',
-  };
-  const t3 = await bestwondPost('/api/iot/open/box/', t3Params);
-  results.test3_openBox = logResult('Raw sanitized response (OPEN command)', {
-    httpStatus: t3.httpStatus,
-    responseTimeMs: t3.responseTimeMs,
-    body: t3.body,
-  });
-
-  const t3Body = t3.body as Record<string, unknown> | null;
-  const t3Data = (t3Body?.data || {}) as Record<string, unknown>;
-  console.log('\nKey fields:');
-  console.log(`  code:           ${t3Body?.code}`);
-  console.log(`  msg:            ${t3Body?.msg}`);
-  console.log(`  data.status:    ${t3Data.status}`);
-  console.log(`  data.msg:       ${t3Data.msg}`);
-  console.log(`  data.task_id:   ${t3Data.task_id}`);
-  console.log(`  All data keys:  ${Object.keys(t3Data).join(', ')}`);
-
-  // Store task_id for later correlation
-  const taskId = t3Data.task_id as string | undefined;
-  results.openTaskId = taskId;
-  if (taskId) {
-    console.log(`\n✅ task_id returned: ${taskId}`);
-  } else {
-    console.log('\n❌ No task_id in open response.');
-  }
-
-  // Wait for physical door to respond
-  console.log('\nWaiting 3 seconds for physical door to open...');
-  await new Promise(resolve => setTimeout(resolve, 3000));
-
-  // ========================================
-  // TEST 4 — Box status while physically OPEN
-  // ========================================
-  section('TEST 4 — Box Status while physically open (/api/iot/device/box/status/)');
-
-  const t4Params = {
-    app_id: APP_ID,
-    timestamps: getTimestamp(),
-    device_number: DEVICE_NUMBER,
-    lock_address: LOCK_ADDRESS,
-  };
-  const t4 = await bestwondPost('/api/iot/device/box/status/', t4Params);
-  results.test4_boxStatusOpen = logResult('Raw sanitized response (door OPEN)', {
-    httpStatus: t4.httpStatus,
-    responseTimeMs: t4.responseTimeMs,
-    body: t4.body,
-  });
-
-  const t4Body = t4.body as Record<string, unknown> | null;
-  const t4Data = (t4Body?.data || {}) as Record<string, unknown>;
-  console.log('\nKey fields:');
-  console.log(`  code:         ${t4Body?.code}`);
-  console.log(`  msg:          ${t4Body?.msg}`);
-  console.log(`  data.status:  ${t4Data.status}`);
-  console.log(`  data.door_open:     ${t4Data.door_open}`);
-  console.log(`  data.lock_status:  ${t4Data.lock_status}`);
-  console.log(`  data.task_id:      ${t4Data.task_id}`);
-  console.log(`  All data keys:     ${Object.keys(t4Data).join(', ')}`);
-
-  // Compare Test 2 (closed) vs Test 4 (open)
-  console.log('\n─── COMPARISON: CLOSED (Test 2) vs OPEN (Test 4) ───');
-  console.log(`  code:         ${t2Body?.code} → ${t4Body?.code}`);
-  console.log(`  data.status:  ${t2Data.status} → ${t4Data.status}`);
-  console.log(`  data.door_open:     ${t2Data.door_open} → ${t4Data.door_open}`);
-  console.log(`  data.lock_status:  ${t2Data.lock_status} → ${t4Data.lock_status}`);
-
-  const statusChanged = JSON.stringify(t2Data) !== JSON.stringify(t4Data);
-  console.log(`\n  Response CHANGED between closed and open: ${statusChanged ? 'YES' : 'NO'}`);
-
-  if (!statusChanged) {
-    console.log('  ⚠️  /device/box/status/ may NOT synchronously return physical door state.');
-    console.log('     The response is identical for both door-closed and door-open states.');
-  } else {
-    console.log('  ✅ /device/box/status/ DOES return different responses for closed vs open.');
-  }
-
-  // Wait for door to be closed again before proceeding
-  console.log('\n⚠️  Please CLOSE the test box door now, then press Enter to continue...');
-  // In non-interactive mode, just wait
-  await new Promise(resolve => setTimeout(resolve, 5000));
+  // ============================================
+  // READ-ONLY TESTS — Run before any OPEN command
+  // ============================================
+  // These tests gather all available read-only information
+  // about the device and box BEFORE we send any physical OPEN
+  // command. This way, if the user aborts at the Test 3 OPEN
+  // confirmation prompt, all diagnostic information is still
+  // captured.
+  //
+  // Original test order was 1, 2, 3, 4, 5, 6, 7, 8.
+  // New execution order: 1, 2, 5, 6, 7, 8, 3, 4.
+  // Test numbers are preserved for git-blame clarity.
+  // ============================================
 
   // ========================================
   // TEST 5 — Callback behavior
@@ -737,6 +648,114 @@ async function main() {
   console.log('\nCurrent device status (for Test 8 baseline):');
   console.log(`  status: ${t8Data.status}`);
   console.log(`  online: ${t8Data.online}`);
+
+
+  // ========================================
+  // TEST 3 — Open the test box (REQUIRES EXPLICIT CONFIRMATION)
+  // ========================================
+  section('TEST 3 — Open the Test Box (/api/iot/open/box/)');
+
+  console.log('\n⚠️  About to send OPEN command to the physical locker.');
+  console.log(`   Device: ${DEVICE_NUMBER}, Box: ${TEST_BOX}, Lock: ${LOCK_ADDRESS}`);
+  console.log('   This will physically open the door. Do NOT proceed if box is occupied.');
+
+  // Require explicit confirmation
+  const confirmed = await confirmOpen();
+  if (!confirmed) {
+    console.log('\n❌ ABORTED: Confirmation denied. Exiting without opening the box.');
+    console.log('   All previous diagnostic results are still valid.');
+    process.exit(0);
+  }
+
+  console.log('\n✅ Confirmation received. Sending OPEN command...');
+
+  const t3Params = {
+    app_id: APP_ID,
+    timestamps: getTimestamp(),
+    device_number: DEVICE_NUMBER,
+    lock_address: LOCK_ADDRESS,
+    use_type: 'S',
+  };
+  const t3 = await bestwondPost('/api/iot/open/box/', t3Params);
+  results.test3_openBox = logResult('Raw sanitized response (OPEN command)', {
+    httpStatus: t3.httpStatus,
+    responseTimeMs: t3.responseTimeMs,
+    body: t3.body,
+  });
+
+  const t3Body = t3.body as Record<string, unknown> | null;
+  const t3Data = (t3Body?.data || {}) as Record<string, unknown>;
+  console.log('\nKey fields:');
+  console.log(`  code:           ${t3Body?.code}`);
+  console.log(`  msg:            ${t3Body?.msg}`);
+  console.log(`  data.status:    ${t3Data.status}`);
+  console.log(`  data.msg:       ${t3Data.msg}`);
+  console.log(`  data.task_id:   ${t3Data.task_id}`);
+  console.log(`  All data keys:  ${Object.keys(t3Data).join(', ')}`);
+
+  // Store task_id for later correlation
+  taskId = t3Data.task_id as string | undefined;
+  results.openTaskId = taskId;
+  if (taskId) {
+    console.log(`\n✅ task_id returned: ${taskId}`);
+  } else {
+    console.log('\n❌ No task_id in open response.');
+  }
+
+  // Wait for physical door to respond
+  console.log('\nWaiting 3 seconds for physical door to open...');
+  await new Promise(resolve => setTimeout(resolve, 3000));
+
+  // ========================================
+  // TEST 4 — Box status while physically OPEN
+  // ========================================
+  section('TEST 4 — Box Status while physically open (/api/iot/device/box/status/)');
+
+  const t4Params = {
+    app_id: APP_ID,
+    timestamps: getTimestamp(),
+    device_number: DEVICE_NUMBER,
+    lock_address: LOCK_ADDRESS,
+  };
+  const t4 = await bestwondPost('/api/iot/device/box/status/', t4Params);
+  results.test4_boxStatusOpen = logResult('Raw sanitized response (door OPEN)', {
+    httpStatus: t4.httpStatus,
+    responseTimeMs: t4.responseTimeMs,
+    body: t4.body,
+  });
+
+  const t4Body = t4.body as Record<string, unknown> | null;
+  const t4Data = (t4Body?.data || {}) as Record<string, unknown>;
+  console.log('\nKey fields:');
+  console.log(`  code:         ${t4Body?.code}`);
+  console.log(`  msg:          ${t4Body?.msg}`);
+  console.log(`  data.status:  ${t4Data.status}`);
+  console.log(`  data.door_open:     ${t4Data.door_open}`);
+  console.log(`  data.lock_status:  ${t4Data.lock_status}`);
+  console.log(`  data.task_id:      ${t4Data.task_id}`);
+  console.log(`  All data keys:     ${Object.keys(t4Data).join(', ')}`);
+
+  // Compare Test 2 (closed) vs Test 4 (open)
+  console.log('\n─── COMPARISON: CLOSED (Test 2) vs OPEN (Test 4) ───');
+  console.log(`  code:         ${t2Body?.code} → ${t4Body?.code}`);
+  console.log(`  data.status:  ${t2Data.status} → ${t4Data.status}`);
+  console.log(`  data.door_open:     ${t2Data.door_open} → ${t4Data.door_open}`);
+  console.log(`  data.lock_status:  ${t2Data.lock_status} → ${t4Data.lock_status}`);
+
+  const statusChanged = JSON.stringify(t2Data) !== JSON.stringify(t4Data);
+  console.log(`\n  Response CHANGED between closed and open: ${statusChanged ? 'YES' : 'NO'}`);
+
+  if (!statusChanged) {
+    console.log('  ⚠️  /device/box/status/ may NOT synchronously return physical door state.');
+    console.log('     The response is identical for both door-closed and door-open states.');
+  } else {
+    console.log('  ✅ /device/box/status/ DOES return different responses for closed vs open.');
+  }
+
+  // Wait for door to be closed again before proceeding
+  console.log('\n⚠️  Please CLOSE the test box door now, then press Enter to continue...');
+  // In non-interactive mode, just wait
+  await new Promise(resolve => setTimeout(resolve, 5000));
 
   // ========================================
   // FINAL SUMMARY
