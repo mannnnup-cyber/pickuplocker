@@ -13,48 +13,159 @@ import { logDoorOperation } from '@/lib/bestwond-safe';
  * 2. If door opening fails, NO state changes are made
  * 3. Customer gets accurate messages about what happened
  * 4. Operations are idempotent (duplicate-safe)
+ *
+ * TRACING:
+ * Every request gets a requestRef (kiosk-xxxxxxxx) that is logged
+ * server-side (Vercel logs) with privacy-safe diagnostics and returned
+ * in the response body. This allows correlating a website failure with
+ * server logs WITHOUT exposing pickup/save codes, phone numbers,
+ * Bestwond secrets, or signatures.
  */
+
+/** Generate a short, opaque request reference. Not a secret — just a
+ *  correlation ID. Format: kiosk-xxxxxxxx (8 hex chars). */
+function generateRequestRef(): string {
+  const rand = Math.random().toString(16).slice(2, 10).padEnd(8, '0');
+  return `kiosk-${rand}`;
+}
+
+/** Privacy-safe log of a kiosk use-code request.
+ *
+ *  NEVER log: pickup code, save code, customer phone, Bestwond secret,
+ *  Bestwond signature, payment credentials.
+ *
+ *  This function is called at the end of every request (success or
+ *  failure) with the structured result. It writes a single line to
+ *  console.log (which Vercel captures as a serverless log entry).
+ */
+function logUseCodeRequest(ref: string, data: {
+  route: string;
+  codeType: 'save' | 'pick' | 'unknown';
+  httpStatus: number;
+  result: 'success' | 'client_error' | 'server_error' | 'door_failure';
+  expressOrderFound: boolean;
+  orderFound: boolean;
+  deviceFound: boolean;
+  boxNumber?: number | null;
+  doorOperationStarted: boolean;
+  operationRef?: string | null;
+  doorResultSuccess?: boolean;
+  doorResultConfirmed?: boolean;
+  doorResultStatus?: string;
+  doorResultErrorType?: string;
+  doorResultProviderCode?: number | null;
+  doorResultApiCalls?: number;
+  durationMs: number;
+  customerMessage?: string;
+}) {
+  // Build a single-line JSON log entry. Vercel parses these for search.
+  const entry = {
+    source: 'KioskUseCode',
+    requestRef: ref,
+    route: data.route,
+    codeType: data.codeType,
+    httpStatus: data.httpStatus,
+    result: data.result,
+    expressOrderFound: data.expressOrderFound,
+    orderFound: data.orderFound,
+    deviceFound: data.deviceFound,
+    boxNumber: data.boxNumber ?? null,
+    doorOperationStarted: data.doorOperationStarted,
+    operationRef: data.operationRef ?? null,
+    doorResult: {
+      success: data.doorResultSuccess,
+      confirmed: data.doorResultConfirmed,
+      status: data.doorResultStatus,
+      errorType: data.doorResultErrorType,
+      providerCode: data.doorResultProviderCode,
+      apiCalls: data.doorResultApiCalls,
+    },
+    durationMs: data.durationMs,
+    // Only include customerMessage if it's a safe, non-sensitive string.
+    // (We never log the actual pickup/save code or phone.)
+    customerMessage: data.customerMessage,
+  };
+  console.log(JSON.stringify(entry));
+}
+
 export async function POST(request: NextRequest) {
+  const ref = generateRequestRef();
+  const startedAt = Date.now();
+  let codeType: 'save' | 'pick' | 'unknown' = 'unknown';
+  let route = 'use-code';
+
   try {
     const body = await request.json();
-    const { code, codeType, recipientPhone, paymentMethod } = body;
+    const { code, codeType: ct, recipientPhone, paymentMethod } = body;
+    codeType = (ct === 'save' || ct === 'pick') ? ct : 'unknown';
 
     // Validate code
     if (!code || code.length !== 6) {
+      logUseCodeRequest(ref, {
+        route, codeType, httpStatus: 400, result: 'client_error',
+        expressOrderFound: false, orderFound: false, deviceFound: false,
+        doorOperationStarted: false, durationMs: Date.now() - startedAt,
+        customerMessage: 'Please enter a valid 6-digit code',
+      });
       return NextResponse.json({
         success: false,
         error: 'Please enter a valid 6-digit code',
+        requestRef: ref,
       }, { status: 400 });
     }
 
     // Validate code type
     if (!codeType || !['save', 'pick'].includes(codeType)) {
+      logUseCodeRequest(ref, {
+        route, codeType: 'unknown', httpStatus: 400, result: 'client_error',
+        expressOrderFound: false, orderFound: false, deviceFound: false,
+        doorOperationStarted: false, durationMs: Date.now() - startedAt,
+        customerMessage: 'Invalid code type. Must be "save" or "pick"',
+      });
       return NextResponse.json({
         success: false,
         error: 'Invalid code type. Must be "save" or "pick"',
+        requestRef: ref,
       }, { status: 400 });
     }
 
     // Handle save_code (drop-off)
     if (codeType === 'save') {
-      return await handleSaveCode(code, recipientPhone);
+      return await handleSaveCode(code, recipientPhone, ref, startedAt);
     }
 
     // Handle pick_code (pickup)
     if (codeType === 'pick') {
-      return await handlePickCode(code, paymentMethod);
+      return await handlePickCode(code, paymentMethod, ref, startedAt);
     }
 
+    logUseCodeRequest(ref, {
+      route, codeType, httpStatus: 400, result: 'client_error',
+      expressOrderFound: false, orderFound: false, deviceFound: false,
+      doorOperationStarted: false, durationMs: Date.now() - startedAt,
+      customerMessage: 'Invalid request',
+    });
     return NextResponse.json({
       success: false,
       error: 'Invalid request',
+      requestRef: ref,
     }, { status: 400 });
 
   } catch (error) {
-    console.error('Use code error:', error instanceof Error ? error.message : 'Unknown error');
+    const durationMs = Date.now() - startedAt;
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Use code error:', message);
+
+    logUseCodeRequest(ref, {
+      route, codeType, httpStatus: 500, result: 'server_error',
+      expressOrderFound: false, orderFound: false, deviceFound: false,
+      doorOperationStarted: false, durationMs,
+      customerMessage: 'An error occurred processing your code. Please try again.',
+    });
     return NextResponse.json({
       success: false,
       error: 'An error occurred processing your code. Please try again.',
+      requestRef: ref,
     }, { status: 500 });
   }
 }
@@ -64,27 +175,41 @@ export async function POST(request: NextRequest) {
  *
  * SAFETY: Only marks order STORED and box OCCUPIED after confirmed door opening.
  */
-async function handleSaveCode(saveCode: string, recipientPhone?: string) {
+async function handleSaveCode(saveCode: string, recipientPhone: string | undefined, ref: string, startedAt: number) {
   // Find express order by save_code
   const expressOrder = await db.expressOrder.findFirst({
     where: { saveCode, status: 'CREATED' },
   });
 
   if (!expressOrder) {
+    logUseCodeRequest(ref, {
+      route: 'use-code/save', codeType: 'save', httpStatus: 404, result: 'client_error',
+      expressOrderFound: false, orderFound: false, deviceFound: false,
+      doorOperationStarted: false, durationMs: Date.now() - startedAt,
+      customerMessage: 'Invalid or expired drop-off code',
+    });
     return NextResponse.json({
       success: false,
       error: 'Invalid or expired drop-off code',
+      requestRef: ref,
     }, { status: 404 });
   }
 
   // Check if recipient phone is provided
   if (!recipientPhone) {
+    logUseCodeRequest(ref, {
+      route: 'use-code/save', codeType: 'save', httpStatus: 200, result: 'success',
+      expressOrderFound: true, orderFound: false, deviceFound: false,
+      doorOperationStarted: false, durationMs: Date.now() - startedAt,
+      customerMessage: 'Please enter recipient phone number',
+    });
     return NextResponse.json({
       success: true,
       requiresPhone: true,
       message: 'Please enter recipient phone number',
       orderNo: expressOrder.orderNo,
       boxSize: expressOrder.boxSize,
+      requestRef: ref,
     });
   }
 
@@ -97,9 +222,16 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
   });
 
   if (!device) {
+    logUseCodeRequest(ref, {
+      route: 'use-code/save', codeType: 'save', httpStatus: 404, result: 'client_error',
+      expressOrderFound: true, orderFound: false, deviceFound: false,
+      doorOperationStarted: false, durationMs: Date.now() - startedAt,
+      customerMessage: 'Locker device not found',
+    });
     return NextResponse.json({
       success: false,
       error: 'Locker device not found',
+      requestRef: ref,
     }, { status: 404 });
   }
 
@@ -190,6 +322,22 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
         message: 'Door confirmed open, business state updated',
       });
 
+      logUseCodeRequest(ref, {
+        route: 'use-code/save', codeType: 'save', httpStatus: 200, result: 'success',
+        expressOrderFound: true, orderFound: !!order, deviceFound: true,
+        boxNumber,
+        doorOperationStarted: true,
+        operationRef: doorResult.operationId,
+        doorResultSuccess: doorResult.success,
+        doorResultConfirmed: doorResult.confirmed,
+        doorResultStatus: doorResult.status,
+        doorResultErrorType: doorResult.errorType,
+        doorResultProviderCode: doorResult.providerCode,
+        doorResultApiCalls: doorResult.apiCalls,
+        durationMs: Date.now() - startedAt,
+        customerMessage: 'Locker opened! Please place your package inside and close the door.',
+      });
+
     } catch (stateError) {
       // Business state update failed AFTER physical door opened!
       // This is a critical condition — the door IS open but our records don't reflect it.
@@ -206,6 +354,22 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
         businessStateUpdated: false,
       });
 
+      logUseCodeRequest(ref, {
+        route: 'use-code/save', codeType: 'save', httpStatus: 200, result: 'success',
+        expressOrderFound: true, orderFound: !!order, deviceFound: true,
+        boxNumber,
+        doorOperationStarted: true,
+        operationRef: doorResult.operationId,
+        doorResultSuccess: doorResult.success,
+        doorResultConfirmed: doorResult.confirmed,
+        doorResultStatus: doorResult.status,
+        doorResultErrorType: doorResult.errorType,
+        doorResultProviderCode: doorResult.providerCode,
+        doorResultApiCalls: doorResult.apiCalls,
+        durationMs: Date.now() - startedAt,
+        customerMessage: 'Locker opened! Please place your package inside and close the door.',
+      });
+
       // Still tell the customer the door is open
       return NextResponse.json({
         success: true,
@@ -215,6 +379,7 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
         pickCode: expressOrder.pickCode,
         message: 'Locker opened! Please place your package inside and close the door.',
         _warning: 'Business state update pending — staff should verify records',
+        requestRef: ref,
       });
     }
 
@@ -225,6 +390,7 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
       boxOpened: true,
       pickCode: expressOrder.pickCode,
       message: 'Locker opened! Please place your package inside and close the door.',
+      requestRef: ref,
     });
   }
 
@@ -249,6 +415,23 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
     message: `Door not confirmed. No business state changes made. ${doorResult.message}`,
   });
 
+  const httpStatus = doorResult.retryable ? 503 : 400;
+  logUseCodeRequest(ref, {
+    route: 'use-code/save', codeType: 'save', httpStatus, result: 'door_failure',
+    expressOrderFound: true, orderFound: !!order, deviceFound: true,
+    boxNumber,
+    doorOperationStarted: true,
+    operationRef: doorResult.operationId,
+    doorResultSuccess: doorResult.success,
+    doorResultConfirmed: doorResult.confirmed,
+    doorResultStatus: doorResult.status,
+    doorResultErrorType: doorResult.errorType,
+    doorResultProviderCode: doorResult.providerCode,
+    doorResultApiCalls: doorResult.apiCalls,
+    durationMs: Date.now() - startedAt,
+    customerMessage: customerMsg.message,
+  });
+
   return NextResponse.json({
     success: false,
     boxOpened: false,
@@ -257,11 +440,12 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
     showRetry: customerMsg.showRetry,
     showStaffAssist: customerMsg.showStaffAssist,
     operationRef: doorResult.operationId,
+    requestRef: ref,
     // Include box info so customer can retry
     orderNo: expressOrder.orderNo,
     boxName: expressOrder.boxName,
     pickCode: expressOrder.pickCode,
-  }, { status: doorResult.retryable ? 503 : 400 });
+  }, { status: httpStatus });
 }
 
 /**
@@ -270,7 +454,7 @@ async function handleSaveCode(saveCode: string, recipientPhone?: string) {
  * SAFETY: Only marks order PICKED_UP, box AVAILABLE, and records payment
  * after confirmed door opening.
  */
-async function handlePickCode(pickCode: string, paymentMethod?: string) {
+async function handlePickCode(pickCode: string, paymentMethod: string | undefined, ref: string, startedAt: number) {
   // Find express order by pick_code
   const expressOrder = await db.expressOrder.findFirst({
     where: { pickCode, status: 'STORED' },
@@ -283,17 +467,31 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
   });
 
   if (!expressOrder && !order) {
+    logUseCodeRequest(ref, {
+      route: 'use-code/pick', codeType: 'pick', httpStatus: 404, result: 'client_error',
+      expressOrderFound: false, orderFound: false, deviceFound: false,
+      doorOperationStarted: false, durationMs: Date.now() - startedAt,
+      customerMessage: 'Invalid pickup code',
+    });
     return NextResponse.json({
       success: false,
       error: 'Invalid pickup code',
+      requestRef: ref,
     }, { status: 404 });
   }
 
   // Check if already picked up
   if (expressOrder?.status === 'PICKED_UP' || order?.status === 'PICKED_UP') {
+    logUseCodeRequest(ref, {
+      route: 'use-code/pick', codeType: 'pick', httpStatus: 400, result: 'client_error',
+      expressOrderFound: !!expressOrder, orderFound: !!order, deviceFound: false,
+      doorOperationStarted: false, durationMs: Date.now() - startedAt,
+      customerMessage: 'This package has already been picked up',
+    });
     return NextResponse.json({
       success: false,
       error: 'This package has already been picked up',
+      requestRef: ref,
     }, { status: 400 });
   }
 
@@ -309,9 +507,16 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
   });
 
   if (!device) {
+    logUseCodeRequest(ref, {
+      route: 'use-code/pick', codeType: 'pick', httpStatus: 404, result: 'client_error',
+      expressOrderFound: !!expressOrder, orderFound: !!order, deviceFound: false,
+      doorOperationStarted: false, durationMs: Date.now() - startedAt,
+      customerMessage: 'Locker device not found',
+    });
     return NextResponse.json({
       success: false,
       error: 'Locker device not found',
+      requestRef: ref,
     }, { status: 404 });
   }
 
@@ -339,6 +544,15 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
 
   // Check if payment is required
   if (feeOwed > 0 && !paymentMethod) {
+    logUseCodeRequest(ref, {
+      route: 'use-code/pick', codeType: 'pick', httpStatus: 200, result: 'success',
+      expressOrderFound: !!expressOrder, orderFound: !!order, deviceFound: true,
+      boxNumber,
+      doorOperationStarted: false, durationMs: Date.now() - startedAt,
+      customerMessage: graceExpired
+        ? `Grace period expired. Additional storage fee of JMD $${feeOwed} is required`
+        : `Storage fee of JMD $${feeOwed} is required`,
+    });
     return NextResponse.json({
       success: true,
       requiresPayment: true,
@@ -350,6 +564,7 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
       message: graceExpired
         ? `Grace period expired. Additional storage fee of JMD $${feeOwed} is required`
         : `Storage fee of JMD $${feeOwed} is required`,
+      requestRef: ref,
     });
   }
 
@@ -431,6 +646,22 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
         message: 'Door confirmed open, business state updated',
       });
 
+      logUseCodeRequest(ref, {
+        route: 'use-code/pick', codeType: 'pick', httpStatus: 200, result: 'success',
+        expressOrderFound: !!expressOrder, orderFound: !!order, deviceFound: true,
+        boxNumber,
+        doorOperationStarted: true,
+        operationRef: doorResult.operationId,
+        doorResultSuccess: doorResult.success,
+        doorResultConfirmed: doorResult.confirmed,
+        doorResultStatus: doorResult.status,
+        doorResultErrorType: doorResult.errorType,
+        doorResultProviderCode: doorResult.providerCode,
+        doorResultApiCalls: doorResult.apiCalls,
+        durationMs: Date.now() - startedAt,
+        customerMessage: 'Locker opened! Please collect your package and close the door.',
+      });
+
     } catch (stateError) {
       // Business state update failed AFTER physical door opened!
       console.error('[CRITICAL] Business state update failed after pickup door opened:', stateError);
@@ -446,6 +677,22 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
         businessStateUpdated: false,
       });
 
+      logUseCodeRequest(ref, {
+        route: 'use-code/pick', codeType: 'pick', httpStatus: 200, result: 'success',
+        expressOrderFound: !!expressOrder, orderFound: !!order, deviceFound: true,
+        boxNumber,
+        doorOperationStarted: true,
+        operationRef: doorResult.operationId,
+        doorResultSuccess: doorResult.success,
+        doorResultConfirmed: doorResult.confirmed,
+        doorResultStatus: doorResult.status,
+        doorResultErrorType: doorResult.errorType,
+        doorResultProviderCode: doorResult.providerCode,
+        doorResultApiCalls: doorResult.apiCalls,
+        durationMs: Date.now() - startedAt,
+        customerMessage: 'Locker opened! Please collect your package and close the door.',
+      });
+
       // Still tell the customer the door is open
       return NextResponse.json({
         success: true,
@@ -455,6 +702,7 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
         storageFee,
         message: 'Locker opened! Please collect your package and close the door.',
         _warning: 'Business state update pending — staff should verify records',
+        requestRef: ref,
       });
     }
 
@@ -465,6 +713,7 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
       boxOpened: true,
       storageFee,
       message: 'Locker opened! Please collect your package and close the door.',
+      requestRef: ref,
     });
   }
 
@@ -490,6 +739,23 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
     message: `Door not confirmed. No business state changes. No payment recorded. ${doorResult.message}`,
   });
 
+  const httpStatus = doorResult.retryable ? 503 : 400;
+  logUseCodeRequest(ref, {
+    route: 'use-code/pick', codeType: 'pick', httpStatus, result: 'door_failure',
+    expressOrderFound: !!expressOrder, orderFound: !!order, deviceFound: true,
+    boxNumber,
+    doorOperationStarted: true,
+    operationRef: doorResult.operationId,
+    doorResultSuccess: doorResult.success,
+    doorResultConfirmed: doorResult.confirmed,
+    doorResultStatus: doorResult.status,
+    doorResultErrorType: doorResult.errorType,
+    doorResultProviderCode: doorResult.providerCode,
+    doorResultApiCalls: doorResult.apiCalls,
+    durationMs: Date.now() - startedAt,
+    customerMessage: customerMsg.message,
+  });
+
   return NextResponse.json({
     success: false,
     boxOpened: false,
@@ -498,10 +764,11 @@ async function handlePickCode(pickCode: string, paymentMethod?: string) {
     showRetry: customerMsg.showRetry,
     showStaffAssist: customerMsg.showStaffAssist,
     operationRef: doorResult.operationId,
+    requestRef: ref,
     // Preserve fee info so customer can retry payment
     orderNo: expressOrder?.orderNo || order?.orderNumber,
     boxName,
     storageFee: feeOwed > 0 ? feeOwed : storageFee,
     requiresPayment: feeOwed > 0,
-  }, { status: doorResult.retryable ? 503 : 400 });
+  }, { status: httpStatus });
 }

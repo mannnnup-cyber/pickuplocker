@@ -91,23 +91,158 @@ const AUTO_TIMEOUT_MS = 60000
 // Fetch with timeout — prevents white screen when API calls hang
 const FETCH_TIMEOUT_MS = 10000
 
+/**
+ * KioskApiError — structured error that preserves the backend's JSON
+ * response even when the HTTP status is non-2xx.
+ *
+ * The backend (/api/kiosk/use-code, /api/kiosk/payment, etc.) intentionally
+ * returns 400/404/503 with a JSON body containing:
+ *   { error, message, retryable, operationRef, showRetry, showStaffAssist, ... }
+ *
+ * kioskFetch must NOT throw these away merely because res.ok === false.
+ * The UI needs the backend's customer-safe `error`/`message` field.
+ */
+export class KioskApiError extends Error {
+  status: number
+  data?: any
+  url: string
+  timedOut: boolean
+
+  constructor(message: string, opts: { status: number; data?: any; url: string; timedOut?: boolean }) {
+    super(message)
+    this.name = 'KioskApiError'
+    this.status = opts.status
+    this.data = opts.data
+    this.url = opts.url
+    this.timedOut = opts.timedOut ?? false
+  }
+
+  /** Customer-safe message from the backend JSON, if available. */
+  get customerMessage(): string | undefined {
+    if (this.timedOut) return undefined
+    if (this.data && typeof this.data === 'object') {
+      const m = this.data.error || this.data.message
+      if (typeof m === 'string' && m.length > 0) return m
+    }
+    return undefined
+  }
+
+  /** Backend's requestRef / operationRef, if present. */
+  get requestRef(): string | undefined {
+    if (this.data && typeof this.data === 'object') {
+      return this.data.requestRef || this.data.operationRef
+    }
+    return undefined
+  }
+}
+
+/**
+ * Fetch with timeout — preserves backend JSON error bodies on non-2xx.
+ *
+ * Behavior:
+ * 1. Fetch with AbortController timeout (existing behavior).
+ * 2. Attempt to parse JSON regardless of res.ok.
+ * 3. If res.ok === false AND JSON parsed → throw KioskApiError with the
+ *    backend's data (error, message, retryable, operationRef, etc.).
+ * 4. If res.ok === false AND JSON failed to parse → throw KioskApiError
+ *    with just the HTTP status (likely a proxy/CDN error page).
+ * 5. If the AbortController timed out → throw KioskApiError with
+ *    timedOut=true (UI shows the timeout message).
+ * 6. If the browser genuinely could not reach the server (network error)
+ *    → throw a plain Error (UI shows "Failed to connect to server").
+ *
+ * Sensitive fields (stack traces, signatures, secrets) are never exposed
+ * because we only forward fields the backend explicitly put in the JSON.
+ */
 async function kioskFetch(url: string, options?: RequestInit, timeoutMs: number = FETCH_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const res = await fetch(url, { ...options, signal: controller.signal })
+
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status} from ${url}`)
+      // Try to parse JSON regardless of res.ok — the backend returns
+      // structured errors with 400/404/503.
+      let data: any = undefined
+      let parsed = false
+      try {
+        const text = await res.text()
+        if (text) {
+          data = JSON.parse(text)
+          parsed = true
+        }
+      } catch {
+        // Not JSON — leave data undefined. The UI will fall back to
+        // a generic message based on the HTTP status.
+      }
+
+      // Sanitize: never expose internal stack traces or secrets.
+      if (data && typeof data === 'object') {
+        delete data.stack
+        delete data.signature
+        delete data.sign
+        delete data.appSecret
+        delete data.app_secret
+        delete data.credentials
+      }
+
+      throw new KioskApiError(
+        parsed
+          ? (data?.error || data?.message || `HTTP ${res.status} from ${url}`)
+          : `HTTP ${res.status} from ${url}`,
+        { status: res.status, data, url }
+      )
     }
+
     return res
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error(`Request to ${url} timed out after ${timeoutMs}ms`)
+    if (error instanceof KioskApiError) {
+      throw error
     }
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new KioskApiError(
+        `Request to ${url} timed out after ${timeoutMs}ms`,
+        { status: 0, url, timedOut: true }
+      )
+    }
+    // Genuine network error (DNS failure, connection refused, CORS, etc.)
+    // — re-throw as a plain Error so the UI shows "Failed to connect".
     throw error
   } finally {
     clearTimeout(timeoutId)
   }
+}
+
+/**
+ * Extract a customer-safe error message from a thrown error.
+ *
+ * Priority:
+ * 1. KioskApiError with backend JSON → use backend's `error` or `message`.
+ * 2. KioskApiError with timedOut=true → "Server is taking too long to respond...".
+ * 3. KioskApiError with no JSON (HTTP error) → "Failed to connect to server...".
+ * 4. Plain Error (network failure) → "Failed to connect to server...".
+ * 5. String → use the string.
+ *
+ * Use this in catch blocks instead of hardcoding the generic message.
+ * If a `setError` callback is provided, this function calls it directly.
+ */
+function getKioskErrorMessage(err: unknown, fallback: string = "Failed to connect to server. Please try again."): string {
+  if (err instanceof KioskApiError) {
+    if (err.timedOut) {
+      return "Server is taking too long to respond. Please try again."
+    }
+    const backend = err.customerMessage
+    if (backend) return backend
+    // HTTP error with no parseable JSON body — likely a proxy/CDN error.
+    if (err.status >= 500) return "Server error. Please try again in a moment."
+    if (err.status === 404) return "Not found. Please try again."
+    return fallback
+  }
+  // Plain Error (network failure, DNS, etc.)
+  if (err instanceof Error && err.message.includes('timed out')) {
+    return "Server is taking too long to respond. Please try again."
+  }
+  return fallback
 }
 
 // Box availability type
@@ -570,11 +705,7 @@ function KioskPage() {
         setError(data.error || "Failed to process drop-off")
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('timed out')) {
-        setError("Server is taking too long to respond. Please try again.")
-      } else {
-        setError("Failed to connect to server. Please try again.")
-      }
+      setError(getKioskErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -613,11 +744,7 @@ function KioskPage() {
       
       return data
     } catch (err) {
-      if (err instanceof Error && err.message.includes('timed out')) {
-        setError("Server is taking too long to respond. Please try again.")
-      } else {
-        setError("Failed to connect to server. Please try again.")
-      }
+      setError(getKioskErrorMessage(err))
       return null
     } finally {
       setLoading(false)
@@ -726,11 +853,7 @@ function KioskPage() {
         setError(data.error || "Failed to open locker")
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('timed out')) {
-        setError("Server is taking too long to respond. Please try again.")
-      } else {
-        setError("Failed to connect to server. Please try again.")
-      }
+      setError(getKioskErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -769,11 +892,7 @@ function KioskPage() {
         setError(data.error || "Invalid pickup code")
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('timed out')) {
-        setError("Server is taking too long to respond. Please try again.")
-      } else {
-        setError("Failed to connect to server. Please try again.")
-      }
+      setError(getKioskErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -886,11 +1005,7 @@ function KioskPage() {
         setError(data.error || "Failed to create payment")
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('timed out')) {
-        setError("Server is taking too long to respond. Please try again.")
-      } else {
-        setError("Failed to connect to server. Please try again.")
-      }
+      setError(getKioskErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -949,11 +1064,7 @@ function KioskPage() {
         setError(data.error || "Login failed. Please try again.")
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('timed out')) {
-        setError("Server is taking too long to respond. Please try again.")
-      } else {
-        setError("Failed to connect to server. Please try again.")
-      }
+      setError(getKioskErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -1007,11 +1118,7 @@ function KioskPage() {
         setError(data.error || "Failed to create order")
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('timed out')) {
-        setError("Server is taking too long to respond. Please try again.")
-      } else {
-        setError("Failed to connect to server. Please try again.")
-      }
+      setError(getKioskErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -1396,11 +1503,7 @@ function KioskPage() {
           setLoading(false)
         }
       } catch (err) {
-        if (err instanceof Error && err.message.includes('timed out')) {
-          setError("Server is taking too long to respond. Please try again.")
-        } else {
-          setError("Failed to connect to server. Please try again.")
-        }
+        setError(getKioskErrorMessage(err))
         setLoading(false)
       }
     }
@@ -1431,11 +1534,7 @@ function KioskPage() {
           setError(data.error || "Failed to create payment")
         }
       } catch (err) {
-        if (err instanceof Error && err.message.includes('timed out')) {
-          setError("Server is taking too long to respond. Please try again.")
-        } else {
-          setError("Failed to connect to server. Please try again.")
-        }
+        setError(getKioskErrorMessage(err))
       } finally {
         setLoading(false)
       }
