@@ -44,8 +44,8 @@ CREATE TABLE "door_operation_records" (
 -- request already claimed this operation. This prevents the race condition
 -- where two concurrent requests both pass findUnique() and send duplicate
 -- physical hardware commands.
-CREATE UNIQUE CONSTRAINT "door_operation_records_idempotencyKey_key" ON "door_operation_records"("idempotencyKey");
-CREATE UNIQUE CONSTRAINT "door_operation_records_operationId_key" ON "door_operation_records"("operationId");
+CREATE UNIQUE INDEX "door_operation_records_idempotencyKey_key" ON "door_operation_records"("idempotencyKey");
+CREATE UNIQUE INDEX "door_operation_records_operationId_key" ON "door_operation_records"("operationId");
 
 -- Indexes for common query patterns
 CREATE INDEX "door_operation_records_orderId_idx" ON "door_operation_records"("orderId");
