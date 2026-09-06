@@ -194,10 +194,28 @@ export async function openBoxWithCredentials(
   // Based on Bestwond API docs: box 1 → "0101", box 10 → "010a", box 12 → "010c"
   const boxHex = boxNo.toString(16).toLowerCase().padStart(2, '0');
   const defaultLockAddress = `01${boxHex}`; // e.g., "0101", "010a", "010c"
-  
+
+  // Mutable lock address — starts as the default derived from boxNo.
+  // May be overridden below by:
+  //   1. DB-stored lockAddress (preferred — fastest, no API call needed)
+  //   2. Bestwond box-list API lock_address (one-time fetch on cache miss)
+  //   3. The default derived above (used if both DB and API are unavailable)
+  //
+  // FIX (2026-09-05): Previously this variable was referenced (assigned at line ~218
+  // and compared at line ~235) WITHOUT being declared. The runtime threw
+  //   "ReferenceError: lockAddress is not defined"
+  // whenever the DB lookup found a stored lockAddress, which manifested in
+  // production as the door-operation fallback crashing with
+  //   "Express failed, fallback threw: lockAddress is not defined"
+  // (see door_operation_records rows with errorType=NETWORK_ERROR on 2026-09-05).
+  // The fix is a single line: declare `lockAddress` initialized to
+  // `defaultLockAddress` so the resolution order above is preserved and no
+  // extra Bestwond API call is introduced on the hot path (DB hit case).
+  let lockAddress = defaultLockAddress;
+
   // Try to use stored lock_address from DB first, then fetch box list as fallback
   // This reduces API calls from 2+ to 1 for most door openings
-  console.log('[Bestwond] openBox device=%s box=%d lockAddr=%s', deviceNumber, boxNo, defaultLockAddress);
+  console.log('[Bestwond] openBox device=%s box=%d lockAddr=%s', deviceNumber, boxNo, lockAddress);
   
   // Check if we can skip the box list fetch by using a stored lock_address
   let boxListResult: BestwondResponse<BoxInfo[]> = { code: -1, msg: 'Skipped — using default lock_address' };
